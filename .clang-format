@@ -1,0 +1,101 @@
+BasedOnStyle: LLVM
+
+# Base indentation
+IndentWidth: 4
+NamespaceIndentation: All
+UseTab: Never
+ContinuationIndentWidth: 4
+IndentCaseLabels: true
+IndentGotoLabels: false
+IndentPPDirectives: AfterHash
+
+# Comments
+AlignTrailingComments : true
+
+# Macros
+AlignConsecutiveMacros : true
+AlignEscapedNewlines : Right
+
+# Class formating
+ConstructorInitializerIndentWidth: 4
+ConstructorInitializerAllOnOneLineOrOnePerLine: false
+BreakConstructorInitializers: BeforeComma
+
+AccessModifierOffset : -4
+
+AlignConsecutiveBitFields : true
+AlignConsecutiveAssignments : true
+AlignConsecutiveDeclarations : true
+
+Language: Cpp
+# Force pointers to the type for C++.
+DerivePointerAlignment: false
+PointerAlignment: Left
+
+# Custom braces
+BreakBeforeBraces: Custom
+BraceWrapping:
+    AfterEnum: true
+    AfterStruct: true
+    SplitEmptyFunction: true
+    AfterCaseLabel: true
+    AfterClass: true
+    AfterFunction: true
+    AfterNamespace: true
+    AfterUnion: true
+    AfterExternBlock: true
+    BeforeCatch: true
+    BeforeElse: true
+    #BeforeLambdaBody: true
+    BeforeWhile: true
+    AfterControlStatement: Always
+AlwaysBreakTemplateDeclarations: Yes
+
+Cpp11BracedListStyle: false
+BreakStringLiterals: true
+CompactNamespaces: false
+FixNamespaceComments: true
+
+# Includes
+IncludeBlocks: Regroup
+IncludeCategories:
+  - Regex: '<initguid.h>'
+    Priority: 1
+  - Regex: '".*Handles\.h"'
+    Priority: 2
+  - Regex: '".*Types\.h"'
+    Priority: 3
+  - Regex: '".*\.generated\.h"'
+    Priority: 1000
+  - Regex: '.*'
+    Priority: 999
+
+# Spaceing
+SpaceAfterCStyleCast: false
+SpaceAfterLogicalNot: false
+SpaceAfterTemplateKeyword: false
+SpaceBeforeAssignmentOperators: true
+SpaceBeforeCpp11BracedList: false
+SpaceBeforeCtorInitializerColon: true
+SpaceBeforeInheritanceColon: true
+SpaceBeforeParens: Never
+SpaceBeforeRangeBasedForLoopColon: false
+SpaceBeforeSquareBrackets: false
+SpaceInEmptyBlock: false
+SpaceInEmptyParentheses: false
+SpacesBeforeTrailingComments: 1
+SpacesInCStyleCastParentheses: true
+SpacesInConditionalStatement: true
+SpacesInContainerLiterals: true
+SpacesInParentheses: true
+SpacesInSquareBrackets: true
+
+# Short definitions
+AllowShortBlocksOnASingleLine: false
+AllowShortCaseLabelsOnASingleLine: false
+AllowShortFunctionsOnASingleLine: InlineOnly
+AllowShortLambdasOnASingleLine: Inline
+AllowShortLoopsOnASingleLine : false
+
+MaxEmptyLinesToKeep: 1
+ColumnLimit: 150

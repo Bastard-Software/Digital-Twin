@@ -23,3 +23,13 @@ add_library(${PROJECT_NAME} STATIC
     ${INCLUDE_FILES}
     ${SOURCE_FILES}
 )
+
+target_include_directories(${PROJECT_NAME} PRIVATE
+  ${TWIN_DIR}/
+  ${THIRD_PARTY_DIR}/volk/
+  ${THIRD_PARTY_DIR}/glm/
+) 
+
+target_link_libraries(${PROJECT_NAME} PRIVATE
+    volk
+)

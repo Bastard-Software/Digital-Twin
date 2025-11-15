@@ -1,21 +1,30 @@
 #include "Simulation.hpp"
 
+#include <glm/glm.hpp>
+#include <shaderc/shaderc.hpp>
+#include <volk.h>
+
 namespace DigitalTwin
 {
     Simulation::Simulation()
         : m_currentStep( 0 )
-    { 
+    {
         printf( "Simulation created\n" );
+        volkInitialize();
+        glm::vec4 temp = glm::vec4( 1.0f );
+        temp;
     }
 
     Simulation::~Simulation()
     {
+        volkFinalize();
         printf( "Simulation destroyed\n" );
     }
 
     void Simulation::Initialize()
     {
         printf( "Simulation initialized\n" );
+        printf( "Volk version: %u\n", VOLK_HEADER_VERSION );
         m_currentStep = 0;
     }
 

@@ -34,5 +34,7 @@ else()
     message(FATAL_ERROR "volk not found. Run: python scripts/fetch_dependencies.py")
 endif()
 
+add_subdirectory(${ROOT_DIR}/Digital-Twin-Python)
+
 set_property(GLOBAL PROPERTY USE_FOLDERS ON)
 set_property(TARGET ${PROJECT_NAME} PROPERTY POSITION_INDEPENDENT_CODE ON)

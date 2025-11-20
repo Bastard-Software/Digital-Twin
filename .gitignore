@@ -1,3 +1,4 @@
 # Build directories
 [Bb]uild*/
 ThirdParty/
+*.pyd

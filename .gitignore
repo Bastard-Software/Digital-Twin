@@ -1,4 +1,9 @@
-# Build directories
+# build directories
 [Bb]uild*/
-ThirdParty/
+
+# package
 *.pyd
+
+# externals
+external/*
+!external/CMakeLists.txt

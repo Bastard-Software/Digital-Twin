@@ -1,5 +1,4 @@
-#include "Config.hpp"
-#include "Core/Simulation.hpp"
+#include "app/Simulation.hpp"
 #include <pybind11/functional.h>
 #include <pybind11/pybind11.h>
 #include <pybind11/stl.h>
@@ -28,7 +27,7 @@ void bind_simulation( py::module& m )
         } );
 }
 
-PYBIND11_MODULE( digital_twin, m )
+PYBIND11_MODULE( DigitalTwin, m )
 {
     m.doc() = "Digital Twin Python bindings";
 

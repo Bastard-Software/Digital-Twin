@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 Digital-Twin Dependency Fetcher
-Fetches dependencies to ThirdParty directory
+Fetches dependencies to external directory
 """
 
 import os
@@ -25,6 +25,10 @@ DEPENDENCIES = {
     "glm": {
         "url": "https://github.com/g-truc/glm.git",
         "commit": "a583c59e1616a628b18195869767ea4d6faca5f4"
+    },
+        "entt": {
+        "url": "https://github.com/skypjack/entt.git",
+        "commit": "8375ee0910183b32832c364d7893d074eada2a0f"
     }
 }
 
@@ -46,9 +50,9 @@ def run_command(cmd, cwd=None):
         print(f"Exception: {e}")
         return False
 
-def fetch_dependency(name, config, third_party_dir):
+def fetch_dependency(name, config, external_dir):
     """Fetch single dependency"""
-    repo_dir = third_party_dir / name
+    repo_dir = external_dir / name
     
     if repo_dir.exists():
         print(f"[{name}] exists, checking out commit...")
@@ -81,7 +85,7 @@ def fetch_dependency(name, config, third_party_dir):
         ]
     
     for cmd in commands:
-        cmd_cwd = third_party_dir if "clone" in cmd else repo_dir
+        cmd_cwd = external_dir if "clone" in cmd else repo_dir
         if not run_command(cmd, cmd_cwd):
             print(f"Failed: {cmd}")
             return False
@@ -105,70 +109,68 @@ def fetch_dependency(name, config, third_party_dir):
         print(f"  Got: {final_commit}")
         return False
 
-def clean_dependencies(third_party_dir):
+def clean_dependencies(external_dir):
     """Remove all dependencies"""
-    if third_party_dir.exists():
-        print("Cleaning ThirdParty directory...")
+    if external_dir.exists():
+        print("Cleaning external directory...")
         
-        # Usuń każdy podkatalog indywidualnie z obsługą błędów uprawnień
-        for item in third_party_dir.iterdir():
+        for item in external_dir.iterdir():
             if item.is_dir():
                 print(f"  Removing {item.name}...")
                 try:
                     shutil.rmtree(item, onerror=remove_readonly)
                 except Exception as e:
                     print(f"  Warning: Could not remove {item}: {e}")
-                    # Spróbuj użyć systemowego polecenia rm/rd jako fallback
                     if sys.platform == "win32":
                         run_command(f'rd /s /q "{item}"')
                     else:
                         run_command(f'rm -rf "{item}"')
         
-        print("ThirdParty directory cleaned")
+        print("external directory cleaned")
     else:
-        print("ThirdParty directory does not exist")
+        print("external directory does not exist")
 
 def main():
     parser = argparse.ArgumentParser(description="Fetch project dependencies")
     parser.add_argument("--force", action="store_true", help="Force re-clone all dependencies")
-    parser.add_argument("--clean", action="store_true", help="Remove all dependencies from ThirdParty")
+    parser.add_argument("--clean", action="store_true", help="Remove all dependencies from external")
     args = parser.parse_args()
     
     # Find project root directory
     script_dir = Path(__file__).parent
     root_dir = script_dir.parent
-    third_party_dir = root_dir / "ThirdParty"
+    external_dir = root_dir / "external"
     
     print("Digital-Twin Dependency Fetcher")
     print("================================")
     print(f"Project root: {root_dir}")
-    print(f"Third party: {third_party_dir}")
+    print(f"External dir: {external_dir}")
     
     # Clean mode
     if args.clean:
-        clean_dependencies(third_party_dir)
+        clean_dependencies(external_dir)
         return 0
     
-    # Create third_party directory
-    third_party_dir.mkdir(exist_ok=True)
+    # Create external directory
+    external_dir.mkdir(exist_ok=True)
     
     # Force remove dependencies
     if args.force:
         print("Force mode: cleaning existing dependencies...")
-        clean_dependencies(third_party_dir)
-        third_party_dir.mkdir(exist_ok=True)
+        clean_dependencies(external_dir)
+        external_dir.mkdir(exist_ok=True)
     
     # Fetch dependencies
     success = True
     for dep_name, config in DEPENDENCIES.items():
-        if not fetch_dependency(dep_name, config, third_party_dir):
+        if not fetch_dependency(dep_name, config, external_dir):
             success = False
             print(f"Failed to fetch {dep_name}")
     
     print("================================")
     if success:
         print("All dependencies fetched successfully")
-        print(f"Dependencies are in: {third_party_dir}")
+        print(f"Dependencies are in: {external_dir}")
         return 0
     else:
         print("Failed to fetch some dependencies")

@@ -1,4 +1,4 @@
-#include "Simulation.hpp"
+#include "app/Simulation.hpp"
 
 #include <glm/glm.hpp>
 #include <shaderc/shaderc.hpp>
@@ -13,6 +13,9 @@ namespace DigitalTwin
         volkInitialize();
         glm::vec4 temp = glm::vec4( 1.0f );
         temp;
+        auto entity = m_registry.create();
+        entity;
+
     }
 
     Simulation::~Simulation()

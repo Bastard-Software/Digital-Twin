@@ -1,8 +1,8 @@
-if(EXISTS ${EXTERNAL_DIR}/pybind11)
-    add_subdirectory(${EXTERNAL_DIR}/pybind11)
-    message(STATUS "Using bundled pybind11")
+if(EXISTS ${EXTERNAL_DIR}/nanobind)
+    add_subdirectory(${EXTERNAL_DIR}/nanobind)
+    message(STATUS "Using bundled nanobind")
 else()
-    message(FATAL_ERROR "pybind11 not found. Run: python scripts/fetch_dependencies.py")
+    message(FATAL_ERROR "nanobind not found. Run: python scripts/fetch_dependencies.py")
 endif()
 
 if(EXISTS ${EXTERNAL_DIR}/volk)

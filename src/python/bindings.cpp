@@ -1,23 +1,23 @@
 #include "app/Simulation.hpp"
-#include <pybind11/functional.h>
-#include <pybind11/pybind11.h>
-#include <pybind11/stl.h>
+#include <nanobind/nanobind.h>
+#include <nanobind/stl/string.h>
+#include <nanobind/stl/vector.h>
 
-namespace py = pybind11;
+namespace nb = nanobind;
 
-void bind_simulation_config( py::module& m )
+void bind_simulation_config( nb::module_& m )
 {
-    py::class_<DigitalTwin::SimulationConfig>( m, "SimulationConfig" )
-        .def( py::init<>() )
-        .def_readwrite( "maxSteps", &DigitalTwin::SimulationConfig::maxSteps )
+    nb::class_<DigitalTwin::SimulationConfig>( m, "SimulationConfig" )
+        .def( nb::init<>() )
+        .def_rw( "maxSteps", &DigitalTwin::SimulationConfig::maxSteps )
         .def( "__repr__",
               []( const DigitalTwin::SimulationConfig& config ) { return "SimulationConfig(maxSteps=" + std::to_string( config.maxSteps ) + ")"; } );
 }
 
-void bind_simulation( py::module& m )
+void bind_simulation( nb::module_& m )
 {
-    py::class_<DigitalTwin::Simulation>( m, "Simulation" )
-        .def( py::init<>() )
+    nb::class_<DigitalTwin::Simulation>( m, "Simulation" )
+        .def( nb::init<>() )
         .def( "initialize", &DigitalTwin::Simulation::Initialize )
         .def( "step", &DigitalTwin::Simulation::Step )
         .def( "is_complete", &DigitalTwin::Simulation::IsComplete )
@@ -27,7 +27,7 @@ void bind_simulation( py::module& m )
         } );
 }
 
-PYBIND11_MODULE( DigitalTwin, m )
+NB_MODULE( DigitalTwin, m )
 {
     m.doc() = "Digital Twin Python bindings";
 

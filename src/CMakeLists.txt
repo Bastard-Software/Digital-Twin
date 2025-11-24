@@ -4,6 +4,8 @@ project(Digital-Twin)
 
 include("${CMAKE_DIR}/compilerSettings.cmake" NO_POLICY_SCOPE)
 
+find_package(Python 3.8 COMPONENTS Interpreter Development.Module REQUIRED)
+
 file(GLOB_RECURSE SOURCE_FILES
     "${SRC_DIR}/*.h"
     "${SRC_DIR}/*.hpp"
@@ -39,7 +41,7 @@ target_link_libraries(${PROJECT_NAME} PUBLIC
 )
 
 # build bindings
-pybind11_add_module(${PROJECT_NAME}-Python ${SRC_DIR}/python/bindings.cpp)
+nanobind_add_module(${PROJECT_NAME}-Python ${SRC_DIR}/python/bindings.cpp)
 
 target_include_directories(${PROJECT_NAME}-Python PRIVATE
   ${SRC_DIR}/
@@ -47,11 +49,11 @@ target_include_directories(${PROJECT_NAME}-Python PRIVATE
 
 target_link_libraries(${PROJECT_NAME}-Python PRIVATE
     ${PROJECT_NAME}
+    nanobind-static
 )
 
 set_target_properties(${PROJECT_NAME}-Python PROPERTIES
     OUTPUT_NAME "DigitalTwin"
-    SUFFIX "${PYTHON_MODULE_EXTENSION}"
 )
 
 add_custom_command(TARGET ${PROJECT_NAME}-Python POST_BUILD

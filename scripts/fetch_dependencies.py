@@ -14,9 +14,9 @@ from pathlib import Path
 
 # Dependency configuration - using commit hashes
 DEPENDENCIES = {
-    "pybind11": {
-        "url": "https://github.com/pybind/pybind11.git",
-        "commit": "42cda7570e658beadc036be7848b60e64c374597"
+    "nanobind": {
+        "url": "https://github.com/wjakob/nanobind.git",
+        "commit": "dbe8a3c075f628482cfdf0e9fac1d2939794a6ca"
     },
     "volk": {
         "url": "https://github.com/zeux/volk.git",

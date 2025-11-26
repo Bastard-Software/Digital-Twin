@@ -1,15 +1,16 @@
 #!/usr/bin/env python3
 
-try:
-    import DigitalTwin
-except ImportError as e:
-    print(f"Error: Cannot import DigitalTwin module")
-    sys.exit(1)
+import DigitalTwin as dt
+import faulthandler
 
 def main():
     print("=== CellSim Minimal Demo ===\n")
 
-    sim = DigitalTwin.Simulation()
+    config = dt.EngineConfig()
+    config.headless = False
+    dt.Engine.initialize(config)
+
+    sim = dt.Simulation()
     sim.initialize()
 
     while not sim.is_complete():
@@ -18,4 +19,5 @@ def main():
     print(f"=== Demo finished after {sim.get_current_step()} steps ===\n")
 
 if __name__ == "__main__":
+    faulthandler.enable()
     main()

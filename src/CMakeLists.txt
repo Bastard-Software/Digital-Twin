@@ -7,7 +7,8 @@ include("${CMAKE_DIR}/compilerSettings.cmake" NO_POLICY_SCOPE)
 find_package(Python 3.8 COMPONENTS Interpreter Development.Module REQUIRED)
 
 # targets
-add_subdirectory(Core)
+add_subdirectory(core)
+add_subdirectory(runtime)
 
 file(GLOB_RECURSE SOURCE_FILES
     "${SRC_DIR}/*.h"
@@ -16,6 +17,7 @@ file(GLOB_RECURSE SOURCE_FILES
     "${SRC_DIR}/*.inl"
 )
 list(FILTER SOURCE_FILES EXCLUDE REGEX "/core/")
+list(FILTER SOURCE_FILES EXCLUDE REGEX "/runtime/")
 list(FILTER SOURCE_FILES EXCLUDE REGEX "/python/bindings.cpp$")
 
 source_group(TREE "${SRC_DIR}" PREFIX "src" FILES ${SOURCE_FILES})
@@ -36,7 +38,7 @@ target_include_directories(${PROJECT_NAME} PUBLIC
 target_link_libraries(${PROJECT_NAME} PUBLIC
     volk
     entt
-    Digital-Twin-Core
+    Digital-Twin-Runtime
 )
 
 # build bindings

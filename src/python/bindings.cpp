@@ -1,9 +1,25 @@
 #include "app/Simulation.hpp"
+#include "runtime/Engine.hpp"
 #include <nanobind/nanobind.h>
 #include <nanobind/stl/string.h>
 #include <nanobind/stl/vector.h>
 
 namespace nb = nanobind;
+
+void bind_engine_config( nb::module_& m )
+{
+    nb::class_<DigitalTwin::EngineConfig>( m, "EngineConfig" ).def( nb::init<>() ).def_rw( "headless", &DigitalTwin::EngineConfig::headless );
+}
+
+void bind_engine( nb::module_& m )
+{
+    nb::class_<DigitalTwin::Engine>( m, "Engine" )
+        .def( nb::init<>() )
+        .def_static( "initialize", &DigitalTwin::Engine::Init )
+        .def_static( "shutdown", &DigitalTwin::Engine::Shutdown )
+        .def_static( "is_initialized", &DigitalTwin::Engine::IsInitialized )
+        .def_static( "is_headless", &DigitalTwin::Engine::IsHeadless );
+}
 
 void bind_simulation_config( nb::module_& m )
 {
@@ -31,6 +47,8 @@ NB_MODULE( DigitalTwin, m )
 {
     m.doc() = "Digital Twin Python bindings";
 
+    bind_engine_config( m );
+    bind_engine( m );
     bind_simulation_config( m );
     bind_simulation( m );
 }

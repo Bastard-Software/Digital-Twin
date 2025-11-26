@@ -1,9 +1,12 @@
 #include <app/Simulation.hpp>
 #include <core/Base.hpp>
+#include <runtime/Engine.hpp>
 
 int main()
 {
-    DigitalTwin::Log::Init();
+    DigitalTwin::EngineConfig engineConfig;
+    engineConfig.headless = false;
+    DigitalTwin::Engine::Init( engineConfig );
 
     DT_INFO( "=== CellSim Minimal Demo ===\n" );
 

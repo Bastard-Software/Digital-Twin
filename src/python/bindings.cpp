@@ -18,7 +18,7 @@ void bind_simulation( nb::module_& m )
 {
     nb::class_<DigitalTwin::Simulation>( m, "Simulation" )
         .def( nb::init<>() )
-        .def( "initialize", &DigitalTwin::Simulation::Initialize )
+        .def( "initialize", &DigitalTwin::Simulation::Init )
         .def( "step", &DigitalTwin::Simulation::Step )
         .def( "is_complete", &DigitalTwin::Simulation::IsComplete )
         .def( "get_current_step", &DigitalTwin::Simulation::GetCurrentStep )

@@ -6,26 +6,23 @@ include("${CMAKE_DIR}/compilerSettings.cmake" NO_POLICY_SCOPE)
 
 find_package(Python 3.8 COMPONENTS Interpreter Development.Module REQUIRED)
 
+# targets
+add_subdirectory(Core)
+
 file(GLOB_RECURSE SOURCE_FILES
     "${SRC_DIR}/*.h"
     "${SRC_DIR}/*.hpp"
     "${SRC_DIR}/*.cpp"
     "${SRC_DIR}/*.inl"
 )
+list(FILTER SOURCE_FILES EXCLUDE REGEX "/core/")
+list(FILTER SOURCE_FILES EXCLUDE REGEX "/python/bindings.cpp$")
 
-set(STATIC_SOURCE_FILES "")
-foreach(source_file ${SOURCE_FILES})
-    # Wyklucz pliki w katalogu python/bindings
-    if(NOT source_file MATCHES ".*python.*bindings.*\\.cpp$")
-        list(APPEND STATIC_SOURCE_FILES ${source_file})
-    endif()
-endforeach()
-
-source_group(TREE "${SRC_DIR}" PREFIX "src" FILES ${STATIC_SOURCE_FILES})
+source_group(TREE "${SRC_DIR}" PREFIX "src" FILES ${SOURCE_FILES})
 
 # build lib
 add_library(${PROJECT_NAME} STATIC
-    ${STATIC_SOURCE_FILES}
+    ${SOURCE_FILES}
 )
 
 target_include_directories(${PROJECT_NAME} PUBLIC
@@ -33,11 +30,13 @@ target_include_directories(${PROJECT_NAME} PUBLIC
   ${EXTERNAL_DIR}/volk/
   ${EXTERNAL_DIR}/glm/
   ${EXTERNAL_DIR}/entt/src/
+  ${EXTERNAL_DIR}/spdlog/include/
 ) 
 
 target_link_libraries(${PROJECT_NAME} PUBLIC
     volk
     entt
+    Digital-Twin-Core
 )
 
 # build bindings

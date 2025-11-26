@@ -20,7 +20,7 @@ namespace DigitalTwin
         Simulation();
         ~Simulation();
 
-        void Initialize();
+        void Init();
         void Step();
 
         bool_t   IsComplete() const;

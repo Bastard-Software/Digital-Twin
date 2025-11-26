@@ -1,17 +1,20 @@
 #include <app/Simulation.hpp>
+#include <core/Base.hpp>
 
 int main()
 {
-    printf( "=== CellSim Minimal Demo ===\n" );
+    DigitalTwin::Log::Init();
+
+    DT_INFO( "=== CellSim Minimal Demo ===\n" );
 
     DigitalTwin::Simulation sim;
-    sim.Initialize();
+    sim.Init();
 
     while( !sim.IsComplete() )
     {
         sim.Step();
     }
 
-    printf( "=== Demo finished after %u steps ===\n", sim.GetCurrentStep() );
+    DT_TRACE( "=== Demo finished after %u steps ===\n", sim.GetCurrentStep() );
     return 0;
 }

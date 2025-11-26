@@ -1,4 +1,5 @@
 #include "app/Simulation.hpp"
+#include "Core/Base.hpp"
 
 #include <glm/glm.hpp>
 #include <shaderc/shaderc.hpp>
@@ -9,7 +10,7 @@ namespace DigitalTwin
     Simulation::Simulation()
         : m_currentStep( 0 )
     {
-        printf( "Simulation created\n" );
+        DT_CORE_INFO( "Simulation created" );
         volkInitialize();
         glm::vec4 temp = glm::vec4( 1.0f );
         temp;
@@ -21,20 +22,20 @@ namespace DigitalTwin
     Simulation::~Simulation()
     {
         volkFinalize();
-        printf( "Simulation destroyed\n" );
+        DT_CORE_INFO( "Simulation destroyed" );
     }
 
-    void Simulation::Initialize()
+    void Simulation::Init()
     {
-        printf( "Simulation initialized\n" );
-        printf( "Volk version: %u\n", VOLK_HEADER_VERSION );
+        DT_CORE_TRACE( "Simulation initialized\n" );
+        DT_CORE_TRACE( "Volk version: %u\n", VOLK_HEADER_VERSION );
         m_currentStep = 0;
     }
 
     void Simulation::Step()
     {
         ++m_currentStep;
-        printf( "Simulation step %u executed\n", m_currentStep );
+        DT_CORE_TRACE( "Simulation step %u executed\n", m_currentStep );
     }
 
     bool_t Simulation::IsComplete() const

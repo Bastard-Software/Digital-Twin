@@ -18,6 +18,10 @@ DEPENDENCIES = {
         "url": "https://github.com/wjakob/nanobind.git",
         "commit": "dbe8a3c075f628482cfdf0e9fac1d2939794a6ca"
     },
+    "spdlog": {
+        "url": "https://github.com/gabime/spdlog.git",
+        "commit": "486b55554f11c9cccc913e11a87085b2a91f706f" # v1.16.0
+    },
     "volk": {
         "url": "https://github.com/zeux/volk.git",
         "commit": "4d2dba50ae419d0ad34ef27edcb845b749aaebf4"

@@ -1,6 +1,7 @@
 #include "app/Simulation.hpp"
-#include "Core/Base.hpp"
 
+#include "core/Base.hpp"
+#include "runtime/Engine.hpp"
 #include <glm/glm.hpp>
 #include <shaderc/shaderc.hpp>
 #include <volk.h>
@@ -10,13 +11,21 @@ namespace DigitalTwin
     Simulation::Simulation()
         : m_currentStep( 0 )
     {
+        if( !Engine::IsInitialized() )
+        {
+            DT_CORE_WARN( "Simulation started without explicit Engine initialization. Using defaults." );
+
+            EngineConfig defaultConfig;
+            defaultConfig.headless = false;
+            Engine::Init( defaultConfig );
+        }
+
         DT_CORE_INFO( "Simulation created" );
         volkInitialize();
         glm::vec4 temp = glm::vec4( 1.0f );
         temp;
         auto entity = m_registry.create();
         entity;
-
     }
 
     Simulation::~Simulation()

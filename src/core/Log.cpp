@@ -16,6 +16,8 @@ namespace DigitalTwin
 
         s_coreLogger->set_level( spdlog::level::trace );
         s_clientLogger->set_level( spdlog::level::trace );
+
+        DT_CORE_INFO( "Logging system initialized." );
     }
 
 } // namespace DigitalTwin

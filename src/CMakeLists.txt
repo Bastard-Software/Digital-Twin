@@ -9,35 +9,14 @@ find_package(Python 3.8 COMPONENTS Interpreter Development.Module REQUIRED)
 # targets
 add_subdirectory(core)
 add_subdirectory(runtime)
-
-file(GLOB_RECURSE SOURCE_FILES
-    "${SRC_DIR}/*.h"
-    "${SRC_DIR}/*.hpp"
-    "${SRC_DIR}/*.cpp"
-    "${SRC_DIR}/*.inl"
-)
-list(FILTER SOURCE_FILES EXCLUDE REGEX "/core/")
-list(FILTER SOURCE_FILES EXCLUDE REGEX "/runtime/")
-list(FILTER SOURCE_FILES EXCLUDE REGEX "/python/bindings.cpp$")
-
-source_group(TREE "${SRC_DIR}" PREFIX "src" FILES ${SOURCE_FILES})
+add_subdirectory(simulation)
 
 # build lib
-add_library(${PROJECT_NAME} STATIC
-    ${SOURCE_FILES}
-)
+add_library(${PROJECT_NAME} INTERFACE)
 
-target_include_directories(${PROJECT_NAME} PUBLIC
-  ${SRC_DIR}/
-  ${EXTERNAL_DIR}/volk/
-  ${EXTERNAL_DIR}/glm/
-  ${EXTERNAL_DIR}/entt/src/
-  ${EXTERNAL_DIR}/spdlog/include/
-) 
-
-target_link_libraries(${PROJECT_NAME} PUBLIC
-    volk
-    entt
+target_link_libraries(${PROJECT_NAME} INTERFACE
+    Digital-Twin-Core
+    Digital-Twin-Simulation
     Digital-Twin-Runtime
 )
 
@@ -49,7 +28,9 @@ target_include_directories(${PROJECT_NAME}-Python PRIVATE
 )
 
 target_link_libraries(${PROJECT_NAME}-Python PRIVATE
-    ${PROJECT_NAME}
+    Digital-Twin-Simulation
+    Digital-Twin-Runtime
+    Digital-Twin-Core
     nanobind-static
 )
 

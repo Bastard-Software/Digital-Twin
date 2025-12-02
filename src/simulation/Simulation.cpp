@@ -1,10 +1,8 @@
-#include "app/Simulation.hpp"
+#include "simulation/Simulation.hpp"
 
 #include "core/Base.hpp"
 #include "runtime/Engine.hpp"
 #include <glm/glm.hpp>
-#include <shaderc/shaderc.hpp>
-#include <volk.h>
 
 namespace DigitalTwin
 {
@@ -21,7 +19,6 @@ namespace DigitalTwin
         }
 
         DT_CORE_INFO( "Simulation created" );
-        volkInitialize();
         glm::vec4 temp = glm::vec4( 1.0f );
         temp;
         auto entity = m_registry.create();
@@ -30,14 +27,12 @@ namespace DigitalTwin
 
     Simulation::~Simulation()
     {
-        volkFinalize();
         DT_CORE_INFO( "Simulation destroyed" );
     }
 
     void Simulation::Init()
     {
         DT_CORE_TRACE( "Simulation initialized\n" );
-        DT_CORE_TRACE( "Volk version: %u\n", VOLK_HEADER_VERSION );
         m_currentStep = 0;
     }
 

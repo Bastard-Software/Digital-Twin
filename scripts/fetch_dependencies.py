@@ -33,7 +33,11 @@ DEPENDENCIES = {
         "entt": {
         "url": "https://github.com/skypjack/entt.git",
         "commit": "8375ee0910183b32832c364d7893d074eada2a0f"
-    }
+    },
+    "googletest": {
+        "url": "https://github.com/google/googletest.git",
+        "commit": "52eb8108c5bdec04579160ae17225d66034bd723" # v1.17.0
+    },
 }
 
 def remove_readonly(func, path, excinfo):

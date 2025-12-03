@@ -39,3 +39,17 @@ if(EXISTS ${EXTERNAL_DIR}/spdlog)
 else()
     message(WARNING "spdlog not found. Run: python scripts/fetch_dependencies.py")
 endif()
+
+if(EXISTS ${EXTERNAL_DIR}/googletest)
+    set(gtest_force_shared_crt ON CACHE BOOL "" FORCE)
+    
+    add_subdirectory(${EXTERNAL_DIR}/googletest)
+    set_property(TARGET gtest PROPERTY FOLDER "external")
+    set_property(TARGET gtest_main PROPERTY FOLDER "external")
+    set_property(TARGET gmock PROPERTY FOLDER "external")
+    set_property(TARGET gmock_main PROPERTY FOLDER "external")
+    
+    message(STATUS "Using bundled googletest")
+else()
+    message(WARNING "googletest not found. Run: python scripts/fetch_dependencies.py")
+endif()

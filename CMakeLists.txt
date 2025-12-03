@@ -9,6 +9,8 @@ set(EXTERNAL_DIR "${CMAKE_SOURCE_DIR}/external")
 
 include("${CMAKE_DIR}/compilerSettings.cmake" NO_POLICY_SCOPE)
 
+find_package(Python 3.8 COMPONENTS Interpreter Development.Module REQUIRED)
+
 # add dependencies
 add_subdirectory(${EXTERNAL_DIR})
 

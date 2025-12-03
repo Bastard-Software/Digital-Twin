@@ -16,7 +16,7 @@ from pathlib import Path
 DEPENDENCIES = {
     "nanobind": {
         "url": "https://github.com/wjakob/nanobind.git",
-        "commit": "dbe8a3c075f628482cfdf0e9fac1d2939794a6ca"
+        "commit": "116e098cfa96effca2a54e32e0ce5b93abe25393" # v2.9.2
     },
     "spdlog": {
         "url": "https://github.com/gabime/spdlog.git",
@@ -24,15 +24,15 @@ DEPENDENCIES = {
     },
     "volk": {
         "url": "https://github.com/zeux/volk.git",
-        "commit": "4d2dba50ae419d0ad34ef27edcb845b749aaebf4"
+        "commit": "0b17a763ba5643e32da1b2152f8140461b3b7345" # v1.4.304
     },
     "glm": {
         "url": "https://github.com/g-truc/glm.git",
-        "commit": "a583c59e1616a628b18195869767ea4d6faca5f4"
+        "commit": "a532f5b1cf27d6a3c099437e6959cf7e398a0a67" # v1.0.2
     },
         "entt": {
         "url": "https://github.com/skypjack/entt.git",
-        "commit": "8375ee0910183b32832c364d7893d074eada2a0f"
+        "commit": "b4e58bdd364ad72246c123a0c28538eab3252672" # v3.16.0
     },
     "googletest": {
         "url": "https://github.com/google/googletest.git",

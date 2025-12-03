@@ -4,8 +4,6 @@ project(Digital-Twin)
 
 include("${CMAKE_DIR}/compilerSettings.cmake" NO_POLICY_SCOPE)
 
-find_package(Python 3.8 COMPONENTS Interpreter Development.Module REQUIRED)
-
 # targets
 add_subdirectory(core)
 add_subdirectory(runtime)

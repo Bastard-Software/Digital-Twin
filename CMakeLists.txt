@@ -15,6 +15,10 @@ add_subdirectory(${EXTERNAL_DIR})
 # add main project cmake
 add_subdirectory(${SRC_DIR})
 
+if(CMAKE_PROJECT_NAME STREQUAL "Digital-Twin")
+    add_subdirectory(tests)
+endif()
+
 # add sandbox
 add_subdirectory(${ROOT_DIR}/sandbox)
 

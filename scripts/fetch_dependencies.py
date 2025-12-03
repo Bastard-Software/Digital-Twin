@@ -26,6 +26,10 @@ DEPENDENCIES = {
         "url": "https://github.com/zeux/volk.git",
         "commit": "0b17a763ba5643e32da1b2152f8140461b3b7345" # v1.4.304
     },
+    "VulkanMemoryAllocator": {
+        "url": "https://github.com/GPUOpen-LibrariesAndSDKs/VulkanMemoryAllocator.git",
+        "commit": "1d8f600fd424278486eade7ed3e877c99f0846b1" # v3.0.3
+    },
     "glm": {
         "url": "https://github.com/g-truc/glm.git",
         "commit": "a532f5b1cf27d6a3c099437e6959cf7e398a0a67" # v1.0.2

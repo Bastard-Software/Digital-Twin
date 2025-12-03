@@ -16,7 +16,8 @@ target_include_directories(${PROJECT_NAME} PRIVATE
 target_link_libraries(${PROJECT_NAME} PRIVATE
     GTest::gtest
     Digital-Twin-Core       
-    Digital-Twin-Runtime    
+    Digital-Twin-Runtime
+    Digital-Twin-RHI  
 )
 
 add_test(NAME AllTests COMMAND ${PROJECT_NAME})

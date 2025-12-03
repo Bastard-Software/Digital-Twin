@@ -21,6 +21,23 @@ else()
     message(FATAL_ERROR "volk not found. Run: python scripts/fetch_dependencies.py")
 endif()
 
+if(EXISTS ${EXTERNAL_DIR}/VulkanMemoryAllocator)
+    add_library(VulkanMemoryAllocator INTERFACE)
+    target_include_directories(VulkanMemoryAllocator INTERFACE 
+        ${EXTERNAL_DIR}/VulkanMemoryAllocator/include
+    )
+    
+    target_compile_definitions(VulkanMemoryAllocator INTERFACE
+        VMA_STATIC_VULKAN_FUNCTIONS=0
+        VMA_DYNAMIC_VULKAN_FUNCTIONS=0
+    )
+
+    set_property(TARGET VulkanMemoryAllocator PROPERTY FOLDER "external")
+    message(STATUS "Using bundled VulkanMemoryAllocator")
+else()
+    message(FATAL_ERROR "VulkanMemoryAllocator not found. Run: python scripts/fetch_dependencies.py")
+endif()
+
 if(EXISTS ${EXTERNAL_DIR}/entt)
     add_library(entt INTERFACE)
     target_include_directories(entt INTERFACE ${EXTERNAL_DIR}/entt/src)

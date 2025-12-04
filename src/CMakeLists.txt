@@ -8,6 +8,7 @@ include("${CMAKE_DIR}/compilerSettings.cmake" NO_POLICY_SCOPE)
 add_subdirectory(core)
 add_subdirectory(runtime)
 add_subdirectory(simulation)
+add_subdirectory(rhi)
 
 # build lib
 add_library(${PROJECT_NAME} INTERFACE)
@@ -16,6 +17,7 @@ target_link_libraries(${PROJECT_NAME} INTERFACE
     Digital-Twin-Core
     Digital-Twin-Simulation
     Digital-Twin-Runtime
+    Digital-Twin-RHI
 )
 
 # build bindings
@@ -29,6 +31,7 @@ target_link_libraries(${PROJECT_NAME}-Python PRIVATE
     Digital-Twin-Simulation
     Digital-Twin-Runtime
     Digital-Twin-Core
+    Digital-Twin-RHI
     nanobind-static
 )
 

@@ -14,11 +14,11 @@ namespace DigitalTwin
         _MAX_ENUM,
     };
 
-    class CommandQueue
+    class Queue
     {
     public:
-        CommandQueue( VkDevice device, const VolkDeviceTable& table, uint32_t queueFamilyIndex, QueueType type );
-        ~CommandQueue();
+        Queue( VkDevice device, const VolkDeviceTable& table, uint32_t queueFamilyIndex, QueueType type );
+        ~Queue();
 
         /**
          * @brief Submits a command buffer to the queue.
@@ -28,11 +28,11 @@ namespace DigitalTwin
          */
         Result Submit( VkCommandBuffer commandBuffer, uint64_t& outSignalValue );
 
-        bool_t IsValueCompleted( uint64_t fenceValue );
-        VkQueue   GetHandle() const { return m_queue; }
-        uint32_t  GetFamilyIndex() const { return m_queueFamilyIndex; }
-        QueueType GetType() const { return m_type; }
-        uint64_t  GetLastSubmittedValue() const { return m_nextValue - 1; }
+        bool_t      IsValueCompleted( uint64_t fenceValue );
+        VkQueue     GetHandle() const { return m_queue; }
+        uint32_t    GetFamilyIndex() const { return m_queueFamilyIndex; }
+        QueueType   GetType() const { return m_type; }
+        uint64_t    GetLastSubmittedValue() const { return m_nextValue - 1; }
         VkSemaphore GetTimelineSemaphore() const { return m_timelineSemaphore; }
 
     private:

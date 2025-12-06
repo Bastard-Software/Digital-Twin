@@ -143,11 +143,10 @@ namespace DigitalTwin
         createInfo.messageType     = VK_DEBUG_UTILS_MESSAGE_TYPE_GENERAL_BIT_EXT | VK_DEBUG_UTILS_MESSAGE_TYPE_VALIDATION_BIT_EXT;
         createInfo.pfnUserCallback = DebugCallback;
 
-        auto vkCreateDebugUtilsMessengerEXT =
-            ( PFN_vkCreateDebugUtilsMessengerEXT )vkGetInstanceProcAddr( s_instance, "vkCreateDebugUtilsMessengerEXT" );
-        if( vkCreateDebugUtilsMessengerEXT )
+        auto func = ( PFN_vkCreateDebugUtilsMessengerEXT )vkGetInstanceProcAddr( s_instance, "vkCreateDebugUtilsMessengerEXT" );
+        if( func )
         {
-            vkCreateDebugUtilsMessengerEXT( s_instance, &createInfo, nullptr, &s_debugMessenger );
+            func( s_instance, &createInfo, nullptr, &s_debugMessenger );
         }
     }
 

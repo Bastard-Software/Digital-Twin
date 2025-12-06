@@ -1,8 +1,8 @@
-#include "rhi/CommandQueue.hpp"
+#include "rhi/Queue.hpp"
 
 namespace DigitalTwin
 {
-    CommandQueue::CommandQueue( VkDevice device, const VolkDeviceTable& api, uint32_t queueFamilyIndex, QueueType type )
+    Queue::Queue( VkDevice device, const VolkDeviceTable& api, uint32_t queueFamilyIndex, QueueType type )
         : m_device( device )
         , m_api( api )
         , m_queue( VK_NULL_HANDLE )
@@ -28,7 +28,7 @@ namespace DigitalTwin
         }
     }
 
-    CommandQueue::~CommandQueue()
+    Queue::~Queue()
     {
         if( m_timelineSemaphore != VK_NULL_HANDLE )
         {
@@ -36,7 +36,7 @@ namespace DigitalTwin
         }
     }
 
-    Result CommandQueue::Submit( VkCommandBuffer commandBuffer, uint64_t& outSignalValue )
+    Result Queue::Submit( VkCommandBuffer commandBuffer, uint64_t& outSignalValue )
     {
         std::lock_guard<std::mutex> lock( m_mutex );
 
@@ -65,7 +65,7 @@ namespace DigitalTwin
         return Result::SUCCESS;
     }
 
-    bool_t CommandQueue::IsValueCompleted( uint64_t fenceValue )
+    bool_t Queue::IsValueCompleted( uint64_t fenceValue )
     {
         uint64_t completedValue = 0;
         VkResult result         = m_api.vkGetSemaphoreCounterValue( m_device, m_timelineSemaphore, &completedValue );

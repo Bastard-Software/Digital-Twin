@@ -1,7 +1,10 @@
 #pragma once
 #include "core/Base.hpp"
-#include "rhi/CommandPool.hpp"
-#include "rhi/CommandQueue.hpp"
+#include "rhi/CommandBuffer.hpp"
+#include "rhi/Queue.hpp"
+#include <map>
+#include <mutex>
+#include <thread>
 #include <vk_mem_alloc.h>
 #include <volk.h>
 
@@ -21,6 +24,8 @@ namespace DigitalTwin
         Result Init( DeviceDesc desc );
         void   Shutdown();
 
+        Ref<CommandBuffer> CreateCommandBuffer( QueueType type );
+
         /**
          * @brief Waits for a specific value on the queue's timeline semaphore.
          * @param queue The queue to wait on.
@@ -28,12 +33,12 @@ namespace DigitalTwin
          * @param timeout Timeout in nanoseconds.
          * @return Result::SUCCESS, Result::TIMEOUT, or Result::FAIL.
          */
-        Result WaitForQueue( Ref<CommandQueue> queue, uint64_t waitValue, uint64_t timeout = UINT64_MAX );
+        Result WaitForQueue( Ref<Queue> queue, uint64_t waitValue, uint64_t timeout = UINT64_MAX );
 
         // Getters for queues (may point to the same object if hardware has a single queue family)
-        Ref<CommandQueue> GetGraphicsQueue() const { return m_graphicsQueue; }
-        Ref<CommandQueue> GetComputeQueue() const { return m_computeQueue; }
-        Ref<CommandQueue> GetTransferQueue() const { return m_transferQueue; }
+        Ref<Queue> GetGraphicsQueue() const { return m_graphicsQueue; }
+        Ref<Queue> GetComputeQueue() const { return m_computeQueue; }
+        Ref<Queue> GetTransferQueue() const { return m_transferQueue; }
 
         VkDevice               GetHandle() const { return m_device; }
         VkPhysicalDevice       GetPhysicalDevice() const { return m_physicalDevice; }
@@ -44,6 +49,8 @@ namespace DigitalTwin
         struct QueueFamilyIndices;
         QueueFamilyIndices FindQueueFamilies( VkPhysicalDevice device );
 
+        VkCommandPool GetOrCreateThreadLocalPool( uint32_t queueFamilyIndex );
+
     private:
         VkPhysicalDevice m_physicalDevice;
         VkDevice         m_device;
@@ -51,12 +58,63 @@ namespace DigitalTwin
         VolkDeviceTable  m_api;
         DeviceDesc       m_desc;
 
-        Ref<CommandQueue> m_graphicsQueue;
-        Ref<CommandQueue> m_computeQueue;
-        Ref<CommandQueue> m_transferQueue;
+        Ref<Queue> m_graphicsQueue;
+        Ref<Queue> m_computeQueue;
+        Ref<Queue> m_transferQueue;
 
-        std::unordered_map<std::thread::id, Ref<CommandPool>> m_commandPools;
-        std::mutex                                            m_poolMutex;
+        // --- Thread Local Command Pools Management ---
+        struct PoolInfo
+        {
+            VkCommandPool          handle = VK_NULL_HANDLE;
+            VkDevice               device = VK_NULL_HANDLE;
+            const VolkDeviceTable* api    = nullptr; // Pointer to the device dispatch table
+
+            PoolInfo() = default;
+
+            // Move constructor
+            PoolInfo( PoolInfo&& other ) noexcept
+                : handle( other.handle )
+                , device( other.device )
+                , api( other.api )
+            {
+                other.handle = VK_NULL_HANDLE;
+                other.api    = nullptr;
+            }
+
+            // Move assignment
+            PoolInfo& operator=( PoolInfo&& other ) noexcept
+            {
+                if( this != &other )
+                {
+                    // Clean up current resource using the stored API table
+                    if( handle && api )
+                    {
+                        api->vkDestroyCommandPool( device, handle, nullptr );
+                    }
+
+                    handle = other.handle;
+                    device = other.device;
+                    api    = other.api;
+
+                    other.handle = VK_NULL_HANDLE;
+                    other.api    = nullptr;
+                }
+                return *this;
+            }
+
+            // Destructor
+            ~PoolInfo()
+            {
+                // CORRECTED: Using the device-specific table for destruction
+                if( handle && api )
+                {
+                    api->vkDestroyCommandPool( device, handle, nullptr );
+                }
+            }
+        };
+
+        // Map: ThreadID -> (QueueFamilyIndex -> PoolInfo)
+        std::map<std::thread::id, std::map<uint32_t, PoolInfo>> m_threadPools;
+        std::mutex                                              m_poolMutex;
     };
-
 } // namespace DigitalTwin

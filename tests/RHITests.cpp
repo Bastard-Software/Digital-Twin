@@ -1,5 +1,8 @@
 #include "rhi/RHI.hpp"
+#include <future>
 #include <gtest/gtest.h>
+#include <thread>
+#include <vector>
 
 using namespace DigitalTwin;
 
@@ -279,4 +282,119 @@ TEST_F( CommandQueueTest, IsValueCompletedCheck )
 
     // Value 1 has not been submitted/signaled yet
     EXPECT_FALSE( queue->IsValueCompleted( 1 ) ) << "Future value 1 should not be completed yet";
+}
+
+// =================================================================================================
+// DeviceCommand Tests
+// =================================================================================================
+
+class DeviceCommandTest : public ::testing::Test
+{
+protected:
+    Ref<Device> device;
+    RHIConfig   config;
+
+    void SetUp() override
+    {
+        // Clean up previous state if necessary
+        if( RHI::IsInitialized() )
+            RHI::Shutdown();
+
+        // Initialize RHI in headless mode for CI/CD compatibility
+        config.headless         = true;
+        config.enableValidation = false;
+        RHI::Init( config );
+
+        // Create device if adapter exists
+        if( RHI::GetAdapterCount() > 0 )
+        {
+            device = RHI::CreateDevice( 0 );
+        }
+    }
+
+    void TearDown() override
+    {
+        if( device )
+            RHI::DestroyDevice( device );
+        RHI::Shutdown();
+    }
+};
+
+// Test 1: Verify creation of a single CommandBuffer
+TEST_F( DeviceCommandTest, CreateSingleCommandBuffer )
+{
+    if( !device )
+        GTEST_SKIP() << "No GPU found, skipping test";
+
+    // Request a command buffer for the Graphics queue
+    auto cmd = device->CreateCommandBuffer( QueueType::GRAPHICS );
+    ASSERT_NE( cmd, nullptr ) << "Failed to create Graphics cmd buffer";
+    EXPECT_NE( cmd->GetHandle(), VK_NULL_HANDLE ) << "Vulkan handle should be valid";
+
+    // Verify basic lifecycle (Begin/End)
+    cmd->Begin();
+    cmd->End();
+}
+
+// Test 2: Verify creating buffers for different queue types
+TEST_F( DeviceCommandTest, CreateBuffersForDifferentQueues )
+{
+    if( !device )
+        GTEST_SKIP() << "No GPU found, skipping test";
+
+    auto gfxCmd   = device->CreateCommandBuffer( QueueType::GRAPHICS );
+    auto compCmd  = device->CreateCommandBuffer( QueueType::COMPUTE );
+    auto transCmd = device->CreateCommandBuffer( QueueType::TRANSFER );
+
+    EXPECT_NE( gfxCmd, nullptr );
+    EXPECT_NE( compCmd, nullptr );
+    EXPECT_NE( transCmd, nullptr );
+
+    // Verify handles are distinct (unless recycled very quickly, but we hold refs)
+    EXPECT_NE( gfxCmd->GetHandle(), compCmd->GetHandle() );
+}
+
+// Test 3: Multithreaded creation stress test
+// Ensures that thread-local pools are created correctly and no race conditions occur.
+TEST_F( DeviceCommandTest, MultithreadedPoolCreation )
+{
+    if( !device )
+        GTEST_SKIP() << "No GPU found, skipping test";
+
+    constexpr int NUM_THREADS     = 8;
+    constexpr int CMDS_PER_THREAD = 10;
+
+    // Lambda function executed by each thread
+    auto threadFunc = [ & ]( int threadId ) -> size_t {
+        std::vector<Ref<CommandBuffer>> buffers;
+        for( int i = 0; i < CMDS_PER_THREAD; ++i )
+        {
+            // Each thread requests a COMPUTE command buffer.
+            // The Device must create a unique CommandPool for this thread ID internally.
+            auto cmd = device->CreateCommandBuffer( QueueType::COMPUTE );
+            if( cmd )
+            {
+                cmd->Begin();
+                cmd->End();
+                buffers.push_back( cmd );
+            }
+        }
+        return buffers.size();
+    };
+
+    // Launch threads asynchronously
+    std::vector<std::future<size_t>> futures;
+    for( int i = 0; i < NUM_THREADS; ++i )
+    {
+        futures.push_back( std::async( std::launch::async, threadFunc, i ) );
+    }
+
+    // Wait for results and verify count
+    size_t totalBuffers = 0;
+    for( auto& f: futures )
+    {
+        totalBuffers += f.get();
+    }
+
+    EXPECT_EQ( totalBuffers, NUM_THREADS * CMDS_PER_THREAD ) << "Not all command buffers were created successfully in parallel";
 }

@@ -2,6 +2,7 @@
 
 #include "rhi/RHI.hpp"
 #include <set>
+#include <sstream>
 #include <vector>
 
 namespace DigitalTwin
@@ -95,7 +96,7 @@ namespace DigitalTwin
 
         // We always create Graphics (assuming Graphics is the "main" universal queue, even in headless)
         // If headless and no graphics bit, FindQueueFamilies should return compute index as graphics
-        m_graphicsQueue = CreateRef<CommandQueue>( m_device, m_api, indices.graphics, QueueType::GRAPHICS );
+        m_graphicsQueue = CreateRef<Queue>( m_device, m_api, indices.graphics, QueueType::GRAPHICS );
 
         // Compute
         if( indices.compute == indices.graphics )
@@ -105,7 +106,7 @@ namespace DigitalTwin
         }
         else
         {
-            m_computeQueue = CreateRef<CommandQueue>( m_device, m_api, indices.compute, QueueType::COMPUTE );
+            m_computeQueue = CreateRef<Queue>( m_device, m_api, indices.compute, QueueType::COMPUTE );
         }
 
         // Transfer
@@ -119,7 +120,7 @@ namespace DigitalTwin
         }
         else
         {
-            m_transferQueue = CreateRef<CommandQueue>( m_device, m_api, indices.transfer, QueueType::TRANSFER );
+            m_transferQueue = CreateRef<Queue>( m_device, m_api, indices.transfer, QueueType::TRANSFER );
         }
 
         // --- VMA Init ---
@@ -168,9 +169,10 @@ namespace DigitalTwin
         if( m_device == VK_NULL_HANDLE )
             return;
 
+        // Clean up command pools before destroying the device
         {
             std::lock_guard<std::mutex> lock( m_poolMutex );
-            m_commandPools.clear();
+            m_threadPools.clear(); // Destructors of PoolInfo will call vkDestroyCommandPool using m_api
         }
 
         // Reset pointers in reverse order.
@@ -189,7 +191,89 @@ namespace DigitalTwin
         m_device = VK_NULL_HANDLE;
     }
 
-    Result Device::WaitForQueue( Ref<CommandQueue> queue, uint64_t waitValue, uint64_t timeout )
+    VkCommandPool Device::GetOrCreateThreadLocalPool( uint32_t queueFamilyIndex )
+    {
+        std::thread::id tid = std::this_thread::get_id();
+
+        // Lock only for map access/insertion
+        std::lock_guard<std::mutex> lock( m_poolMutex );
+        auto&                       familyMap = m_threadPools[ tid ];
+
+        // Check if pool already exists for this thread and family
+        auto it = familyMap.find( queueFamilyIndex );
+        if( it != familyMap.end() )
+        {
+            return it->second.handle;
+        }
+
+        // Create a new pool
+        VkCommandPoolCreateInfo poolInfo = { VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO };
+        poolInfo.queueFamilyIndex        = queueFamilyIndex;
+        // TRANSIENT_BIT tells the driver that command buffers allocated from this pool
+        // will be short-lived (reset often), which is typical for our compute-first approach.
+        poolInfo.flags = VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT | VK_COMMAND_POOL_CREATE_TRANSIENT_BIT;
+
+        VkCommandPool pool;
+        if( m_api.vkCreateCommandPool( m_device, &poolInfo, nullptr, &pool ) != VK_SUCCESS )
+        {
+            DT_CORE_CRITICAL( "Failed to create thread-local command pool for thread!" );
+            return VK_NULL_HANDLE;
+        }
+
+        PoolInfo info;
+        info.handle = pool;
+        info.device = m_device;
+        info.api    = &m_api; // Store the pointer to the device table for destruction
+
+        familyMap[ queueFamilyIndex ] = std::move( info );
+
+        std::stringstream ss;
+        ss << tid;
+        DT_CORE_TRACE( "Created CommandPool for ThreadID: {} Family: {}", ss.str(), queueFamilyIndex );
+
+        return pool;
+    }
+
+    Ref<CommandBuffer> Device::CreateCommandBuffer( QueueType type )
+    {
+        uint32_t familyIndex = 0;
+        switch( type )
+        {
+            case QueueType::GRAPHICS:
+                familyIndex = m_graphicsQueue->GetFamilyIndex();
+                break;
+            case QueueType::COMPUTE:
+                familyIndex = m_computeQueue->GetFamilyIndex();
+                break;
+            case QueueType::TRANSFER:
+                familyIndex = m_transferQueue->GetFamilyIndex();
+                break;
+            default:
+                return nullptr;
+        }
+
+        // Get the thread-local pool for this queue family
+        VkCommandPool pool = GetOrCreateThreadLocalPool( familyIndex );
+        if( pool == VK_NULL_HANDLE )
+            return nullptr;
+
+        VkCommandBufferAllocateInfo allocInfo = { VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO };
+        allocInfo.commandPool                 = pool;
+        allocInfo.level                       = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
+        allocInfo.commandBufferCount          = 1;
+
+        VkCommandBuffer cmdBuffer = VK_NULL_HANDLE;
+        if( m_api.vkAllocateCommandBuffers( m_device, &allocInfo, &cmdBuffer ) != VK_SUCCESS )
+        {
+            DT_CORE_CRITICAL( "Failed to allocate command buffer!" );
+            return nullptr;
+        }
+
+        // Return a wrapper that manages the command buffer lifecycle
+        return CreateRef<CommandBuffer>( m_device, &m_api, pool, cmdBuffer );
+    }
+
+    Result Device::WaitForQueue( Ref<Queue> queue, uint64_t waitValue, uint64_t timeout )
     {
         if( !queue )
             return Result::FAIL;

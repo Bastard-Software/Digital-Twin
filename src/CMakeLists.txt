@@ -13,6 +13,8 @@ add_subdirectory(rhi)
 # build lib
 add_library(${PROJECT_NAME} INTERFACE)
 
+target_compile_definitions(${PROJECT_NAME} INTERFACE VK_NO_PROTOTYPES)
+
 target_link_libraries(${PROJECT_NAME} INTERFACE
     Digital-Twin-Core
     Digital-Twin-Simulation

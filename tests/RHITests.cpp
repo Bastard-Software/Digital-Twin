@@ -365,7 +365,7 @@ TEST_F( DeviceCommandTest, MultithreadedPoolCreation )
     constexpr int CMDS_PER_THREAD = 10;
 
     // Lambda function executed by each thread
-    auto threadFunc = [ & ]( int threadId ) -> size_t {
+    auto threadFunc = [ & ]( int /*threadId*/ ) -> size_t {
         std::vector<Ref<CommandBuffer>> buffers;
         for( int i = 0; i < CMDS_PER_THREAD; ++i )
         {
@@ -397,4 +397,167 @@ TEST_F( DeviceCommandTest, MultithreadedPoolCreation )
     }
 
     EXPECT_EQ( totalBuffers, NUM_THREADS * CMDS_PER_THREAD ) << "Not all command buffers were created successfully in parallel";
+}
+
+class DeviceResourceTest : public ::testing::Test
+{
+protected:
+    Ref<Device> device;
+    RHIConfig   config;
+
+    void SetUp() override
+    {
+        if( RHI::IsInitialized() )
+            RHI::Shutdown();
+        config.headless         = true;
+        config.enableValidation = false;
+        RHI::Init( config );
+        if( RHI::GetAdapterCount() > 0 )
+        {
+            device = RHI::CreateDevice( 0 );
+        }
+    }
+
+    void TearDown() override
+    {
+        if( device )
+            RHI::DestroyDevice( device );
+        RHI::Shutdown();
+    }
+};
+
+// =================================================================================================
+// BUFFER TESTS - Create every type to ensure flags and VMA memory types are valid
+// =================================================================================================
+
+TEST_F( DeviceResourceTest, CreateBuffer_UPLOAD )
+{
+    if( !device )
+        GTEST_SKIP();
+    auto buffer = device->CreateBuffer( { 1024, BufferType::UPLOAD } );
+    ASSERT_NE( buffer, nullptr );
+    EXPECT_NE( buffer->GetHandle(), VK_NULL_HANDLE );
+
+    // Test Write access
+    int val = 42;
+    buffer->Write( &val, sizeof( int ) );
+
+    // Verify we can read it back (since UPLOAD is host visible)
+    int readVal = 0;
+    buffer->Read( &readVal, sizeof( int ) );
+    EXPECT_EQ( val, readVal );
+}
+
+TEST_F( DeviceResourceTest, CreateBuffer_READBACK )
+{
+    if( !device )
+        GTEST_SKIP();
+    auto buffer = device->CreateBuffer( { 1024, BufferType::READBACK } );
+    ASSERT_NE( buffer, nullptr );
+    // Map should succeed
+    EXPECT_NE( buffer->Map(), nullptr );
+}
+
+TEST_F( DeviceResourceTest, CreateBuffer_STORAGE )
+{
+    if( !device )
+        GTEST_SKIP();
+    auto buffer = device->CreateBuffer( { 1024, BufferType::STORAGE } );
+    ASSERT_NE( buffer, nullptr );
+
+    // STORAGE is GPU-only, mapping should ideally assert/fail (depending on impl),
+    // but here we just check creation success.
+    // Also check Device Address retrieval
+    if( device->GetPhysicalDevice() ) // Only if feature enabled
+    {
+        EXPECT_NE( buffer->GetDeviceAddress(), 0 );
+    }
+}
+
+TEST_F( DeviceResourceTest, CreateBuffer_UNIFORM )
+{
+    if( !device )
+        GTEST_SKIP();
+    auto buffer = device->CreateBuffer( { 256, BufferType::UNIFORM } );
+    ASSERT_NE( buffer, nullptr );
+}
+
+TEST_F( DeviceResourceTest, CreateBuffer_VERTEX )
+{
+    if( !device )
+        GTEST_SKIP();
+    auto buffer = device->CreateBuffer( { 1024, BufferType::VERTEX } );
+    ASSERT_NE( buffer, nullptr );
+}
+
+TEST_F( DeviceResourceTest, CreateBuffer_INDEX )
+{
+    if( !device )
+        GTEST_SKIP();
+    auto buffer = device->CreateBuffer( { 1024, BufferType::INDEX } );
+    ASSERT_NE( buffer, nullptr );
+}
+
+TEST_F( DeviceResourceTest, CreateBuffer_INDIRECT )
+{
+    if( !device )
+        GTEST_SKIP();
+    auto buffer = device->CreateBuffer( { 256, BufferType::INDIRECT } );
+    ASSERT_NE( buffer, nullptr );
+}
+
+// =================================================================================================
+// TEXTURE TESTS - Verify Types and Usage Combinations
+// =================================================================================================
+
+TEST_F( DeviceResourceTest, CreateTexture_1D_Sampled )
+{
+    if( !device )
+        GTEST_SKIP();
+    // 1D Texture used for sampling
+    auto tex = device->CreateTexture1D( 128, VK_FORMAT_R8G8B8A8_UNORM, TextureUsage::SAMPLED );
+    ASSERT_NE( tex, nullptr );
+    EXPECT_EQ( tex->GetType(), TextureType::Texture1D );
+    EXPECT_NE( tex->GetView(), VK_NULL_HANDLE );
+}
+
+TEST_F( DeviceResourceTest, CreateTexture_2D_RenderTarget )
+{
+    if( !device )
+        GTEST_SKIP();
+    // Typical Color Attachment
+    auto tex = device->CreateTexture2D( 256, 256, VK_FORMAT_R8G8B8A8_UNORM, TextureUsage::RENDER_TARGET | TextureUsage::SAMPLED );
+    ASSERT_NE( tex, nullptr );
+    EXPECT_EQ( tex->GetType(), TextureType::Texture2D );
+}
+
+TEST_F( DeviceResourceTest, CreateTexture_2D_DepthStencil )
+{
+    if( !device )
+        GTEST_SKIP();
+    // Depth format required for DEPTH_STENCIL_TARGET usage
+    auto tex = device->CreateTexture2D( 256, 256, VK_FORMAT_D32_SFLOAT, TextureUsage::DEPTH_STENCIL_TARGET | TextureUsage::SAMPLED );
+    ASSERT_NE( tex, nullptr );
+    EXPECT_EQ( tex->GetType(), TextureType::Texture2D );
+}
+
+TEST_F( DeviceResourceTest, CreateTexture_3D_Storage )
+{
+    if( !device )
+        GTEST_SKIP();
+    // 3D Texture for Voxel Grid / Simulation
+    auto tex = device->CreateTexture3D( 64, 64, 64, VK_FORMAT_R32_SFLOAT, TextureUsage::STORAGE | TextureUsage::SAMPLED );
+    ASSERT_NE( tex, nullptr );
+    EXPECT_EQ( tex->GetType(), TextureType::Texture3D );
+    EXPECT_EQ( tex->GetExtent().depth, 64 );
+}
+
+TEST_F( DeviceResourceTest, CreateTexture_Storage_Transfer )
+{
+    if( !device )
+        GTEST_SKIP();
+    // Test Transfer flags
+    auto tex =
+        device->CreateTexture2D( 128, 128, VK_FORMAT_R32_SFLOAT, TextureUsage::STORAGE | TextureUsage::TRANSFER_SRC | TextureUsage::TRANSFER_DST );
+    ASSERT_NE( tex, nullptr );
 }

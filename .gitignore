@@ -3,6 +3,7 @@
 
 # package
 *.pyd
+[Ss]andbox-[Pp]ython/DigitalTwin
 
 # externals
 external/*

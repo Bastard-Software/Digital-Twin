@@ -124,32 +124,41 @@ namespace DigitalTwin
         }
 
         // --- VMA Init ---
-        VmaVulkanFunctions vmaVulkanFunctions                  = {};
-        vmaVulkanFunctions.vkGetInstanceProcAddr               = vkGetInstanceProcAddr;
-        vmaVulkanFunctions.vkGetDeviceProcAddr                 = vkGetDeviceProcAddr;
-        vmaVulkanFunctions.vkGetPhysicalDeviceProperties       = vkGetPhysicalDeviceProperties;
-        vmaVulkanFunctions.vkGetPhysicalDeviceMemoryProperties = vkGetPhysicalDeviceMemoryProperties;
-        vmaVulkanFunctions.vkAllocateMemory                    = m_api.vkAllocateMemory;
-        vmaVulkanFunctions.vkFreeMemory                        = m_api.vkFreeMemory;
-        vmaVulkanFunctions.vkMapMemory                         = m_api.vkMapMemory;
-        vmaVulkanFunctions.vkUnmapMemory                       = m_api.vkUnmapMemory;
-        vmaVulkanFunctions.vkFlushMappedMemoryRanges           = m_api.vkFlushMappedMemoryRanges;
-        vmaVulkanFunctions.vkInvalidateMappedMemoryRanges      = m_api.vkInvalidateMappedMemoryRanges;
-        vmaVulkanFunctions.vkBindBufferMemory                  = m_api.vkBindBufferMemory;
-        vmaVulkanFunctions.vkBindImageMemory                   = m_api.vkBindImageMemory;
-        vmaVulkanFunctions.vkGetBufferMemoryRequirements       = m_api.vkGetBufferMemoryRequirements;
-        vmaVulkanFunctions.vkGetImageMemoryRequirements        = m_api.vkGetImageMemoryRequirements;
-        vmaVulkanFunctions.vkCreateBuffer                      = m_api.vkCreateBuffer;
-        vmaVulkanFunctions.vkDestroyBuffer                     = m_api.vkDestroyBuffer;
-        vmaVulkanFunctions.vkCreateImage                       = m_api.vkCreateImage;
-        vmaVulkanFunctions.vkDestroyImage                      = m_api.vkDestroyImage;
-        vmaVulkanFunctions.vkCmdCopyBuffer                     = m_api.vkCmdCopyBuffer;
+        VmaVulkanFunctions vmaVulkanFunctions                      = {};
+        vmaVulkanFunctions.vkGetInstanceProcAddr                   = vkGetInstanceProcAddr;
+        vmaVulkanFunctions.vkGetDeviceProcAddr                     = vkGetDeviceProcAddr;
+        vmaVulkanFunctions.vkGetPhysicalDeviceProperties           = vkGetPhysicalDeviceProperties;
+        vmaVulkanFunctions.vkGetPhysicalDeviceMemoryProperties     = vkGetPhysicalDeviceMemoryProperties;
+        vmaVulkanFunctions.vkGetPhysicalDeviceMemoryProperties2KHR = vkGetPhysicalDeviceMemoryProperties2;
+
+        vmaVulkanFunctions.vkAllocateMemory               = m_api.vkAllocateMemory;
+        vmaVulkanFunctions.vkFreeMemory                   = m_api.vkFreeMemory;
+        vmaVulkanFunctions.vkMapMemory                    = m_api.vkMapMemory;
+        vmaVulkanFunctions.vkUnmapMemory                  = m_api.vkUnmapMemory;
+        vmaVulkanFunctions.vkFlushMappedMemoryRanges      = m_api.vkFlushMappedMemoryRanges;
+        vmaVulkanFunctions.vkInvalidateMappedMemoryRanges = m_api.vkInvalidateMappedMemoryRanges;
+
+        vmaVulkanFunctions.vkBindBufferMemory            = m_api.vkBindBufferMemory;
+        vmaVulkanFunctions.vkBindImageMemory             = m_api.vkBindImageMemory;
+        vmaVulkanFunctions.vkGetBufferMemoryRequirements = m_api.vkGetBufferMemoryRequirements;
+        vmaVulkanFunctions.vkGetImageMemoryRequirements  = m_api.vkGetImageMemoryRequirements;
+
+        vmaVulkanFunctions.vkCreateBuffer  = m_api.vkCreateBuffer;
+        vmaVulkanFunctions.vkDestroyBuffer = m_api.vkDestroyBuffer;
+        vmaVulkanFunctions.vkCreateImage   = m_api.vkCreateImage;
+        vmaVulkanFunctions.vkDestroyImage  = m_api.vkDestroyImage;
+        vmaVulkanFunctions.vkCmdCopyBuffer = m_api.vkCmdCopyBuffer;
+
+        vmaVulkanFunctions.vkGetBufferMemoryRequirements2KHR = m_api.vkGetBufferMemoryRequirements2;
+        vmaVulkanFunctions.vkGetImageMemoryRequirements2KHR  = m_api.vkGetImageMemoryRequirements2;
+        vmaVulkanFunctions.vkBindBufferMemory2KHR            = m_api.vkBindBufferMemory2;
+        vmaVulkanFunctions.vkBindImageMemory2KHR             = m_api.vkBindImageMemory2;
 
         VmaAllocatorCreateInfo allocatorInfo = {};
         allocatorInfo.physicalDevice         = m_physicalDevice;
         allocatorInfo.device                 = m_device;
         allocatorInfo.instance               = RHI::GetInstance();
-        allocatorInfo.vulkanApiVersion       = VK_API_VERSION_1_4;
+        allocatorInfo.vulkanApiVersion       = VK_API_VERSION_1_4; // With api version 1.4, VMA needs some newer functions
         allocatorInfo.flags                  = VMA_ALLOCATOR_CREATE_BUFFER_DEVICE_ADDRESS_BIT;
         allocatorInfo.pVulkanFunctions       = &vmaVulkanFunctions;
 
@@ -271,6 +280,58 @@ namespace DigitalTwin
 
         // Return a wrapper that manages the command buffer lifecycle
         return CreateRef<CommandBuffer>( m_device, &m_api, pool, cmdBuffer );
+    }
+
+    Ref<Buffer> Device::CreateBuffer( const BufferDesc& desc )
+    {
+        // Pass m_api to Buffer constructor
+        auto buffer = CreateRef<Buffer>( m_allocator, m_device, &m_api );
+        if( buffer->Create( desc ) != Result::SUCCESS )
+        {
+            return nullptr;
+        }
+        return buffer;
+    }
+
+    Ref<Texture> Device::CreateTexture( const TextureDesc& desc )
+    {
+        // Pass m_api to Texture constructor
+        auto texture = CreateRef<Texture>( m_allocator, m_device, &m_api );
+        if( texture->Create( desc ) != Result::SUCCESS )
+        {
+            return nullptr;
+        }
+        return texture;
+    }
+
+    Ref<Texture> Device::CreateTexture1D( uint32_t width, VkFormat format, TextureUsage usage )
+    {
+        auto texture = CreateRef<Texture>( m_allocator, m_device, &m_api );
+        if( texture->Create1D( width, format, usage ) != Result::SUCCESS )
+        {
+            return nullptr;
+        }
+        return texture;
+    }
+
+    Ref<Texture> Device::CreateTexture2D( uint32_t width, uint32_t height, VkFormat format, TextureUsage usage )
+    {
+        auto texture = CreateRef<Texture>( m_allocator, m_device, &m_api );
+        if( texture->Create2D( width, height, format, usage ) != Result::SUCCESS )
+        {
+            return nullptr;
+        }
+        return texture;
+    }
+
+    Ref<Texture> Device::CreateTexture3D( uint32_t width, uint32_t height, uint32_t depth, VkFormat format, TextureUsage usage )
+    {
+        auto texture = CreateRef<Texture>( m_allocator, m_device, &m_api );
+        if( texture->Create3D( width, height, depth, format, usage ) != Result::SUCCESS )
+        {
+            return nullptr;
+        }
+        return texture;
     }
 
     Result Device::WaitForQueue( Ref<Queue> queue, uint64_t waitValue, uint64_t timeout )

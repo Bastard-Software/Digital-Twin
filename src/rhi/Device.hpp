@@ -2,6 +2,8 @@
 #include "core/Base.hpp"
 #include "rhi/CommandBuffer.hpp"
 #include "rhi/Queue.hpp"
+#include "rhi/Buffer.hpp"
+#include "rhi/Texture.hpp"
 #include <map>
 #include <mutex>
 #include <thread>
@@ -25,6 +27,18 @@ namespace DigitalTwin
         void   Shutdown();
 
         Ref<CommandBuffer> CreateCommandBuffer( QueueType type );
+        Ref<Buffer>        CreateBuffer( const BufferDesc& desc );
+        Ref<Texture>       CreateTexture( const TextureDesc& desc );
+
+        // Convenience wrappers for textures
+        Ref<Texture> CreateTexture1D( uint32_t width, VkFormat format = VK_FORMAT_R8G8B8A8_UNORM,
+                                      TextureUsage usage = TextureUsage::SAMPLED | TextureUsage::STORAGE );
+
+        Ref<Texture> CreateTexture2D( uint32_t width, uint32_t height, VkFormat format = VK_FORMAT_R8G8B8A8_UNORM,
+                                      TextureUsage usage = TextureUsage::SAMPLED | TextureUsage::STORAGE );
+
+        Ref<Texture> CreateTexture3D( uint32_t width, uint32_t height, uint32_t depth, VkFormat format = VK_FORMAT_R32_SFLOAT,
+                                      TextureUsage usage = TextureUsage::SAMPLED | TextureUsage::STORAGE );
 
         /**
          * @brief Waits for a specific value on the queue's timeline semaphore.

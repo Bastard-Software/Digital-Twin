@@ -52,7 +52,6 @@ TEST_F( RuntimeTest, ShouldShutdownCorrectly )
 
 TEST_F( RuntimeTest, DefaultConfigIsHeadless )
 {
-    // Testowanie domyœlnych wartoœci
     EngineConfig defaultConfig;
     EXPECT_TRUE( defaultConfig.headless ) << "Default engine config should be headless=true";
 }

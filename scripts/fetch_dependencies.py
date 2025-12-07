@@ -42,6 +42,26 @@ DEPENDENCIES = {
         "url": "https://github.com/google/googletest.git",
         "commit": "52eb8108c5bdec04579160ae17225d66034bd723" # v1.17.0
     },
+    "spirv-headers": {
+        "url": "https://github.com/KhronosGroup/SPIRV-Headers.git",
+        "commit": "01e0577914a75a2569c846778c2f93aa8e6feddd" # v1.328.0
+    },
+    "spirv-tools": {
+        "url": "https://github.com/KhronosGroup/SPIRV-Tools.git",
+        "commit": "7f2d9ee926f98fc77a3ed1e1e0f113b8c9c49458" # v2025.4
+    },
+    "glslang": {
+        "url": "https://github.com/KhronosGroup/glslang.git",
+        "commit": "b5782e52ee2f7b3e40bb9c80d15b47016e008bc9" # v16.1.0
+    },
+    "shaderc": {
+        "url": "https://github.com/google/shaderc.git",
+        "commit": "c4b0af6c3664cd8b33ffddf452514e02a173b4d6" # v2025.5
+    },
+    "spirv-reflect": {
+        "url": "https://github.com/KhronosGroup/SPIRV-Reflect.git",
+        "commit": "ef913b3ab3da1becca3cf46b15a10667c67bebe5" # v1.328.0
+    }  
 }
 
 def remove_readonly(func, path, excinfo):

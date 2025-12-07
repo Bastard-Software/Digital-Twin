@@ -1,3 +1,4 @@
+#include "rhi/Pipeline.hpp"
 #include "rhi/RHI.hpp"
 #include "rhi/Shader.hpp"
 #include <filesystem>
@@ -747,4 +748,206 @@ TEST_F( ShaderCompilationTest, ReflectionFragmentCheck )
     ASSERT_TRUE( reflection.find( "texSampler" ) != reflection.end() ) << "Sampler not found";
     EXPECT_EQ( reflection.at( "texSampler" ).type, ShaderResourceType::SAMPLED_IMAGE );
     EXPECT_EQ( reflection.at( "texSampler" ).binding, 1 );
+}
+
+// =================================================================================================
+// DESCRIPTOR ALLOCATOR TESTS
+// =================================================================================================
+
+class DescriptorAllocatorTest : public ::testing::Test
+{
+protected:
+    Ref<Device>           device;
+    RHIConfig             config;
+    VkDescriptorSetLayout testLayout = VK_NULL_HANDLE;
+
+    void SetUp() override
+    {
+        if( RHI::IsInitialized() )
+            RHI::Shutdown();
+        config.headless         = true;
+        config.enableValidation = false;
+        RHI::Init( config );
+        if( RHI::GetAdapterCount() > 0 )
+        {
+            device = RHI::CreateDevice( 0 );
+            CreateDummyLayout();
+        }
+    }
+
+    void TearDown() override
+    {
+        if( device )
+        {
+            if( testLayout != VK_NULL_HANDLE )
+            {
+                device->GetAPI().vkDestroyDescriptorSetLayout( device->GetHandle(), testLayout, nullptr );
+            }
+            RHI::DestroyDevice( device );
+        }
+        RHI::Shutdown();
+    }
+
+    void CreateDummyLayout()
+    {
+        VkDescriptorSetLayoutBinding binding{};
+        binding.binding         = 0;
+        binding.descriptorType  = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+        binding.descriptorCount = 1;
+        binding.stageFlags      = VK_SHADER_STAGE_COMPUTE_BIT;
+
+        VkDescriptorSetLayoutCreateInfo info{ VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO };
+        info.bindingCount = 1;
+        info.pBindings    = &binding;
+
+        if( device->GetAPI().vkCreateDescriptorSetLayout( device->GetHandle(), &info, nullptr, &testLayout ) != VK_SUCCESS )
+        {
+            printf( "Failed to create dummy descriptor set layout for tests!\n" );
+        }
+    }
+};
+
+TEST_F( DescriptorAllocatorTest, BasicAllocation )
+{
+    if( !device )
+        GTEST_SKIP();
+
+    // U¿ywamy alokatora wbudowanego w Device
+    VkDescriptorSet set = VK_NULL_HANDLE;
+    Result          res = device->AllocateDescriptor( testLayout, set );
+
+    EXPECT_EQ( res, Result::SUCCESS );
+    EXPECT_NE( set, VK_NULL_HANDLE );
+}
+
+TEST_F( DescriptorAllocatorTest, AllocationOverflow )
+{
+    if( !device )
+        GTEST_SKIP();
+
+    // Try to allocate many sets to force pool switching inside Device
+    std::vector<VkDescriptorSet> sets;
+    for( int i = 0; i < 1500; ++i )
+    {
+        VkDescriptorSet set = VK_NULL_HANDLE;
+        Result          res = device->AllocateDescriptor( testLayout, set );
+        ASSERT_EQ( res, Result::SUCCESS ) << "Failed at index " << i;
+        ASSERT_NE( set, VK_NULL_HANDLE );
+        sets.push_back( set );
+    }
+}
+
+TEST_F( DescriptorAllocatorTest, ResetPools )
+{
+    if( !device )
+        GTEST_SKIP();
+
+    VkDescriptorSet set1 = VK_NULL_HANDLE;
+    device->AllocateDescriptor( testLayout, set1 );
+    EXPECT_NE( set1, VK_NULL_HANDLE );
+
+    // Reset via Device API
+    device->ResetDescriptorPools();
+
+    VkDescriptorSet set2 = VK_NULL_HANDLE;
+    Result          res  = device->AllocateDescriptor( testLayout, set2 );
+
+    EXPECT_EQ( res, Result::SUCCESS );
+    EXPECT_NE( set2, VK_NULL_HANDLE );
+}
+
+// =================================================================================================
+// PIPELINE TESTS
+// =================================================================================================
+
+class PipelineTest : public ::testing::Test
+{
+protected:
+    Ref<Device> device;
+    RHIConfig   config;
+    std::string compPath = "test_pipe.comp";
+    std::string vertPath = "test_pipe.vert";
+    std::string fragPath = "test_pipe.frag";
+
+    void SetUp() override
+    {
+        if( RHI::IsInitialized() )
+            RHI::Shutdown();
+        config.headless         = true;
+        config.enableValidation = false;
+        RHI::Init( config );
+        if( RHI::GetAdapterCount() > 0 )
+            device = RHI::CreateDevice( 0 );
+
+        // Dummy Compute
+        {
+            std::ofstream out( compPath );
+            out << "#version 450\nlayout(local_size_x=1) in;\nlayout(set=0, binding=0) buffer B { float v[]; };\nvoid main(){ v[0]=1.0; }";
+        }
+        // Dummy Vert
+        {
+            std::ofstream out( vertPath );
+            out << "#version 450\nvoid main(){ gl_Position=vec4(0); }";
+        }
+        // Dummy Frag
+        {
+            std::ofstream out( fragPath );
+            out << "#version 450\nlayout(location=0) out vec4 c;\nlayout(set=0, binding=1) uniform U { vec4 color; };\nvoid main(){ c=color; }";
+        }
+    }
+
+    void TearDown() override
+    {
+        if( device )
+            RHI::DestroyDevice( device );
+        RHI::Shutdown();
+        if( std::filesystem::exists( compPath ) )
+            std::filesystem::remove( compPath );
+        if( std::filesystem::exists( vertPath ) )
+            std::filesystem::remove( vertPath );
+        if( std::filesystem::exists( fragPath ) )
+            std::filesystem::remove( fragPath );
+        std::filesystem::remove( compPath + ".spv" );
+        std::filesystem::remove( vertPath + ".spv" );
+        std::filesystem::remove( fragPath + ".spv" );
+    }
+};
+
+TEST_F( PipelineTest, CreateComputePipeline )
+{
+    if( !device )
+        GTEST_SKIP();
+
+    auto                shader = device->CreateShader( compPath );
+    ComputePipelineDesc desc;
+    desc.shader = shader;
+
+    auto pipeline = device->CreateComputePipeline( desc );
+    ASSERT_NE( pipeline, nullptr );
+    EXPECT_NE( pipeline->GetHandle(), VK_NULL_HANDLE );
+    EXPECT_NE( pipeline->GetLayout(), VK_NULL_HANDLE );
+
+    // Check if layout for Set 0 was created (based on binding=0 in shader)
+    EXPECT_NE( pipeline->GetDescriptorSetLayout( 0 ), VK_NULL_HANDLE );
+}
+
+TEST_F( PipelineTest, CreateGraphicsPipeline )
+{
+    if( !device )
+        GTEST_SKIP();
+
+    auto vs = device->CreateShader( vertPath );
+    auto fs = device->CreateShader( fragPath );
+
+    GraphicsPipelineDesc desc;
+    desc.vertexShader   = vs;
+    desc.fragmentShader = fs;
+    // Default color attachment format R8G8B8A8 matches typical swapchain
+
+    auto pipeline = device->CreateGraphicsPipeline( desc );
+    ASSERT_NE( pipeline, nullptr );
+    EXPECT_NE( pipeline->GetHandle(), VK_NULL_HANDLE );
+
+    // Check Reflection Merge: FS has binding=1 at Set 0. Layout 0 should exist.
+    EXPECT_NE( pipeline->GetDescriptorSetLayout( 0 ), VK_NULL_HANDLE );
 }

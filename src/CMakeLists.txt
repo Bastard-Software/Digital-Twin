@@ -6,6 +6,7 @@ include("${CMAKE_DIR}/compilerSettings.cmake" NO_POLICY_SCOPE)
 
 # targets
 add_subdirectory(core)
+add_subdirectory(platform)
 add_subdirectory(runtime)
 add_subdirectory(simulation)
 add_subdirectory(rhi)
@@ -17,6 +18,7 @@ target_compile_definitions(${PROJECT_NAME} INTERFACE VK_NO_PROTOTYPES)
 
 target_link_libraries(${PROJECT_NAME} INTERFACE
     Digital-Twin-Core
+    Digital-Twin-Runtime
     Digital-Twin-Simulation
     Digital-Twin-Runtime
     Digital-Twin-RHI
@@ -31,6 +33,7 @@ target_include_directories(${PROJECT_NAME}-Python PRIVATE
 
 target_link_libraries(${PROJECT_NAME}-Python PRIVATE
     Digital-Twin-Simulation
+    Digital-Twin-Platform
     Digital-Twin-Runtime
     Digital-Twin-Core
     Digital-Twin-RHI

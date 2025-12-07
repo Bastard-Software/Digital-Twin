@@ -132,7 +132,10 @@ if(EXISTS ${EXTERNAL_DIR}/shaderc)
     
     add_subdirectory(${EXTERNAL_DIR}/shaderc)
     
-    # To posprząta "shaderc_combined", "shaderc_util" i inne
+    if(TARGET glslc_exe)
+        set_property(TARGET glslc_exe PROPERTY EXCLUDE_FROM_ALL 1)
+    endif()
+    
     set_target_folder_recursive(${EXTERNAL_DIR}/shaderc "external/shaderc")
     
     message(STATUS "Using bundled shaderc")
@@ -151,4 +154,18 @@ if(EXISTS ${EXTERNAL_DIR}/spirv-reflect)
     message(STATUS "Using bundled spirv-reflect")
 else()
     message(FATAL_ERROR "spirv-reflect not found. Run: python scripts/fetch_dependencies.py")
+endif()
+
+# --- GLFW ---
+if(EXISTS ${EXTERNAL_DIR}/glfw)
+    set(GLFW_BUILD_DOCS OFF CACHE BOOL "" FORCE)
+    set(GLFW_BUILD_TESTS OFF CACHE BOOL "" FORCE)
+    set(GLFW_BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
+    set(GLFW_INSTALL OFF CACHE BOOL "" FORCE)
+    
+    add_subdirectory(${EXTERNAL_DIR}/glfw)
+    set_property(TARGET glfw PROPERTY FOLDER "external/glfw")
+    message(STATUS "Using bundled glfw")
+else()
+    message(FATAL_ERROR "glfw not found. Run: python scripts/fetch_dependencies.py")
 endif()

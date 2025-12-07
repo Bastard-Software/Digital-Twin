@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.24)
 
-project(Digital-Twin-Runtime)
+project(Digital-Twin-Platform)
 
 file(GLOB_RECURSE SOURCE_FILES "*.cpp" "*.hpp")
 
@@ -14,7 +14,5 @@ target_include_directories(${PROJECT_NAME} PUBLIC
 
 target_link_libraries(${PROJECT_NAME} PUBLIC
     Digital-Twin-Core
-    Digital-Twin-Platform
-    Digital-Twin-RHI
+    glfw
 )
-

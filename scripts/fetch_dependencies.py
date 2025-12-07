@@ -42,6 +42,10 @@ DEPENDENCIES = {
         "url": "https://github.com/google/googletest.git",
         "commit": "52eb8108c5bdec04579160ae17225d66034bd723" # v1.17.0
     },
+    "glfw": {
+        "url": "https://github.com/glfw/glfw.git",
+        "commit": "7b6aead9fb88b3623e3b3725ebb42670cbe4c579" # 3.4
+    },
     "spirv-headers": {
         "url": "https://github.com/KhronosGroup/SPIRV-Headers.git",
         "commit": "01e0577914a75a2569c846778c2f93aa8e6feddd" # v1.328.0

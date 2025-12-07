@@ -1,10 +1,12 @@
 #pragma once
 #include "core/Base.hpp"
-#include "rhi/CommandBuffer.hpp"
-#include "rhi/Queue.hpp"
 #include "rhi/Buffer.hpp"
-#include "rhi/Texture.hpp"
+#include "rhi/CommandBuffer.hpp"
+#include "rhi/DescriptorAllocator.hpp"
+#include "rhi/Pipeline.hpp"
+#include "rhi/Queue.hpp"
 #include "rhi/Shader.hpp"
+#include "rhi/Texture.hpp"
 #include <map>
 #include <mutex>
 #include <thread>
@@ -27,10 +29,15 @@ namespace DigitalTwin
         Result Init( DeviceDesc desc );
         void   Shutdown();
 
-        Ref<CommandBuffer> CreateCommandBuffer( QueueType type );
-        Ref<Buffer>        CreateBuffer( const BufferDesc& desc );
-        Ref<Texture>       CreateTexture( const TextureDesc& desc );
-        Ref<Shader>        CreateShader( const std::string& filepath );
+        Ref<CommandBuffer>    CreateCommandBuffer( QueueType type );
+        Ref<Buffer>           CreateBuffer( const BufferDesc& desc );
+        Ref<Texture>          CreateTexture( const TextureDesc& desc );
+        Ref<Shader>           CreateShader( const std::string& filepath );
+        Ref<ComputePipeline>  CreateComputePipeline( const ComputePipelineDesc& desc );
+        Ref<GraphicsPipeline> CreateGraphicsPipeline( const GraphicsPipelineDesc& desc );
+
+        Result AllocateDescriptor( VkDescriptorSetLayout layout, VkDescriptorSet& outSet );
+        void   ResetDescriptorPools();
 
         // Convenience wrappers for textures
         Ref<Texture> CreateTexture1D( uint32_t width, VkFormat format = VK_FORMAT_R8G8B8A8_UNORM,
@@ -77,6 +84,8 @@ namespace DigitalTwin
         Ref<Queue> m_graphicsQueue;
         Ref<Queue> m_computeQueue;
         Ref<Queue> m_transferQueue;
+
+        Ref<DescriptorAllocator> m_descriptorAllocator;
 
         // --- Thread Local Command Pools Management ---
         struct PoolInfo

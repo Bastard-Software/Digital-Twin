@@ -168,6 +168,8 @@ namespace DigitalTwin
             return Result::FAIL;
         }
 
+        m_descriptorAllocator = CreateRef<DescriptorAllocator>( m_device, &m_api );
+
         DT_CORE_INFO( "Logical Device initialized. Queues indices -> G:{0} C:{1} T:{2}", indices.graphics, indices.compute, indices.transfer );
 
         return Result::SUCCESS;
@@ -177,6 +179,13 @@ namespace DigitalTwin
     {
         if( m_device == VK_NULL_HANDLE )
             return;
+
+        // Clean up descriptor pools first
+        if( m_descriptorAllocator )
+        {
+            m_descriptorAllocator->Shutdown();
+            m_descriptorAllocator.reset();
+        }
 
         // Clean up command pools before destroying the device
         {
@@ -307,6 +316,33 @@ namespace DigitalTwin
     Ref<Shader> Device::CreateShader( const std::string& filepath )
     {
         return CreateRef<Shader>( m_device, &m_api, filepath );
+    }
+
+    Ref<ComputePipeline> Device::CreateComputePipeline( const ComputePipelineDesc& desc )
+    {
+        return CreateRef<ComputePipeline>( m_device, &m_api, desc );
+    }
+
+    Ref<GraphicsPipeline> Device::CreateGraphicsPipeline( const GraphicsPipelineDesc& desc )
+    {
+        return CreateRef<GraphicsPipeline>( m_device, &m_api, desc );
+    }
+
+    Result Device::AllocateDescriptor( VkDescriptorSetLayout layout, VkDescriptorSet& outSet )
+    {
+        if( !m_descriptorAllocator )
+        {
+            return Result::FAIL;
+        }
+        return m_descriptorAllocator->Allocate( layout, outSet );
+    }
+
+    void Device::ResetDescriptorPools()
+    {
+        if( m_descriptorAllocator )
+        {
+            m_descriptorAllocator->ResetPools();
+        }
     }
 
     Ref<Texture> Device::CreateTexture1D( uint32_t width, VkFormat format, TextureUsage usage )

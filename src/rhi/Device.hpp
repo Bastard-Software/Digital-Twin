@@ -4,6 +4,7 @@
 #include "rhi/Queue.hpp"
 #include "rhi/Buffer.hpp"
 #include "rhi/Texture.hpp"
+#include "rhi/Shader.hpp"
 #include <map>
 #include <mutex>
 #include <thread>
@@ -29,6 +30,7 @@ namespace DigitalTwin
         Ref<CommandBuffer> CreateCommandBuffer( QueueType type );
         Ref<Buffer>        CreateBuffer( const BufferDesc& desc );
         Ref<Texture>       CreateTexture( const TextureDesc& desc );
+        Ref<Shader>        CreateShader( const std::string& filepath );
 
         // Convenience wrappers for textures
         Ref<Texture> CreateTexture1D( uint32_t width, VkFormat format = VK_FORMAT_R8G8B8A8_UNORM,

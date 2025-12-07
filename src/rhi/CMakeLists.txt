@@ -16,4 +16,6 @@ target_link_libraries(${PROJECT_NAME} PUBLIC
     Digital-Twin-Core
     volk                
     VulkanMemoryAllocator
+    shaderc_combined
+    spirv-reflect
 )

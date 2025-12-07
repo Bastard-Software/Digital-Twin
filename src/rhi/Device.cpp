@@ -304,6 +304,11 @@ namespace DigitalTwin
         return texture;
     }
 
+    Ref<Shader> Device::CreateShader( const std::string& filepath )
+    {
+        return CreateRef<Shader>( m_device, &m_api, filepath );
+    }
+
     Ref<Texture> Device::CreateTexture1D( uint32_t width, VkFormat format, TextureUsage usage )
     {
         auto texture = CreateRef<Texture>( m_allocator, m_device, &m_api );

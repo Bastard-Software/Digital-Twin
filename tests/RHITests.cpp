@@ -1,4 +1,6 @@
 #include "rhi/RHI.hpp"
+#include "rhi/Shader.hpp"
+#include <filesystem>
 #include <future>
 #include <gtest/gtest.h>
 #include <thread>
@@ -560,4 +562,189 @@ TEST_F( DeviceResourceTest, CreateTexture_Storage_Transfer )
     auto tex =
         device->CreateTexture2D( 128, 128, VK_FORMAT_R32_SFLOAT, TextureUsage::STORAGE | TextureUsage::TRANSFER_SRC | TextureUsage::TRANSFER_DST );
     ASSERT_NE( tex, nullptr );
+}
+
+// =================================================================================================
+// SHADER COMPILATION & REFLECTION TESTS
+// =================================================================================================
+
+class ShaderCompilationTest : public ::testing::Test
+{
+protected:
+    Ref<Device> device;
+    RHIConfig   config;
+
+    // Temporary shader file names
+    std::string computeShaderPath  = "test_compute.comp";
+    std::string vertexShaderPath   = "test_vertex.vert";
+    std::string fragmentShaderPath = "test_fragment.frag";
+
+    void SetUp() override
+    {
+        if( RHI::IsInitialized() )
+            RHI::Shutdown();
+
+        config.headless         = true;
+        config.enableValidation = false;
+        RHI::Init( config );
+
+        if( RHI::GetAdapterCount() > 0 )
+        {
+            device = RHI::CreateDevice( 0 );
+        }
+
+        // 1. Create dummy Compute Shader
+        {
+            std::ofstream out( computeShaderPath );
+            out << "#version 450\n";
+            out << "layout(local_size_x = 1) in;\n";
+            out << "struct Data { float value; };\n";
+            out << "layout(set = 0, binding = 0) buffer InBuffer { Data inData[]; };\n";
+            out << "layout(set = 0, binding = 1) buffer OutBuffer { Data outData[]; };\n";
+            out << "layout(push_constant) uniform Constants { float time; } pushConstants;\n";
+            out << "void main() { outData[gl_GlobalInvocationID.x].value = inData[gl_GlobalInvocationID.x].value * pushConstants.time; }\n";
+            out.close();
+        }
+
+        // 2. Create dummy Vertex Shader
+        {
+            std::ofstream out( vertexShaderPath );
+            out << "#version 450\n";
+            out << "layout(location = 0) in vec3 inPosition;\n";
+            out << "layout(set = 0, binding = 0) uniform Camera { mat4 viewProj; };\n";
+            out << "void main() { gl_Position = viewProj * vec4(inPosition, 1.0); }\n";
+            out.close();
+        }
+
+        // 3. Create dummy Fragment Shader
+        {
+            std::ofstream out( fragmentShaderPath );
+            out << "#version 450\n";
+            out << "layout(location = 0) out vec4 outColor;\n";
+            out << "layout(set = 0, binding = 1) uniform sampler2D texSampler;\n"; // Note binding 1
+            out << "void main() { outColor = texture(texSampler, vec2(0.5)); }\n";
+            out.close();
+        }
+    }
+
+    void TearDown() override
+    {
+        if( device )
+            RHI::DestroyDevice( device );
+        RHI::Shutdown();
+
+        // Helper lambda to cleanup files
+        auto cleanup = []( const std::string& path ) {
+            // Remove source file
+            if( std::filesystem::exists( path ) )
+                std::filesystem::remove( path );
+
+            // Remove cached SPIR-V file to force recompilation next time
+            // This is CRITICAL for tests to pass if compiler options change!
+            std::string cache = path + ".spv";
+            if( std::filesystem::exists( cache ) )
+                std::filesystem::remove( cache );
+        };
+
+        cleanup( computeShaderPath );
+        cleanup( vertexShaderPath );
+        cleanup( fragmentShaderPath );
+    }
+};
+
+TEST_F( ShaderCompilationTest, CompileComputeShader )
+{
+    if( !device )
+        GTEST_SKIP() << "No GPU found, skipping test";
+
+    auto shader = device->CreateShader( computeShaderPath );
+
+    ASSERT_NE( shader, nullptr ) << "Shader creation failed";
+    EXPECT_NE( shader->GetModule(), VK_NULL_HANDLE ) << "Vulkan shader module handle is null";
+    EXPECT_EQ( shader->GetStage(), VK_SHADER_STAGE_COMPUTE_BIT ) << "Incorrect shader stage detected";
+}
+
+TEST_F( ShaderCompilationTest, ReflectionComputeCheck )
+{
+    if( !device )
+        GTEST_SKIP() << "No GPU found, skipping test";
+
+    auto shader = device->CreateShader( computeShaderPath );
+    ASSERT_NE( shader, nullptr );
+
+    const auto& reflection = shader->GetReflectionData();
+
+    // Check InBuffer
+    ASSERT_TRUE( reflection.find( "InBuffer" ) != reflection.end() ) << "InBuffer not found. Did optimization strip names?";
+    EXPECT_EQ( reflection.at( "InBuffer" ).set, 0 );
+    EXPECT_EQ( reflection.at( "InBuffer" ).binding, 0 );
+    EXPECT_EQ( reflection.at( "InBuffer" ).type, ShaderResourceType::STORAGE_BUFFER );
+
+    // Check OutBuffer
+    ASSERT_TRUE( reflection.find( "OutBuffer" ) != reflection.end() ) << "OutBuffer not found";
+    EXPECT_EQ( reflection.at( "OutBuffer" ).set, 0 );
+    EXPECT_EQ( reflection.at( "OutBuffer" ).binding, 1 );
+    EXPECT_EQ( reflection.at( "OutBuffer" ).type, ShaderResourceType::STORAGE_BUFFER );
+
+    // Check Push Constants
+    const auto& pcs = shader->GetPushConstantRanges();
+    ASSERT_FALSE( pcs.empty() ) << "Push constants not detected";
+    EXPECT_GE( pcs[ 0 ].size, sizeof( float ) );
+}
+
+TEST_F( ShaderCompilationTest, CompileVertexShader )
+{
+    if( !device )
+        GTEST_SKIP() << "No GPU found, skipping test";
+
+    auto shader = device->CreateShader( vertexShaderPath );
+
+    ASSERT_NE( shader, nullptr );
+    EXPECT_NE( shader->GetModule(), VK_NULL_HANDLE );
+    EXPECT_EQ( shader->GetStage(), VK_SHADER_STAGE_VERTEX_BIT );
+}
+
+TEST_F( ShaderCompilationTest, ReflectionVertexCheck )
+{
+    if( !device )
+        GTEST_SKIP() << "No GPU found, skipping test";
+
+    auto shader = device->CreateShader( vertexShaderPath );
+    ASSERT_NE( shader, nullptr );
+
+    const auto& reflection = shader->GetReflectionData();
+
+    // Check Camera UBO
+    ASSERT_TRUE( reflection.find( "Camera" ) != reflection.end() ) << "Camera UBO not found";
+    EXPECT_EQ( reflection.at( "Camera" ).type, ShaderResourceType::UNIFORM_BUFFER );
+    EXPECT_EQ( reflection.at( "Camera" ).binding, 0 );
+    EXPECT_GE( reflection.at( "Camera" ).size, 64 ); // mat4
+}
+
+TEST_F( ShaderCompilationTest, CompileFragmentShader )
+{
+    if( !device )
+        GTEST_SKIP() << "No GPU found, skipping test";
+
+    auto shader = device->CreateShader( fragmentShaderPath );
+
+    ASSERT_NE( shader, nullptr );
+    EXPECT_NE( shader->GetModule(), VK_NULL_HANDLE );
+    EXPECT_EQ( shader->GetStage(), VK_SHADER_STAGE_FRAGMENT_BIT );
+}
+
+TEST_F( ShaderCompilationTest, ReflectionFragmentCheck )
+{
+    if( !device )
+        GTEST_SKIP() << "No GPU found, skipping test";
+
+    auto shader = device->CreateShader( fragmentShaderPath );
+    ASSERT_NE( shader, nullptr );
+
+    const auto& reflection = shader->GetReflectionData();
+
+    // Check Sampler
+    ASSERT_TRUE( reflection.find( "texSampler" ) != reflection.end() ) << "Sampler not found";
+    EXPECT_EQ( reflection.at( "texSampler" ).type, ShaderResourceType::SAMPLED_IMAGE );
+    EXPECT_EQ( reflection.at( "texSampler" ).binding, 1 );
 }

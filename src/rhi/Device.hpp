@@ -5,6 +5,7 @@
 #include "rhi/DescriptorAllocator.hpp"
 #include "rhi/Pipeline.hpp"
 #include "rhi/Queue.hpp"
+#include "rhi/Sampler.hpp"
 #include "rhi/Shader.hpp"
 #include "rhi/Swapchain.hpp"
 #include "rhi/Texture.hpp"
@@ -33,6 +34,7 @@ namespace DigitalTwin
         Ref<CommandBuffer>    CreateCommandBuffer( QueueType type );
         Ref<Buffer>           CreateBuffer( const BufferDesc& desc );
         Ref<Texture>          CreateTexture( const TextureDesc& desc );
+        Ref<Sampler>          CreateSampler( const SamplerDesc& desc );
         Ref<Shader>           CreateShader( const std::string& filepath );
         Ref<ComputePipeline>  CreateComputePipeline( const ComputePipelineDesc& desc );
         Ref<GraphicsPipeline> CreateGraphicsPipeline( const GraphicsPipelineDesc& desc );

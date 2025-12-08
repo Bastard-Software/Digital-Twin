@@ -313,6 +313,11 @@ namespace DigitalTwin
         return texture;
     }
 
+    Ref<Sampler> Device::CreateSampler( const SamplerDesc& desc )
+    {
+        return CreateRef<Sampler>( m_device, &m_api, desc );
+    }
+
     Ref<Shader> Device::CreateShader( const std::string& filepath )
     {
         return CreateRef<Shader>( m_device, &m_api, filepath );

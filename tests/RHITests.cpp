@@ -567,6 +567,23 @@ TEST_F( DeviceResourceTest, CreateTexture_Storage_Transfer )
 }
 
 // =================================================================================================
+// SAMPLER TESTS
+// =================================================================================================
+
+TEST_F( DeviceResourceTest, CreateSampler )
+{
+    if( !device )
+        GTEST_SKIP();
+
+    SamplerDesc desc;
+    desc.magFilter = VK_FILTER_NEAREST;
+
+    auto sampler = device->CreateSampler( desc );
+    ASSERT_NE( sampler, nullptr );
+    EXPECT_NE( sampler->GetHandle(), VK_NULL_HANDLE );
+}
+
+// =================================================================================================
 // SHADER COMPILATION & REFLECTION TESTS
 // =================================================================================================
 

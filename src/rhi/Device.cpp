@@ -62,7 +62,7 @@ namespace DigitalTwin
         features12.timelineSemaphore                = VK_TRUE;
 
         VkPhysicalDeviceVulkan13Features features13 = { VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_FEATURES };
-        features12.pNext                            = &features12;
+        features13.pNext                            = &features12;
         features13.synchronization2                 = VK_TRUE;
         features13.dynamicRendering                 = VK_TRUE;
 
@@ -326,6 +326,16 @@ namespace DigitalTwin
     Ref<GraphicsPipeline> Device::CreateGraphicsPipeline( const GraphicsPipelineDesc& desc )
     {
         return CreateRef<GraphicsPipeline>( m_device, &m_api, desc );
+    }
+
+    Ref<Swapchain> Device::CreateSwapchain( const SwapchainDesc& desc )
+    {
+        // Assuming graphics queue is used for presentation
+        VkQueue  presentQueue  = m_graphicsQueue->GetHandle();
+        uint32_t presentFamily = m_graphicsQueue->GetFamilyIndex();
+
+        // RHI::GetInstance() is available globally
+        return CreateRef<Swapchain>( m_device, m_physicalDevice, RHI::GetInstance(), presentQueue, presentFamily, &m_api, desc );
     }
 
     Result Device::AllocateDescriptor( VkDescriptorSetLayout layout, VkDescriptorSet& outSet )

@@ -6,6 +6,7 @@
 #include "rhi/Pipeline.hpp"
 #include "rhi/Queue.hpp"
 #include "rhi/Shader.hpp"
+#include "rhi/Swapchain.hpp"
 #include "rhi/Texture.hpp"
 #include <map>
 #include <mutex>
@@ -35,6 +36,7 @@ namespace DigitalTwin
         Ref<Shader>           CreateShader( const std::string& filepath );
         Ref<ComputePipeline>  CreateComputePipeline( const ComputePipelineDesc& desc );
         Ref<GraphicsPipeline> CreateGraphicsPipeline( const GraphicsPipelineDesc& desc );
+        Ref<Swapchain>        CreateSwapchain( const SwapchainDesc& desc );
 
         Result AllocateDescriptor( VkDescriptorSetLayout layout, VkDescriptorSet& outSet );
         void   ResetDescriptorPools();

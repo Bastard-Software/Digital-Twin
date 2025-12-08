@@ -1,6 +1,9 @@
 #include "rhi/RHI.hpp"
 
+#define GLFW_INCLUDE_NONE
+#include <GLFW/glfw3.h>
 #include <algorithm>
+#include <vector>
 
 namespace DigitalTwin
 {
@@ -122,6 +125,25 @@ namespace DigitalTwin
         {
             extensions.push_back( VK_EXT_DEBUG_UTILS_EXTENSION_NAME );
             layers.push_back( "VK_LAYER_KHRONOS_validation" );
+        }
+
+        if( !s_config.headless )
+        {
+            uint32_t     glfwExtensionCount = 0;
+            const char** glfwExtensions     = glfwGetRequiredInstanceExtensions( &glfwExtensionCount );
+
+            if( glfwExtensions )
+            {
+                for( uint32_t i = 0; i < glfwExtensionCount; i++ )
+                {
+                    extensions.push_back( glfwExtensions[ i ] );
+                }
+            }
+            else
+            {
+                // This might happen if GLFW wasn't initialized or running on a server without display logic
+                DT_CORE_WARN( "glfwGetRequiredInstanceExtensions returned null. Is GLFW initialized?" );
+            }
         }
 
         VkInstanceCreateInfo createInfo    = {};

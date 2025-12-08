@@ -14,6 +14,30 @@ namespace DigitalTwin
         _MAX_ENUM,
     };
 
+    // Description of a semaphore to wait on
+    struct QueueWaitInfo
+    {
+        VkSemaphore           semaphore;
+        uint64_t              value;     // Target value for Timeline, ignored (0) for Binary
+        VkPipelineStageFlags2 stageMask; // Pipeline stage that blocks waiting for this semaphore
+    };
+
+    // Description of a semaphore to signal
+    struct QueueSignalInfo
+    {
+        VkSemaphore           semaphore;
+        uint64_t              value;     // Signal value for Timeline, ignored (0) for Binary
+        VkPipelineStageFlags2 stageMask; // Pipeline stage that signals this semaphore
+    };
+
+    // Consolidated submit information
+    struct SubmitInfo
+    {
+        std::vector<VkCommandBuffer> commandBuffers;
+        std::vector<QueueWaitInfo>   waitSemaphores;
+        std::vector<QueueSignalInfo> signalSemaphores;
+    };
+
     class Queue
     {
     public:
@@ -21,12 +45,15 @@ namespace DigitalTwin
         ~Queue();
 
         /**
-         * @brief Submits a command buffer to the queue.
-         * @param commandBuffer The Vulkan command buffer to submit.
-         * @param outSignalValue [Out] The timeline semaphore value that will be signaled upon completion.
+         * @brief Submits command buffers to the queue with advanced synchronization (Vulkan 1.3).
+         * Uses vkQueueSubmit2. No Fence needed - rely on Timeline Semaphore for CPU sync.
+         * * @param info Struct containing command buffers and user-defined semaphores.
+         * @param outSignalValue [Out, Optional] Returns the value of the internal timeline semaphore for this submission.
          * @return Result::SUCCESS or Result::FAIL.
          */
+        Result Submit( const SubmitInfo& info, uint64_t* outSignalValue = nullptr );
         Result Submit( VkCommandBuffer commandBuffer, uint64_t& outSignalValue );
+
 
         bool_t      IsValueCompleted( uint64_t fenceValue );
         VkQueue     GetHandle() const { return m_queue; }

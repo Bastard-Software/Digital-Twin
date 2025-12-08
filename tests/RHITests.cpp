@@ -1,6 +1,7 @@
 #include "rhi/Pipeline.hpp"
 #include "rhi/RHI.hpp"
 #include "rhi/Shader.hpp"
+#include "platform/Window.hpp"
 #include <filesystem>
 #include <future>
 #include <gtest/gtest.h>
@@ -950,4 +951,101 @@ TEST_F( PipelineTest, CreateGraphicsPipeline )
 
     // Check Reflection Merge: FS has binding=1 at Set 0. Layout 0 should exist.
     EXPECT_NE( pipeline->GetDescriptorSetLayout( 0 ), VK_NULL_HANDLE );
+}
+
+// =================================================================================================
+// SWAPCHAIN TESTS
+// =================================================================================================
+
+class SwapchainTest : public ::testing::Test
+{
+protected:
+    Ref<Device>   device;
+    Scope<Window> window;
+    RHIConfig     config;
+
+    void SetUp() override
+    {
+        if( RHI::IsInitialized() )
+            RHI::Shutdown();
+
+        // Swapchain requires non-headless mode and a window
+        config.headless         = false;
+        config.enableValidation = true;
+
+        try
+        {
+            WindowConfig winConfig;
+            winConfig.width  = 800;
+            winConfig.height = 600;
+            winConfig.title  = "Test Swapchain";
+            window           = CreateScope<Window>( winConfig );
+        }
+        catch( ... )
+        {
+            // If window creation fails (e.g. CI without display), we handle it in test
+            return;
+        }
+
+        RHI::Init( config );
+        if( RHI::GetAdapterCount() > 0 )
+            device = RHI::CreateDevice( 0 );
+    }
+
+    void TearDown() override
+    {
+        if( device )
+            RHI::DestroyDevice( device );
+        RHI::Shutdown();
+        window.reset();
+    }
+};
+
+TEST_F( SwapchainTest, CreateSwapchainViaDevice )
+{
+    if( !device || !window )
+        GTEST_SKIP() << "Skipping Swapchain test (no window/gpu)";
+
+    SwapchainDesc desc;
+    desc.width        = window->GetWidth();
+    desc.height       = window->GetHeight();
+    desc.windowHandle = window->GetNativeWindow();
+    desc.vsync        = true;
+
+    // Use factory method from Device
+    auto swapchain = device->CreateSwapchain( desc );
+
+    ASSERT_NE( swapchain, nullptr );
+
+    // Check images
+    EXPECT_GT( swapchain->GetImageCount(), 0 );
+    EXPECT_NE( swapchain->GetImage( 0 ), VK_NULL_HANDLE );
+    EXPECT_NE( swapchain->GetImageView( 0 ), VK_NULL_HANDLE );
+
+    // Check format
+    VkFormat fmt = swapchain->GetFormat();
+    EXPECT_NE( fmt, VK_FORMAT_UNDEFINED );
+}
+
+TEST_F( SwapchainTest, AcquireNextImage )
+{
+    if( !device || !window )
+        GTEST_SKIP();
+
+    SwapchainDesc desc;
+    desc.width        = window->GetWidth();
+    desc.height       = window->GetHeight();
+    desc.windowHandle = window->GetNativeWindow();
+
+    auto swapchain = device->CreateSwapchain( desc );
+    ASSERT_NE( swapchain, nullptr );
+
+    uint32_t    imageIndex = 0;
+    VkSemaphore sem        = swapchain->AcquireNextImage( imageIndex );
+
+    // If not OUT_OF_DATE, we should get a valid semaphore
+    if( sem != VK_NULL_HANDLE )
+    {
+        EXPECT_LT( imageIndex, swapchain->GetImageCount() );
+    }
 }

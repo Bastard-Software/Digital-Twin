@@ -18,4 +18,5 @@ target_link_libraries(${PROJECT_NAME} PUBLIC
     VulkanMemoryAllocator
     shaderc_combined
     spirv-reflect
+    glfw
 )

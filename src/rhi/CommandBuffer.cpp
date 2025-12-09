@@ -144,6 +144,11 @@ namespace DigitalTwin
         m_api->vkCmdDrawIndexed( m_commandBuffer, indexCount, instanceCount, firstIndex, vertexOffset, firstInstance );
     }
 
+    void CommandBuffer::CopyBuffer( Ref<Buffer> srcBuffer, Ref<Buffer> dstBuffer, const VkBufferCopy& region )
+    {
+        m_api->vkCmdCopyBuffer( m_commandBuffer, srcBuffer->GetHandle(), dstBuffer->GetHandle(), 1, &region );
+    }
+
     void CommandBuffer::PipelineBarrier( VkPipelineStageFlags srcStage, VkPipelineStageFlags dstStage, VkDependencyFlags dependencyFlags,
                                          const std::vector<VkMemoryBarrier>& memoryBarriers, const std::vector<VkBufferMemoryBarrier>& bufferBarriers,
                                          const std::vector<VkImageMemoryBarrier>& imageBarriers )

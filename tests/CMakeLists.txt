@@ -17,7 +17,8 @@ target_link_libraries(${PROJECT_NAME} PRIVATE
     GTest::gtest
     Digital-Twin-Core       
     Digital-Twin-Runtime
-    Digital-Twin-RHI  
+    Digital-Twin-RHI
+    Digital-Twin-Streaming
 )
 
 add_test(NAME AllTests COMMAND ${PROJECT_NAME})

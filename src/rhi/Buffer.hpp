@@ -36,10 +36,11 @@ namespace DigitalTwin
         void   Destroy();
 
         // Only allowe in UPLOAD and READBACK buffers
-        void* Map();
-        void  Unmap();
-        void  Write( const void* data, size_t size, size_t offset = 0 );
-        void  Read( void* outData, size_t size, size_t offset = 0 );
+        void*  Map();
+        void   Unmap();
+        void   Write( const void* data, size_t size, size_t offset = 0 );
+        void   Read( void* outData, size_t size, size_t offset = 0 );
+        Result Invalidate( size_t size = VK_WHOLE_SIZE, size_t offset = 0 );
 
         VkDescriptorBufferInfo GetDescriptorInfo( VkDeviceSize offset = 0, VkDeviceSize range = VK_WHOLE_SIZE ) const;
 

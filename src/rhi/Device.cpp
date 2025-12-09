@@ -252,7 +252,7 @@ namespace DigitalTwin
         return pool;
     }
 
-    Ref<CommandBuffer> Device::CreateCommandBuffer( QueueType type )
+Ref<CommandBuffer> Device::CreateCommandBuffer( QueueType type )
     {
         uint32_t familyIndex = 0;
         switch( type )
@@ -270,7 +270,6 @@ namespace DigitalTwin
                 return nullptr;
         }
 
-        // Get the thread-local pool for this queue family
         VkCommandPool pool = GetOrCreateThreadLocalPool( familyIndex );
         if( pool == VK_NULL_HANDLE )
             return nullptr;
@@ -287,8 +286,8 @@ namespace DigitalTwin
             return nullptr;
         }
 
-        // Return a wrapper that manages the command buffer lifecycle
-        return CreateRef<CommandBuffer>( m_device, &m_api, pool, cmdBuffer );
+        // Pass 'type' to the CommandBuffer constructor
+        return CreateRef<CommandBuffer>( m_device, &m_api, pool, cmdBuffer, type );
     }
 
     Ref<Buffer> Device::CreateBuffer( const BufferDesc& desc )

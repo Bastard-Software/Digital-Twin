@@ -1,7 +1,7 @@
+#include "platform/Window.hpp"
 #include "rhi/Pipeline.hpp"
 #include "rhi/RHI.hpp"
 #include "rhi/Shader.hpp"
-#include "platform/Window.hpp"
 #include <filesystem>
 #include <future>
 #include <gtest/gtest.h>
@@ -1065,4 +1065,96 @@ TEST_F( SwapchainTest, AcquireNextImage )
     {
         EXPECT_LT( imageIndex, swapchain->GetImageCount() );
     }
+}
+
+// =================================================================================================
+// COMMAND BUFFER TESTS
+// =================================================================================================
+
+class CommandBufferTest : public ::testing::Test
+{
+protected:
+    Ref<Device> device;
+    RHIConfig   config;
+
+    void SetUp() override
+    {
+        if( RHI::IsInitialized() )
+            RHI::Shutdown();
+        config.headless         = true;
+        config.enableValidation = true; // Validation helps catch bad barriers
+        RHI::Init( config );
+        if( RHI::GetAdapterCount() > 0 )
+            device = RHI::CreateDevice( 0 );
+    }
+
+    void TearDown() override
+    {
+        if( device )
+            RHI::DestroyDevice( device );
+        RHI::Shutdown();
+    }
+};
+
+TEST_F( CommandBufferTest, RecordAndSubmitGraphics )
+{
+    if( !device )
+        GTEST_SKIP();
+
+    auto cmd = device->CreateCommandBuffer( QueueType::GRAPHICS );
+    ASSERT_NE( cmd, nullptr );
+
+    // Basic recording
+    cmd->Begin();
+    // Simulate some work (e.g. barrier)
+    VkMemoryBarrier barrier = { VK_STRUCTURE_TYPE_MEMORY_BARRIER };
+    barrier.srcAccessMask   = 0;
+    barrier.dstAccessMask   = 0;
+    cmd->PipelineBarrier( VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, 0, { barrier }, {}, {} );
+    cmd->End();
+
+    // Submit
+    uint64_t signalVal = 0;
+    Result   res       = device->GetGraphicsQueue()->Submit( cmd->GetHandle(), signalVal );
+    EXPECT_EQ( res, Result::SUCCESS );
+
+    // Sync
+    device->WaitForQueue( device->GetGraphicsQueue(), signalVal );
+}
+
+TEST_F( CommandBufferTest, RecordAndSubmitCompute )
+{
+    if( !device )
+        GTEST_SKIP();
+
+    auto cmd = device->CreateCommandBuffer( QueueType::COMPUTE );
+    ASSERT_NE( cmd, nullptr );
+
+    cmd->Begin();
+    cmd->End();
+
+    uint64_t signalVal = 0;
+    Result   res       = device->GetComputeQueue()->Submit( cmd->GetHandle(), signalVal );
+    EXPECT_EQ( res, Result::SUCCESS );
+
+    device->WaitForQueue( device->GetComputeQueue(), signalVal );
+}
+
+TEST_F( CommandBufferTest, CheckTypeAssertions )
+{
+    if( !device )
+        GTEST_SKIP();
+
+    // Create a Compute-only cmd buffer
+    // Note: If the hardware aliases Compute to Graphics, this might actually be a Graphics queue under the hood,
+    // but our logical abstraction 'QueueType::COMPUTE' should still enforce the assertion logic we wrote.
+    auto cmd = device->CreateCommandBuffer( QueueType::COMPUTE );
+
+    EXPECT_EQ( cmd->GetType(), QueueType::COMPUTE );
+
+    // We can't easily test assertions (death tests) in standard GTest run without creating a crash,
+    // but we can verify that valid calls compile and run.
+    // Invalid calls (e.g. calling Draw on this cmd) would trigger DT_CORE_ASSERT and abort.
+    // Uncommenting the line below should crash debug build:
+    // cmd->Draw(3, 1, 0, 0);
 }

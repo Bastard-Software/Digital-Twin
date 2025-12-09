@@ -196,6 +196,23 @@ namespace DigitalTwin
         }
     }
 
+    Result Buffer::Invalidate( size_t size, size_t offset )
+    {
+        if( m_allocation )
+        {
+            VkDeviceSize dataSize = ( size == VK_WHOLE_SIZE ) ? m_size : size;
+
+            VkResult res = vmaInvalidateAllocation( m_allocator, m_allocation, offset, dataSize );
+            if( res != VK_SUCCESS )
+            {
+                DT_CORE_ERROR( "Buffer Invalidate failed!" );
+                return Result::FAIL;
+            }
+            return Result::SUCCESS;
+        }
+        return Result::FAIL;
+    }
+
     VkDescriptorBufferInfo Buffer::GetDescriptorInfo( VkDeviceSize offset, VkDeviceSize range ) const
     {
         VkDescriptorBufferInfo info{};

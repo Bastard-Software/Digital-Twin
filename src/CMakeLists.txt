@@ -10,6 +10,7 @@ add_subdirectory(platform)
 add_subdirectory(runtime)
 add_subdirectory(simulation)
 add_subdirectory(rhi)
+add_subdirectory(streaming)
 
 # build lib
 add_library(${PROJECT_NAME} INTERFACE)
@@ -22,6 +23,7 @@ target_link_libraries(${PROJECT_NAME} INTERFACE
     Digital-Twin-Simulation
     Digital-Twin-Runtime
     Digital-Twin-RHI
+    Digital-Twin-Streaming
 )
 
 # build bindings
@@ -37,6 +39,7 @@ target_link_libraries(${PROJECT_NAME}-Python PRIVATE
     Digital-Twin-Runtime
     Digital-Twin-Core
     Digital-Twin-RHI
+    Digital-Twin-Streaming
     nanobind-static
 )
 

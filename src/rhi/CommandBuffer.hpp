@@ -64,12 +64,14 @@ namespace DigitalTwin
             m_api->vkCmdPushConstants( m_commandBuffer, layout, stageFlags, offset, sizeof( T ), &data );
         }
 
-        // --- Dispatch & Draw ---
+        // --- Copy, Dispatch & Draw ---
         void Dispatch( uint32_t groupCountX, uint32_t groupCountY, uint32_t groupCountZ ); // Compute/Graphics
 
         void Draw( uint32_t vertexCount, uint32_t instanceCount, uint32_t firstVertex, uint32_t firstInstance ); // Graphics Only
         void DrawIndexed( uint32_t indexCount, uint32_t instanceCount, uint32_t firstIndex, int32_t vertexOffset,
                           uint32_t firstInstance ); // Graphics Only
+
+        void CopyBuffer( Ref<Buffer> srcBuffer, Ref<Buffer> dstBuffer, const VkBufferCopy& region );
 
         // --- Synchronization ---
         void PipelineBarrier( VkPipelineStageFlags srcStage, VkPipelineStageFlags dstStage, VkDependencyFlags dependencyFlags,

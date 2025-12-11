@@ -59,7 +59,6 @@ TEST_F( StreamingTests, UploadAndReadbackLoop )
     BufferDesc bufDesc;
     bufDesc.size            = 1024;
     bufDesc.type            = BufferType::STORAGE;
-    bufDesc.additionalUsage = VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_TRANSFER_SRC_BIT;
 
     auto gpuBuffer = device->CreateBuffer( bufDesc );
     ASSERT_NE( gpuBuffer, nullptr );

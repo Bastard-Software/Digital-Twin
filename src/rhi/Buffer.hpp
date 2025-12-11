@@ -14,16 +14,15 @@ namespace DigitalTwin
         UNIFORM,
         VERTEX,
         INDEX,
-        INDIRECT
+        INDIRECT,
+        ATOMIC_COUNTER,
+        _MAX_ENUM
     };
 
     struct BufferDesc
     {
         VkDeviceSize size = 0;
         BufferType   type = BufferType::STORAGE;
-
-        // Optional: Additional Vulkan usage flags (e.g., if we want TRANSFER_SRC on a STORAGE buffer)
-        VkBufferUsageFlags additionalUsage = 0;
     };
 
     class Buffer

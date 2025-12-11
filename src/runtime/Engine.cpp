@@ -1,74 +1,144 @@
 #include "runtime/Engine.hpp"
 
+#include "core/Log.hpp"
 #include "rhi/RHI.hpp"
+#include "simulation/Simulation.hpp"
+#include <chrono>
+#include <thread>
 
 namespace DigitalTwin
 {
-    bool_t        Engine::s_initialized = false;
-    bool_t        Engine::s_headless    = true;
-    Scope<Window> Engine::s_window      = nullptr;
+    Engine::Engine() = default;
 
-    void Engine::Init( const EngineConfig& config )
+    Engine::~Engine()
     {
-        DigitalTwin::Log::Init();
+        Shutdown();
+    }
 
-        if( s_initialized )
+    Result Engine::Init( const EngineConfig& config )
+    {
+        // 1. Initialize Logging
+        Log::Init();
+
+        if( m_initialized )
         {
-            DT_CORE_WARN( "Engine already initialized!" );
-            return;
+            DT_CORE_WARN( "[Engine] Already initialized!" );
+            return Result::SUCCESS;
         }
-        s_headless = config.headless;
 
-        // 1. Create Window (if not headless)
-        if( !s_headless )
+        m_config = config;
+        DT_CORE_INFO( "[Engine] Initializing... Mode: {} ({}x{})", m_config.headless ? "HEADLESS" : "GRAPHICS", m_config.width, m_config.height );
+
+        // 2. Create Window (if not headless)
+        if( !m_config.headless )
         {
-            DT_CORE_INFO( "Mode: GRAPHICS (Windowed)" );
             WindowConfig winConfig;
-            winConfig.width  = config.width;
-            winConfig.height = config.height;
-            s_window         = CreateScope<Window>( winConfig );
-        }
-        else
-        {
-            DT_CORE_INFO( "Mode: HEADLESS (Compute Only)" );
+            winConfig.width  = m_config.width;
+            winConfig.height = m_config.height;
+            winConfig.title  = "Digital Twin Simulation";
+            m_window         = CreateScope<Window>( winConfig );
         }
 
-        // 2. Initialize RHI
+        // 3. Initialize RHI Core (Volk, Instance)
         RHIConfig rhiConfig;
-        rhiConfig.headless         = s_headless;
-        rhiConfig.enableValidation = true; // Debug default
-        RHI::Init( rhiConfig );
+        rhiConfig.enableValidation = true;
+        rhiConfig.headless         = m_config.headless;
 
-        // 3. Create Default Device (Adapter 0)
-        // Note: In the future, we might want to select the best adapter based on capabilities
-        if( RHI::GetAdapterCount() > 0 )
+        if( RHI::Init( rhiConfig ) != Result::SUCCESS )
         {
-            // RHI::CreateDevice(0); // Optional: Engine usually manages the device lifetime
+            DT_CORE_CRITICAL( "[Engine] Failed to initialize RHI!" );
+            return Result::FAIL;
         }
 
-        s_initialized = true;
+        // 4. Create GPU Device (Adapter 0 - usually discrete GPU)
+        // Note: In a robust engine, we would select the best adapter.
+        m_device = RHI::CreateDevice( 0 );
+        if( !m_device )
+        {
+            DT_CORE_CRITICAL( "[Engine] Failed to create Logical Device!" );
+            return Result::FAIL;
+        }
+
+        // 5. Initialize Streaming Manager (Data Transport)
+        m_streamingManager = CreateRef<StreamingManager>( m_device );
+        if( m_streamingManager->Init() != Result::SUCCESS )
+        {
+            DT_CORE_CRITICAL( "[Engine] Failed to initialize StreamingManager!" );
+            return Result::FAIL;
+        }
+
+        m_initialized = true;
+        return Result::SUCCESS;
     }
 
     void Engine::Shutdown()
     {
-        if( !s_initialized )
-            return;
+        if( m_initialized )
+        {
+            DT_CORE_INFO( "[Engine] Shutting down..." );
 
-        // RHI must be shutdown BEFORE the window, because Surface depends on Window
-        RHI::Shutdown();
+            // Wait for GPU to finish all work before destroying resources
+            if( m_device )
+            {
+                m_device->GetAPI().vkDeviceWaitIdle( m_device->GetHandle() );
+            }
 
-        // Destroy Window
-        s_window.reset();
+            // Release managers first (they hold buffers)
+            m_streamingManager.reset();
 
-        s_initialized = false;
-        DT_CORE_INFO( "Engine shutdown." );
+            // Destroy Device using RHI helper
+            if( m_device )
+            {
+                RHI::DestroyDevice( m_device );
+                m_device.reset();
+            }
+
+            // Destroy Window
+            m_window.reset();
+
+            // Shutdown RHI Core
+            RHI::Shutdown();
+
+            m_initialized = false;
+        }
     }
 
-    void Engine::Update()
+    void Engine::Run( Simulation& simulation )
     {
-        if( s_window )
+        DT_CORE_INFO( "[Engine] Starting Main Loop..." );
+
+        // Fixed timestep for physics/biology (e.g. 10ms = 100Hz)
+        const double dt      = 0.01;
+        bool         running = true;
+
+        while( running )
         {
-            s_window->OnUpdate();
+            // 1. Platform Events
+            if( m_window )
+            {
+                m_window->OnUpdate();
+                if( m_window->IsClosed() )
+                    running = false;
+            }
+
+            // 2. Simulation Step (Compute)
+            simulation.Step( static_cast<float>( dt ) );
+
+            // 3. Rendering (Placeholder)
+            // if (!m_config.headless) renderer.Draw(simulation.GetContext());
+
+            // 4. Frame Limiter / VSync emulation
+            std::this_thread::sleep_for( std::chrono::milliseconds( 16 ) ); // ~60 FPS
+
+            m_frameCounter++;
+
+            // For PoC safety: Stop after some frames if headless
+            if( m_config.headless && m_frameCounter > 1000 )
+            {
+                running = false;
+            }
         }
+
+        DT_CORE_INFO( "[Engine] Loop finished after {} frames.", m_frameCounter );
     }
 } // namespace DigitalTwin

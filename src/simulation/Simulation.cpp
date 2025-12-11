@@ -1,49 +1,67 @@
 #include "simulation/Simulation.hpp"
 
-#include "core/Base.hpp"
+#include "core/Log.hpp"
 #include "runtime/Engine.hpp"
-#include <glm/glm.hpp>
 
 namespace DigitalTwin
 {
-    Simulation::Simulation()
-        : m_currentStep( 0 )
+    Simulation::Simulation( Engine& engine )
+        : m_engine( engine )
     {
-        if( !Engine::IsInitialized() )
-        {
-            DT_CORE_WARN( "Simulation started without explicit Engine initialization. Using defaults." );
-
-            EngineConfig defaultConfig;
-            defaultConfig.headless = false;
-            Engine::Init( defaultConfig );
-        }
-
-        DT_CORE_INFO( "Simulation created" );
-        glm::vec4 temp = glm::vec4( 1.0f );
-        temp;
-        auto entity = m_registry.create();
-        entity;
+        // Simulation owns the context
+        m_context = CreateScope<SimulationContext>( engine.GetDevice() );
     }
 
     Simulation::~Simulation()
     {
-        DT_CORE_INFO( "Simulation destroyed" );
+        if( m_context )
+            m_context->Shutdown();
     }
 
-    void Simulation::Init()
+    void Simulation::SetMicroenvironment( float viscosity, float gravity )
     {
-        DT_CORE_TRACE( "Simulation initialized\n" );
-        m_currentStep = 0;
+        m_envParams.viscosity = viscosity;
+        m_envParams.gravity   = gravity;
     }
 
-    void Simulation::Step()
+    void Simulation::SpawnCell( glm::vec3 position, glm::vec3 velocity, glm::vec4 phenotypeColor )
     {
-        ++m_currentStep;
-        DT_CORE_TRACE( "Simulation step %u executed\n", m_currentStep );
+        Cell cell{};
+        cell.position = glm::vec4( position, 1.0f ); // w = radius
+        cell.velocity = glm::vec4( velocity, 0.0f );
+        cell.color    = phenotypeColor;
+        m_initialCells.push_back( cell );
     }
 
-    bool_t Simulation::IsComplete() const
+    void Simulation::InitializeGPU()
     {
-        return m_currentStep >= m_config.maxSteps;
+        DT_CORE_INFO( "[Simulation] Initializing GPU resources for {} cells...", m_initialCells.size() );
+
+        // 1. Allocate GPU memory
+        // Allocate at least 1024 or the size of initial cells to avoid 0-size buffers
+        uint32_t capacity = std::max( ( uint32_t )m_initialCells.size(), 1024u );
+        m_context->Init( capacity );
+
+        // 2. Upload Initial State (Cells + Atomic Counter)
+        auto streamer = m_engine.GetStreamingManager();
+
+        streamer->BeginFrame( 0 ); // Use frame 0 slot for init
+        m_context->UploadState( streamer.get(), m_initialCells );
+        streamer->EndFrame();
+
+        // Wait for upload to ensure GPU is ready before first compute dispatch
+        streamer->WaitForTransferComplete();
+
+        DT_CORE_INFO( "[Simulation] GPU Initialization Complete. Active Agents: {}", m_initialCells.size() );
+
+        // Optional: clear CPU memory if not needed anymore
+        // m_initialCells.clear();
+    }
+
+    void Simulation::Step( float dt )
+    {
+        // Placeholder for Compute Dispatch
+        // In the next step (Compute Kernel), we will invoke the compute system here.
+        // m_computeSystem->Dispatch(m_context, dt);
     }
 } // namespace DigitalTwin

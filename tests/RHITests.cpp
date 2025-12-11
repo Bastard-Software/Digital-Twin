@@ -510,6 +510,14 @@ TEST_F( DeviceResourceTest, CreateBuffer_INDIRECT )
     ASSERT_NE( buffer, nullptr );
 }
 
+TEST_F( DeviceResourceTest, CreateBuffer_ATOMIC_COUNTER )
+{
+    if( !device )
+        GTEST_SKIP();
+    auto buffer = device->CreateBuffer( { 4, BufferType::ATOMIC_COUNTER } );
+    ASSERT_NE( buffer, nullptr );
+}
+
 // =================================================================================================
 // TEXTURE TESTS - Verify Types and Usage Combinations
 // =================================================================================================

@@ -67,7 +67,7 @@ namespace DigitalTwin
             case BufferType::UPLOAD:
                 // CPU -> GPU (Staging).
                 // VMA_MEMORY_USAGE_CPU_TO_GPU guarantees HOST_VISIBLE and HOST_COHERENT.
-                bufferInfo.usage = VK_BUFFER_USAGE_TRANSFER_SRC_BIT;
+                bufferInfo.usage = VK_BUFFER_USAGE_TRANSFER_SRC_BIT | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT;
                 allocInfo.usage  = VMA_MEMORY_USAGE_CPU_TO_GPU;
                 allocInfo.flags  = VMA_ALLOCATION_CREATE_MAPPED_BIT;
                 break;
@@ -75,7 +75,7 @@ namespace DigitalTwin
             case BufferType::READBACK:
                 // GPU -> CPU.
                 // VMA_MEMORY_USAGE_GPU_TO_CPU guarantees HOST_VISIBLE and preferably HOST_CACHED.
-                bufferInfo.usage = VK_BUFFER_USAGE_TRANSFER_DST_BIT;
+                bufferInfo.usage = VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT;
                 allocInfo.usage  = VMA_MEMORY_USAGE_GPU_TO_CPU;
                 allocInfo.flags  = VMA_ALLOCATION_CREATE_MAPPED_BIT;
                 break;
@@ -113,10 +113,13 @@ namespace DigitalTwin
                                    VK_BUFFER_USAGE_TRANSFER_DST_BIT; // TODO: Do we need this flags?
                 allocInfo.usage = VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE;
                 break;
+            case BufferType::ATOMIC_COUNTER:
+                // Atomic Counter is just a small STORAGE buffer (4 bytes).
+                bufferInfo.usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_TRANSFER_SRC_BIT |
+                                   VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT;
+                allocInfo.usage = VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE;
+                break;
         }
-
-        // Apply additional user-specified flags
-        bufferInfo.usage |= desc.additionalUsage;
 
         VmaAllocationInfo resultInfo;
         if( vmaCreateBuffer( m_allocator, &bufferInfo, &allocInfo, &m_buffer, &m_allocation, &resultInfo ) != VK_SUCCESS )

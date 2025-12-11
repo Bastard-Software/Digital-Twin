@@ -31,9 +31,6 @@ namespace DigitalTwin
             BufferDesc uploadDesc{};
             uploadDesc.size = UPLOAD_HEAP_SIZE;
             uploadDesc.type = BufferType::UPLOAD;
-            // Usage: Transfer Source (for staging), Uniforms, Storage, Device Address
-            uploadDesc.additionalUsage = VK_BUFFER_USAGE_TRANSFER_SRC_BIT | VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT | VK_BUFFER_USAGE_STORAGE_BUFFER_BIT |
-                                         VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT;
 
             f.uploadHeap = m_device->CreateBuffer( uploadDesc );
             if( !f.uploadHeap )
@@ -44,8 +41,6 @@ namespace DigitalTwin
             BufferDesc readbackDesc{};
             readbackDesc.size            = READBACK_HEAP_SIZE;
             readbackDesc.type            = BufferType::READBACK;
-            readbackDesc.additionalUsage = VK_BUFFER_USAGE_TRANSFER_DST_BIT;
-
             f.readbackHeap = m_device->CreateBuffer( readbackDesc );
             if( !f.readbackHeap )
                 return Result::FAIL;

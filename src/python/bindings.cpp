@@ -6,6 +6,7 @@
 
 namespace nb = nanobind;
 
+/*
 void bind_engine_config( nb::module_& m )
 {
     nb::class_<DigitalTwin::EngineConfig>( m, "EngineConfig" ).def( nb::init<>() ).def_rw( "headless", &DigitalTwin::EngineConfig::headless );
@@ -42,13 +43,16 @@ void bind_simulation( nb::module_& m )
             return "Simulation(current_step=" + std::to_string( sim.GetCurrentStep() ) + ", is_complete=" + std::to_string( sim.IsComplete() ) + ")";
         } );
 }
+*/
 
 NB_MODULE( DigitalTwin, m )
 {
     m.doc() = "Digital Twin Python bindings";
 
+    /*
     bind_engine_config( m );
     bind_engine( m );
     bind_simulation_config( m );
     bind_simulation( m );
+    */
 }

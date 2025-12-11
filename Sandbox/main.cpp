@@ -1,23 +1,44 @@
-#include <simulation/Simulation.hpp>
-#include <core/Base.hpp>
-#include <runtime/Engine.hpp>
+#include "core/Log.hpp"
+#include "runtime/Engine.hpp"
+#include "simulation/Simulation.hpp"
+
+using namespace DigitalTwin;
 
 int main()
 {
-    DigitalTwin::EngineConfig engineConfig;
-    engineConfig.headless = false;
-    DigitalTwin::Engine::Init( engineConfig );
+    // 1. Configure Engine
+    EngineConfig config;
+    config.headless = false; // We want a window!
+    config.width    = 1280;
+    config.height   = 720;
 
-    DT_INFO( "=== CellSim Minimal Demo ===\n" );
-
-    DigitalTwin::Simulation sim;
-    sim.Init();
-
-    while( !sim.IsComplete() )
+    // 2. Initialize Runtime
+    Engine engine;
+    if( engine.Init( config ) != Result::SUCCESS )
     {
-        sim.Step();
+        DT_CORE_CRITICAL( "Engine failed to initialize!" );
+        return -1;
     }
 
-    DT_TRACE( "=== Demo finished after %u steps ===\n", sim.GetCurrentStep() );
+    // 3. Configure Simulation (The "Biological" part)
+    Simulation sim( engine );
+
+    sim.SetMicroenvironment( 0.5f, 9.81f );
+
+    DT_CORE_INFO( "Spawning initial population..." );
+    for( int i = 0; i < 1000; ++i )
+    {
+        sim.SpawnCell( { ( float )i * 0.1f, 0.0f, 0.0f }, // Position
+                       { 0.1f, 0.0f, 0.0f },              // Velocity
+                       { 1.0f, 0.0f, 0.0f, 1.0f }         // Color (Red)
+        );
+    }
+
+    // 4. Upload Config to GPU
+    sim.InitializeGPU();
+
+    // 5. Run Main Loop
+    engine.Run( sim );
+
     return 0;
 }

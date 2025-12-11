@@ -60,6 +60,7 @@ namespace DigitalTwin
 
         VkPhysicalDeviceVulkan12Features features12 = { VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES };
         features12.timelineSemaphore                = VK_TRUE;
+        features12.bufferDeviceAddress              = VK_TRUE;
 
         VkPhysicalDeviceVulkan13Features features13 = { VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_FEATURES };
         features13.pNext                            = &features12;

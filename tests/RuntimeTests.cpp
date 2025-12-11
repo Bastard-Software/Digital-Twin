@@ -1,3 +1,4 @@
+#include "rhi/RHI.hpp"
 #include "runtime/Engine.hpp"
 #include <gtest/gtest.h>
 
@@ -8,17 +9,20 @@ class RuntimeTest : public ::testing::Test
 protected:
     void SetUp() override
     {
-        if( Engine::IsInitialized() )
+        // Ensure clean state before each test
+        // Engine::Init calls RHI::Init, so we must ensure RHI is down.
+        if( RHI::IsInitialized() )
         {
-            Engine::Shutdown();
+            RHI::Shutdown();
         }
     }
 
     void TearDown() override
     {
-        if( Engine::IsInitialized() )
+        // Cleanup global RHI if the test left it initialized
+        if( RHI::IsInitialized() )
         {
-            Engine::Shutdown();
+            RHI::Shutdown();
         }
     }
 };
@@ -28,26 +32,29 @@ TEST_F( RuntimeTest, ShouldInitializeSuccessfully )
     // Arrange
     EngineConfig config;
     config.headless = true;
+    Engine engine;
 
     // Act
-    Engine::Init( config );
+    Result res = engine.Init( config );
 
     // Assert
-    EXPECT_TRUE( Engine::IsInitialized() ) << "Engine should be initialized after Init call";
-    EXPECT_TRUE( Engine::IsHeadless() ) << "Engine should be in headless mode based on config";
+    EXPECT_EQ( res, Result::SUCCESS );
+    EXPECT_TRUE( engine.IsInitialized() ) << "Engine should be initialized after Init call";
+    EXPECT_TRUE( engine.IsHeadless() ) << "Engine should be in headless mode based on config";
 }
 
 TEST_F( RuntimeTest, ShouldShutdownCorrectly )
 {
     // Arrange
-    Engine::Init();
-    EXPECT_TRUE( Engine::IsInitialized() );
+    Engine engine;
+    engine.Init(); // Default config is headless=true
+    EXPECT_TRUE( engine.IsInitialized() );
 
     // Act
-    Engine::Shutdown();
+    engine.Shutdown();
 
     // Assert
-    EXPECT_FALSE( Engine::IsInitialized() ) << "Engine should not be initialized after Shutdown";
+    EXPECT_FALSE( engine.IsInitialized() ) << "Engine should not be initialized after Shutdown";
 }
 
 TEST_F( RuntimeTest, DefaultConfigIsHeadless )

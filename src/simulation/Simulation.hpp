@@ -1,34 +1,56 @@
 #pragma once
-#include <cstdint>
-#include <stdio.h>
-#include <entt/entt.hpp>
+#include "simulation/SimulationContext.hpp"
+#include "simulation/Types.hpp"
+#include <glm/glm.hpp>
+#include <memory>
+#include <vector>
 
 namespace DigitalTwin
 {
-    using bool_t    = bool;
-    using float32_t = float;
-    using float64_t = double;
+    class Engine; // Forward declaration
 
-    struct SimulationConfig
-    {
-        uint32_t maxSteps = 100;
-    };
-
+    /**
+     * @brief High-level API for defining and controlling biological simulations.
+     * Decoupled from low-level rendering/compute details.
+     */
     class Simulation
     {
     public:
-        Simulation();
+        // Simulation needs the Engine to access GPU resources
+        Simulation( Engine& engine );
         ~Simulation();
 
-        void Init();
-        void Step();
+        // --- Biological API ---
 
-        bool_t   IsComplete() const;
-        uint32_t GetCurrentStep() const { return m_currentStep; }
+        /**
+         * @brief Sets global microenvironment parameters.
+         */
+        void SetMicroenvironment( float viscosity, float gravity );
+
+        /**
+         * @brief Spawns a new cell. Added to CPU staging list until InitializeGPU() is called.
+         */
+        void SpawnCell( glm::vec3 position, glm::vec3 velocity, glm::vec4 phenotypeColor );
+
+        /**
+         * @brief Finalizes configuration, allocates GPU memory, and uploads initial state.
+         * MUST be called before Engine::Run().
+         */
+        void InitializeGPU();
+
+        // --- Internal System API (Called by Engine) ---
+
+        void Step( float dt );
+
+        // Expose context for Renderer/Compute systems
+        SimulationContext* GetContext() { return m_context.get(); }
 
     private:
-        uint32_t         m_currentStep;
-        SimulationConfig m_config;
-        entt::registry   m_registry;
+        Engine&                            m_engine;
+        std::unique_ptr<SimulationContext> m_context;
+
+        // Staging data on CPU (initial configuration)
+        std::vector<Cell> m_initialCells;
+        EnvironmentParams m_envParams{};
     };
 } // namespace DigitalTwin

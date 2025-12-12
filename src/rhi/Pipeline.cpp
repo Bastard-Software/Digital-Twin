@@ -120,6 +120,30 @@ namespace DigitalTwin
                 api->vkDestroyDescriptorSetLayout( device, layout, nullptr );
             }
         }
+
+        ShaderReflectionData MergeReflectionData( const std::vector<Ref<Shader>>& shaders )
+        {
+            ShaderReflectionData merged;
+
+            for( const auto& shader: shaders )
+            {
+                if( !shader )
+                    continue;
+
+                const auto& stageResources = shader->GetReflectionData();
+                for( const auto& [ name, resource ]: stageResources )
+                {
+                    // Insert if not exists.
+                    // If the same resource name exists (e.g., "GlobalUniforms" in Vert and Frag),
+                    // we assume it maps to the same binding/set configuration.
+                    if( merged.find( name ) == merged.end() )
+                    {
+                        merged[ name ] = resource;
+                    }
+                }
+            }
+            return merged;
+        }
     } // namespace PipelineUtils
 
     ComputePipeline::ComputePipeline( VkDevice device, const VolkDeviceTable* api, const ComputePipelineDesc& desc, VkPipelineCache cache )
@@ -129,7 +153,8 @@ namespace DigitalTwin
         DT_CORE_ASSERT( desc.shader, "ComputePipeline requires a shader!" );
 
         // 1. Create Layouts (Layouts are owned by this pipeline instance)
-        m_resources = PipelineUtils::CreatePipelineLayout( m_device, m_api, { desc.shader } );
+        m_resources      = PipelineUtils::CreatePipelineLayout( m_device, m_api, { desc.shader } );
+        m_reflectionData = desc.shader->GetReflectionData();
 
         // 2. Create Pipeline
         VkComputePipelineCreateInfo pipelineInfo = { VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO };
@@ -169,7 +194,8 @@ namespace DigitalTwin
         if( desc.fragmentShader )
             shaders.push_back( desc.fragmentShader );
 
-        m_resources = PipelineUtils::CreatePipelineLayout( m_device, m_api, shaders );
+        m_resources      = PipelineUtils::CreatePipelineLayout( m_device, m_api, shaders );
+        m_reflectionData = PipelineUtils::MergeReflectionData( shaders );
 
         // 2. Shader Stages
         std::vector<VkPipelineShaderStageCreateInfo> shaderStages;

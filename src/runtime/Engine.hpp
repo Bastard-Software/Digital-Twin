@@ -50,6 +50,9 @@ namespace DigitalTwin
         Window*               GetWindow() const { return m_window.get(); }
         const EngineConfig&   GetConfig() const { return m_config; }
 
+        // Added: Accessor for the current frame number (needed for StreamingManager synchronization)
+        uint64_t GetFrameCount() const { return m_frameCounter; }
+
         // Status checks
         bool IsHeadless() const { return m_config.headless; }
         bool IsInitialized() const { return m_initialized; }

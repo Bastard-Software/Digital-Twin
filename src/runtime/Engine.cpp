@@ -121,13 +121,17 @@ namespace DigitalTwin
                     running = false;
             }
 
-            // 2. Simulation Step (Compute)
+            // 2. Clear Descriptor Pools (CRITICAL for BindingGroup/Transient descriptors)
+            // This ensures we don't leak descriptor sets over time.
+            m_device->ResetDescriptorPools();
+
+            // 3. Simulation Step (Compute)
             simulation.Step( static_cast<float>( dt ) );
 
-            // 3. Rendering (Placeholder)
+            // 4. Rendering (Placeholder)
             // if (!m_config.headless) renderer.Draw(simulation.GetContext());
 
-            // 4. Frame Limiter / VSync emulation
+            // 5. Frame Limiter / VSync emulation
             std::this_thread::sleep_for( std::chrono::milliseconds( 16 ) ); // ~60 FPS
 
             m_frameCounter++;

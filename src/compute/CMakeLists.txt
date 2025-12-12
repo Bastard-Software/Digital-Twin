@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.24)
 
-project(Digital-Twin-Simulation)
+project(Digital-Twin-Compute)
 
 file(GLOB_RECURSE SOURCE_FILES "*.cpp" "*.hpp")
 
@@ -10,15 +10,9 @@ add_library(${PROJECT_NAME} STATIC ${SOURCE_FILES})
 
 target_include_directories(${PROJECT_NAME} PUBLIC
     ${CMAKE_CURRENT_SOURCE_DIR}/.. 
-    ${EXTERNAL_DIR}/entt/src
-    ${EXTERNAL_DIR}/glm
 )
 
 target_link_libraries(${PROJECT_NAME} PUBLIC
     Digital-Twin-Core
-    Digital-Twin-Runtime
-    Digital-Twin-Streaming
     Digital-Twin-RHI
-    Digital-Twin-Compute
-    entt
 )

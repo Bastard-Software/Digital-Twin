@@ -43,6 +43,12 @@ namespace DigitalTwin
         Result AllocateDescriptor( VkDescriptorSetLayout layout, VkDescriptorSet& outSet );
         void   ResetDescriptorPools();
 
+        /**
+         * @brief Updates descriptor sets with the provided writes.
+         * Wraps vkUpdateDescriptorSets to keep raw Vulkan calls out of high-level logic.
+         */
+        void UpdateDescriptorSets( const std::vector<VkWriteDescriptorSet>& writes );
+
         // Convenience wrappers for textures
         Ref<Texture> CreateTexture1D( uint32_t width, VkFormat format = VK_FORMAT_R8G8B8A8_UNORM,
                                       TextureUsage usage = TextureUsage::SAMPLED | TextureUsage::STORAGE );
@@ -89,7 +95,7 @@ namespace DigitalTwin
         Ref<Queue> m_computeQueue;
         Ref<Queue> m_transferQueue;
 
-        Ref<DescriptorAllocator> m_descriptorAllocator;
+        Scope<DescriptorAllocator> m_descriptorAllocator;
 
         // --- Thread Local Command Pools Management ---
         struct PoolInfo

@@ -169,7 +169,7 @@ namespace DigitalTwin
             return Result::FAIL;
         }
 
-        m_descriptorAllocator = CreateRef<DescriptorAllocator>( m_device, &m_api );
+        m_descriptorAllocator = CreateScope<DescriptorAllocator>( m_device, &m_api );
 
         DT_CORE_INFO( "Logical Device initialized. Queues indices -> G:{0} C:{1} T:{2}", indices.graphics, indices.compute, indices.transfer );
 
@@ -253,7 +253,7 @@ namespace DigitalTwin
         return pool;
     }
 
-Ref<CommandBuffer> Device::CreateCommandBuffer( QueueType type )
+    Ref<CommandBuffer> Device::CreateCommandBuffer( QueueType type )
     {
         uint32_t familyIndex = 0;
         switch( type )
@@ -358,6 +358,15 @@ Ref<CommandBuffer> Device::CreateCommandBuffer( QueueType type )
         {
             m_descriptorAllocator->ResetPools();
         }
+    }
+
+    void Device::UpdateDescriptorSets( const std::vector<VkWriteDescriptorSet>& writes )
+    {
+        if( writes.empty() )
+            return;
+
+        // Use the device-specific function pointer table
+        m_api.vkUpdateDescriptorSets( m_device, static_cast<uint32_t>( writes.size() ), writes.data(), 0, nullptr );
     }
 
     Ref<Texture> Device::CreateTexture1D( uint32_t width, VkFormat format, TextureUsage usage )

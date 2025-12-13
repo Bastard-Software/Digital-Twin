@@ -21,6 +21,7 @@ target_link_libraries(${PROJECT_NAME} PRIVATE
     Digital-Twin-Streaming
     Digital-Twin-Compute
     Digital-Twin-Simulation
+    Digital-Twin-Renderer
 )
 
 add_test(NAME AllTests COMMAND ${PROJECT_NAME})

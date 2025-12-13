@@ -30,7 +30,7 @@ namespace DigitalTwin
         /**
          * @brief Spawns a new cell. Added to CPU staging list until InitializeGPU() is called.
          */
-        void SpawnCell( glm::vec3 position, glm::vec3 velocity, glm::vec4 phenotypeColor );
+        void SpawnCell( glm::vec4 position, glm::vec3 velocity, glm::vec4 phenotypeColor );
 
         /**
          * @brief Finalizes configuration, allocates GPU memory, and uploads initial state.

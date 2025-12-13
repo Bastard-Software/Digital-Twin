@@ -21,6 +21,7 @@ namespace DigitalTwin
         ~Window();
 
         void OnUpdate();
+        void Show();
 
         uint32_t GetWidth() const { return m_data.width; }
         uint32_t GetHeight() const { return m_data.height; }

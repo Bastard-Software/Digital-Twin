@@ -57,6 +57,9 @@ namespace DigitalTwin
             data.width       = width;
             data.height      = height;
         } );
+
+        // Scroll callback
+        glfwSetScrollCallback( m_window, []( GLFWwindow* window, double xoffset, double yoffset ) { Input::SetScrollY( ( float )yoffset ); } );
     }
 
     void Window::Shutdown()
@@ -74,6 +77,12 @@ namespace DigitalTwin
     void Window::OnUpdate()
     {
         glfwPollEvents();
+    }
+
+    void Window::Show()
+    {
+        if( m_window )
+            glfwShowWindow( m_window );
     }
 
     bool Window::IsClosed() const

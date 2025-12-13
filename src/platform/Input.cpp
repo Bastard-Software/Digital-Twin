@@ -4,7 +4,8 @@
 
 namespace DigitalTwin
 {
-    static GLFWwindow* s_ActiveWindow = nullptr;
+    static GLFWwindow* s_ActiveWindow   = nullptr;
+    float              Input::s_ScrollY = 0.0f;
 
     void Input::SetContext( void* windowHandle )
     {
@@ -45,4 +46,18 @@ namespace DigitalTwin
     {
         return GetMousePosition().second;
     }
+
+    float Input::GetScrollY()
+    {
+        return s_ScrollY;
+    }
+    void Input::SetScrollY( float yOffset )
+    {
+        s_ScrollY = yOffset;
+    }
+    void Input::ResetScroll()
+    {
+        s_ScrollY = 0.0f;
+    }
+
 } // namespace DigitalTwin

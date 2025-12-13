@@ -1,13 +1,9 @@
-# Funkcja pomocnicza: Rekurencyjnie ustawia folder dla wszystkich targetów w katalogu
 function(set_target_folder_recursive current_dir folder_name)
-    # Pobierz wszystkie targety w bieżącym katalogu
     get_property(targets DIRECTORY "${current_dir}" PROPERTY BUILDSYSTEM_TARGETS)
     foreach(t ${targets})
-        # Ustaw folder (np. "external/shaderc")
         set_property(TARGET ${t} PROPERTY FOLDER "${folder_name}")
     endforeach()
 
-    # Pobierz podkatalogi i wywołaj funkcję rekurencyjnie
     get_property(subdirs DIRECTORY "${current_dir}" PROPERTY SUBDIRECTORIES)
     foreach(subdir ${subdirs})
         set_target_folder_recursive("${subdir}" "${folder_name}")
@@ -141,6 +137,10 @@ if(EXISTS ${EXTERNAL_DIR}/shaderc)
     message(STATUS "Using bundled shaderc")
 else()
     message(FATAL_ERROR "shaderc not found. Run fetch_dependencies.py")
+endif()
+
+if(TARGET glslc_exe AND TARGET glslc)
+    add_dependencies(glslc_exe glslc)
 endif()
 
 # --- SPIRV-REFLECT ---

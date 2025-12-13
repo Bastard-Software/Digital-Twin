@@ -1,0 +1,49 @@
+#version 450
+
+// Thread group size (must match C++ dispatch setup)
+layout(local_size_x = 256, local_size_y = 1, local_size_z = 1) in;
+
+struct Cell {
+    vec4 position; // .xyz = position, .w = radius
+    vec4 velocity; // .xyz = velocity
+    vec4 color;    // .rgba = color
+};
+
+// Storage Buffer Binding
+layout(std430, set = 0, binding = 0) buffer CellBuffer {
+    Cell cells[];
+} population;
+
+// Simulation Constants
+const uint CELL_COUNT = 4;
+const float BOUNDS = 8.0;   // Size of the simulation box
+const float DT = 0.05;      // Fixed time step
+
+void main() {
+    uint index = gl_GlobalInvocationID.x;
+    
+    // Safety check to avoid accessing out of bounds
+    if (index >= CELL_COUNT) return;
+
+    // 1. Fetch data
+    vec3 pos = population.cells[index].position.xyz;
+    vec3 vel = population.cells[index].velocity.xyz;
+
+    // 2. Wall Collisions (Invert velocity if hitting bounds)
+    if (pos.x > BOUNDS)  { pos.x = BOUNDS;  vel.x *= -1.0; }
+    if (pos.x < -BOUNDS) { pos.x = -BOUNDS; vel.x *= -1.0; }
+    
+    if (pos.y > BOUNDS)  { pos.y = BOUNDS;  vel.y *= -1.0; }
+    if (pos.y < -BOUNDS) { pos.y = -BOUNDS; vel.y *= -1.0; }
+    
+    // Optional Z bounds (if operating in 3D depth)
+    // if (pos.z > BOUNDS)  { pos.z = BOUNDS;  vel.z *= -1.0; }
+    // if (pos.z < -BOUNDS) { pos.z = -BOUNDS; vel.z *= -1.0; }
+
+    // 3. Integration (Move position)
+    pos += vel * DT;
+
+    // 4. Write back results
+    population.cells[index].position.xyz = pos;
+    population.cells[index].velocity.xyz = vel;
+}

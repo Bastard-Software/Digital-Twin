@@ -2,125 +2,147 @@
 #include "runtime/Engine.hpp"
 #include "simulation/Simulation.hpp"
 
-// Compute headers
+// Compute
 #include "compute/ComputeEngine.hpp"
 #include "compute/ComputeGraph.hpp"
 #include "compute/ComputeKernel.hpp"
+
+// Renderer
+#include "platform/Input.hpp"
+#include "renderer/Renderer.hpp"
+#include "renderer/Scene.hpp"
 #include <filesystem>
-#include <fstream>
+#include <thread>
 
 using namespace DigitalTwin;
 
-// Helper to create a simple compute shader for testing
-void CreateTestShaderFile( const std::string& filename )
+/**
+ * @brief Helper function to locate the 'assets' directory.
+ * It searches up the directory tree (up to 5 levels) to find the shader files.
+ * This fixes issues where the build directory structure differs from the source.
+ */
+void FixWorkingDirectory()
 {
-    std::string source = R"(
-        #version 450
-        layout(local_size_x = 256, local_size_y = 1, local_size_z = 1) in;
+    std::filesystem::path currentPath = std::filesystem::current_path();
+    bool                  found       = false;
 
-        struct Cell {
-            vec4 position;
-            vec4 velocity;
-            vec4 color;
-        };
+    // We look for a specific critical file to ensure we found the valid root
+    const std::string criticalFile = "assets/shaders/graphics/cell.vert";
 
-        // Binding 0: The cell buffer from SimulationContext
-        layout(std430, set = 0, binding = 0) buffer CellBuffer {
-            Cell cells[];
-        } population;
+    DT_CORE_INFO( "Searching for assets root starting at: {}", currentPath.string() );
 
-        void main() {
-            uint index = gl_GlobalInvocationID.x;
-            
-            // Simple logic: Move cell slightly along X axis based on velocity
-            // This allows us to verify on CPU that data is actually changing
-            population.cells[index].position.x += population.cells[index].velocity.x * 0.1;
+    for( int i = 0; i < 5; ++i )
+    {
+        if( std::filesystem::exists( currentPath / criticalFile ) )
+        {
+            std::filesystem::current_path( currentPath );
+            DT_CORE_INFO( "FOUND Valid Assets Root at: {}", currentPath.string() );
+            found = true;
+            break;
         }
-    )";
 
-    std::ofstream out( filename );
-    out << source;
-    out.close();
+        if( currentPath.has_parent_path() )
+            currentPath = currentPath.parent_path();
+        else
+            break;
+    }
+
+    if( !found )
+    {
+        DT_CORE_CRITICAL( "Could not find asset: '{}' in any parent directory!", criticalFile );
+        DT_CORE_CRITICAL( "Ensure CMake has copied the shaders to the build directory or set Working Directory in VS." );
+    }
 }
 
 int main()
 {
-    // 0. Create shader asset for the test
-    const std::string shaderPath = "MoveCells.comp";
-    CreateTestShaderFile( shaderPath );
-
-    // 1. Configure Engine
+    // 1. Initialize Logging and Config
     EngineConfig config;
-    config.headless = false; // Set to true if you don't need a window
+    config.headless = false;
     config.width    = 1280;
     config.height   = 720;
 
-    // 2. Initialize Runtime
+    // 2. Initialize Engine (Window, Device, Vulkan)
     Engine engine;
     if( engine.Init( config ) != Result::SUCCESS )
-    {
-        DT_CORE_CRITICAL( "Engine failed to initialize!" );
         return -1;
-    }
 
-    // 3. Configure Simulation
-    Simulation sim( engine );
-    sim.SetMicroenvironment( 0.5f, 9.81f );
+    // 3. Set Working Directory to find shaders (must happen after Engine init logs)
+    FixWorkingDirectory();
 
-    // Spawn 10 cells for easy verification
-    DT_CORE_INFO( "Spawning initial population..." );
-    for( int i = 0; i < 10; ++i )
     {
-        sim.SpawnCell( { ( float )i * 1.0f, 0.0f, 0.0f }, // Position X = 0, 1, 2...
-                       { 1.0f, 0.0f, 0.0f },              // Velocity X = 1.0
-                       { 1.0f, 0.0f, 0.0f, 1.0f }         // Color
-        );
-    }
+        // RAII Scope: Ensures Simulation/Renderer are destroyed BEFORE Engine shutdown
 
-    // 4. Upload Config to GPU
-    sim.InitializeGPU();
+        // --- Simulation Setup ---
+        // Initialize the simulation world
+        Simulation sim( engine );
 
-    // ==========================================================================================
-    // COMPUTE SETUP
-    // ==========================================================================================
+        // Spawn 4 cells for testing collision logic.
+        // Arguments:
+        // 1. Position (Vec4): x, y, z, radius (w)
+        // 2. Velocity (Vec3): x, y, z
+        // 3. Color    (Vec4): r, g, b, a
 
-    // A. Init Compute Engine
-    auto computeEngine = CreateRef<ComputeEngine>( engine.GetDevice() );
-    computeEngine->Init();
+        // Red Cell (moving right)
+        sim.SpawnCell( glm::vec4( -4.0f, 0.0f, 0.0f, 1.0f ), glm::vec3( 2.0f, 0.5f, 0.0f ), glm::vec4( 1.0f, 0.2f, 0.2f, 1.0f ) );
 
-    // B. Create Pipeline & Kernel
-    auto                shader = engine.GetDevice()->CreateShader( shaderPath );
-    ComputePipelineDesc pipeDesc;
-    pipeDesc.shader = shader;
-    auto pipeline   = engine.GetDevice()->CreateComputePipeline( pipeDesc );
+        // Green Cell (moving left)
+        sim.SpawnCell( glm::vec4( 4.0f, 0.0f, 0.0f, 1.0f ), glm::vec3( -2.0f, -0.5f, 0.0f ), glm::vec4( 0.2f, 1.0f, 0.2f, 1.0f ) );
 
-    auto kernel = CreateRef<ComputeKernel>( engine.GetDevice(), pipeline, "MoveCells" );
-    kernel->SetGroupSize( 256, 1, 1 ); // Matches layout(local_size_x = 256)
+        // Blue Cell (moving down)
+        sim.SpawnCell( glm::vec4( 0.0f, 4.0f, 0.0f, 1.0f ), glm::vec3( 0.1f, -2.0f, 0.0f ), glm::vec4( 0.2f, 0.2f, 1.0f, 1.0f ) );
 
-    // C. Create Binding Group (Link Simulation Buffer to Shader)
-    // Note: "population" matches the instance name in the shader source above
-    auto bindings = kernel->CreateBindingGroup();
-    bindings->Set( "population", sim.GetContext()->GetCellBuffer() );
-    bindings->Build();
+        // Yellow Cell (moving up)
+        sim.SpawnCell( glm::vec4( 0.0f, -4.0f, 0.0f, 1.0f ), glm::vec3( -0.1f, 2.0f, 0.0f ), glm::vec4( 1.0f, 1.0f, 0.2f, 1.0f ) );
 
-    // D. Create Graph
-    ComputeGraph graph;
-    graph.AddTask( kernel, bindings );
+        // Upload initial data to GPU
+        sim.InitializeGPU();
 
-    // ==========================================================================================
-    // MAIN LOOP
-    // ==========================================================================================
+        // --- Compute Engine Setup ---
+        auto computeEngine = CreateRef<ComputeEngine>( engine.GetDevice() );
+        computeEngine->Init();
 
-    DT_CORE_INFO( "[Sandbox] Starting Main Loop with Readback..." );
-
-    bool running   = true;
-    int  stepCount = 0;
-
-    // Free simulation resources before shutdown
-    {
-        while( running && stepCount < 5 ) // Run for 5 steps then exit (for demo)
+        // Load the physics kernel
+        auto compShader = engine.GetDevice()->CreateShader( "assets/shaders/compute/move_cells.comp" );
+        if( !compShader )
         {
-            // 1. Window Events
+            DT_CORE_CRITICAL( "Failed to load move_cells.comp shader!" );
+            return -1;
+        }
+
+        ComputePipelineDesc pipeDesc;
+        pipeDesc.shader = compShader;
+        auto pipeline   = engine.GetDevice()->CreateComputePipeline( pipeDesc );
+
+        auto kernel = CreateRef<ComputeKernel>( engine.GetDevice(), pipeline, "MoveCells" );
+        kernel->SetGroupSize( 256, 1, 1 );
+
+        // Bind the Simulation Data (SSBO) to the Compute Shader
+        auto bindings = kernel->CreateBindingGroup();
+        bindings->Set( "population", sim.GetContext()->GetCellBuffer() );
+        bindings->Build();
+
+        ComputeGraph graph;
+        graph.AddTask( kernel, bindings );
+
+        // --- Renderer Setup ---
+        Renderer renderer( engine );
+        renderer.GetCamera().SetDistance( 20.0f ); // Zoom out to see the whole arena
+
+        // Show the window now that everything is loaded
+        engine.GetWindow()->Show();
+
+        DT_CORE_INFO( "[Sandbox] Starting Interactive Loop... Close window to exit." );
+
+        bool running = true;
+
+        // --- Main Loop ---
+        while( running )
+        {
+            // 1. Reset per-frame input states (e.g. scroll delta)
+            Input::ResetScroll();
+
+            // 2. Poll Window Events (Keyboard, Mouse, Resize, Close)
             if( engine.GetWindow() )
             {
                 engine.GetWindow()->OnUpdate();
@@ -128,45 +150,28 @@ int main()
                     running = false;
             }
 
-            // 2. Execute Compute Graph
-            // Executes the kernel that moves cells
+            // 3. Update Camera (Process Input for Orbit/Zoom)
+            renderer.OnUpdate( 0.016f );
+
+            // 4. Physics Step (Compute Shader)
+            // ExecuteGraph returns a timeline value we can wait on
             uint64_t fenceValue = computeEngine->ExecuteGraph( graph, sim.GetContext()->GetMaxCellCount() );
 
-            // 3. Sync (Wait for Compute to finish)
-            computeEngine->WaitForTask( fenceValue );
+            // 5. Render Step
+            // Prepare scene description
+            Scene scene;
+            scene.camera         = &renderer.GetCamera();
+            scene.instanceBuffer = sim.GetContext()->GetCellBuffer();
+            scene.instanceCount  = sim.GetContext()->GetMaxCellCount();
 
-            // 4. READBACK (Capture data from GPU to CPU)
-            auto streamer = engine.GetStreamingManager();
+            // Submit render commands, synchronizing with the Compute Queue
+            auto computeQueue = engine.GetDevice()->GetComputeQueue();
+            renderer.Render( scene, { computeQueue->GetTimelineSemaphore() }, { fenceValue } );
 
-            // Start transfer frame
-            streamer->BeginFrame( engine.GetFrameCount() );
-
-            // Request copy from GPU buffer to Staging buffer
-            VkDeviceSize dataSize   = 10 * sizeof( Cell ); // Read first 10 cells
-            auto         allocation = streamer->CaptureBuffer( sim.GetContext()->GetCellBuffer(), dataSize );
-
-            // Submit transfer
-            streamer->EndFrame();
-
-            // BLOCK CPU until transfer is done (Immediate Readback Mode)
-            streamer->WaitForTransferComplete();
-
-            // 5. Verify Data on CPU
-            Cell* cpuData = static_cast<Cell*>( allocation.mappedData );
-            DT_CORE_INFO( "--- Step {} ---", stepCount );
-            for( int i = 0; i < 3; ++i ) // Print first 3 cells
-            {
-                // Expected: Position X should increase by 0.1 each step (Velocity 1.0 * 0.1 factor in shader)
-                DT_CORE_INFO( "  Cell[{}] PosX: {:.4f}", i, cpuData[ i ].position.x );
-            }
-
-            stepCount++;
-            std::this_thread::sleep_for( std::chrono::milliseconds( 100 ) );
+            // 6. Frame Pacing (~60 FPS cap)
+            std::this_thread::sleep_for( std::chrono::milliseconds( 16 ) );
         }
     }
-
-    // Cleanup
-    std::filesystem::remove( shaderPath );
 
     return 0;
 }

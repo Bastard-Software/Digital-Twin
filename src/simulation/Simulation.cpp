@@ -24,10 +24,10 @@ namespace DigitalTwin
         m_envParams.gravity   = gravity;
     }
 
-    void Simulation::SpawnCell( glm::vec3 position, glm::vec3 velocity, glm::vec4 phenotypeColor )
+    void Simulation::SpawnCell( glm::vec4 position, glm::vec3 velocity, glm::vec4 phenotypeColor )
     {
         Cell cell{};
-        cell.position = glm::vec4( position, 1.0f ); // w = radius
+        cell.position = position; // w = radius
         cell.velocity = glm::vec4( velocity, 0.0f );
         cell.color    = phenotypeColor;
         m_initialCells.push_back( cell );

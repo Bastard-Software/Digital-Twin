@@ -8,3 +8,6 @@
 # externals
 external/*
 !external/CMakeLists.txt
+
+# shaders-bin
+*.spv

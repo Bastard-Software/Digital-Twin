@@ -17,10 +17,17 @@ namespace DigitalTwin
         static float                   GetMouseX();
         static float                   GetMouseY();
 
+        static float GetScrollY();
+        static void  ResetScroll(); // Call this at start of every frame!
+
+        // Internal setter for GLFW callback
+        static void SetScrollY( float yOffset );
+
     private:
         // Input needs access to the active window handle
         static void SetContext( void* windowHandle );
 
         friend class Window;
+        static float s_ScrollY; // Accumulator
     };
 } // namespace DigitalTwin

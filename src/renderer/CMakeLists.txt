@@ -18,10 +18,3 @@ target_link_libraries(${PROJECT_NAME} PUBLIC
     Digital-Twin-Platform
     Digital-Twin-Simulation
 )
-
-add_custom_command(TARGET ${PROJECT_NAME} POST_BUILD
-    COMMAND ${CMAKE_COMMAND} -E copy_directory
-    ${CMAKE_SOURCE_DIR}/assets
-    ${CMAKE_BINARY_DIR}/assets
-    COMMENT "Auto-copying assets to build directory..."
-)

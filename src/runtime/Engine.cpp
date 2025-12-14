@@ -1,5 +1,6 @@
 #include "runtime/Engine.hpp"
 
+#include "core/FileSystem.hpp"
 #include "core/Log.hpp"
 #include "rhi/RHI.hpp"
 #include "simulation/Simulation.hpp"
@@ -17,8 +18,9 @@ namespace DigitalTwin
 
     Result Engine::Init( const EngineConfig& config )
     {
-        // 1. Initialize Logging
+        // 1. Initialize Logging and
         Log::Init();
+        FileSystem::Init();
 
         if( m_initialized )
         {

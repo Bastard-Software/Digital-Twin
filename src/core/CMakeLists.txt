@@ -16,6 +16,10 @@ target_link_libraries(${PROJECT_NAME} PUBLIC
     spdlog::spdlog
 )
 
+target_compile_definitions(${PROJECT_NAME} PRIVATE 
+    DT_ASSET_DIR="${CMAKE_SOURCE_DIR}/assets"
+)
+
 # required by spdlog
 if(UNIX)
     target_link_libraries(${PROJECT_NAME} PUBLIC pthread)

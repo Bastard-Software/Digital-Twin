@@ -82,15 +82,49 @@ namespace DigitalTwin
         return *this;
     }
 
-    std::vector<uint32_t> Shader::CompileOrGetCache( const std::string& source, const std::string& filepath )
+   std::vector<uint32_t> Shader::CompileOrGetCache( const std::string& source, const std::string& filepath )
     {
-        std::string cachePath = filepath + ".spv";
+        // 1. Convert strings to filesystem paths for easier manipulation
+        std::filesystem::path sourcePath( filepath );
+        std::filesystem::path cachePath = sourcePath;
+        cachePath += ".spv"; // Append .spv extension
 
-        // Simple cache check: if .spv exists, load it
-        // TODO: In production, check timestamp or hash of source file to invalidate cache
-        if( std::filesystem::exists( cachePath ) )
+        // 2. Convert back to string using generic_string()
+        // This forces forward slashes ('/') on Windows, fixing the mixed slash visual issue in logs.
+        std::string sourceStr = sourcePath.generic_string();
+        std::string cacheStr  = cachePath.generic_string();
+
+        bool shouldCompile = false;
+
+        // --- SMART CACHE CHECK ---
+
+        // A. Check if the binary file exists
+        if( !std::filesystem::exists( cachePath ) )
         {
-            DT_CORE_INFO( "Loading shader from cache: {}", cachePath );
+            shouldCompile = true;
+            DT_CORE_WARN( "Shader cache missing for: {}. Compiling...", sourceStr );
+        }
+        else
+        {
+            // B. Check Timestamps (Source vs. Binary)
+            // We compare the last modification time of the source file against the cache file.
+            auto sourceTime = std::filesystem::last_write_time( sourcePath );
+            auto cacheTime  = std::filesystem::last_write_time( cachePath );
+
+            // If the source file is newer than the cache, the code has changed.
+            if( sourceTime > cacheTime )
+            {
+                shouldCompile = true;
+                DT_CORE_WARN( "Shader source detected as newer than cache: {}. Recompiling...", sourceStr );
+            }
+        }
+
+        // --- PATH A: LOAD FROM CACHE ---
+        // If the cache is valid, simply load the binary data from disk.
+        if( !shouldCompile )
+        {
+            DT_CORE_INFO( "Loading shader from cache: {}", cacheStr );
+
             std::ifstream in( cachePath, std::ios::in | std::ios::binary );
             if( in )
             {
@@ -102,17 +136,25 @@ namespace DigitalTwin
                 in.read( reinterpret_cast<char*>( spirv.data() ), fileSize );
                 return spirv;
             }
+            else
+            {
+                // Fallback: If opening the file failed (e.g., lock issue), force recompilation.
+                DT_CORE_ERROR( "Failed to open cache file despite it existing. Forcing recompilation." );
+                shouldCompile = true;
+            }
         }
 
-        DT_CORE_INFO( "Compiling shader: {}", filepath );
+        // --- PATH B: COMPILE FROM SOURCE ---
+        // Compile GLSL to SPIR-V using shaderc.
+        DT_CORE_INFO( "Compiling shader: {}", sourceStr );
 
         shaderc::Compiler       compiler;
         shaderc::CompileOptions options;
 
         options.SetTargetEnvironment( shaderc_target_env_vulkan, shaderc_env_version_vulkan_1_3 );
 
-        // IMPORTANT: We enable optimizations BUT we must force debug info generation.
-        // Without DebugInfo, the compiler strips OpName instructions, breaking reflection by name.
+        // We use performance optimization, but keep DebugInfo enabled.
+        // DebugInfo is required for SPIRV-Reflect to correctly read variable names.
         options.SetOptimizationLevel( shaderc_optimization_level_performance );
         options.SetGenerateDebugInfo();
 
@@ -133,21 +175,28 @@ namespace DigitalTwin
                 break;
         }
 
-        shaderc::SpvCompilationResult module = compiler.CompileGlslToSpv( source, kind, filepath.c_str(), options );
+        // Note: We pass 'sourceStr.c_str()' as the filename so compiler errors also use correct slashes.
+        shaderc::SpvCompilationResult module = compiler.CompileGlslToSpv( source, kind, sourceStr.c_str(), options );
 
         if( module.GetCompilationStatus() != shaderc_compilation_status_success )
         {
-            DT_CORE_CRITICAL( "Shader Compilation Failed ({0}):\n{1}", filepath, module.GetErrorMessage() );
+            DT_CORE_CRITICAL( "Shader Compilation Failed ({0}):\n{1}", sourceStr, module.GetErrorMessage() );
             return {};
         }
 
         std::vector<uint32_t> spirv( module.cbegin(), module.cend() );
 
-        // Write to cache
+        // --- SAVE TO CACHE ---
+        // Write the compiled SPIR-V back to disk for next time.
         std::ofstream out( cachePath, std::ios::out | std::ios::binary );
         if( out )
         {
             out.write( reinterpret_cast<const char*>( spirv.data() ), spirv.size() * sizeof( uint32_t ) );
+            DT_CORE_INFO( "Shader cache saved to: {}", cacheStr );
+        }
+        else
+        {
+            DT_CORE_ERROR( "Failed to write shader cache to: {}", cacheStr );
         }
 
         return spirv;

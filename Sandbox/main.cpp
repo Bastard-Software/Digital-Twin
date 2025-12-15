@@ -1,3 +1,4 @@
+#include "core/FileSystem.hpp"
 #include "core/Log.hpp"
 #include "runtime/Engine.hpp"
 #include "simulation/Simulation.hpp"
@@ -16,47 +17,9 @@
 
 using namespace DigitalTwin;
 
-/**
- * @brief Helper function to locate the 'assets' directory.
- * It searches up the directory tree (up to 5 levels) to find the shader files.
- * This fixes issues where the build directory structure differs from the source.
- */
-void FixWorkingDirectory()
-{
-    std::filesystem::path currentPath = std::filesystem::current_path();
-    bool                  found       = false;
-
-    // We look for a specific critical file to ensure we found the valid root
-    const std::string criticalFile = "assets/shaders/graphics/cell.vert";
-
-    DT_CORE_INFO( "Searching for assets root starting at: {}", currentPath.string() );
-
-    for( int i = 0; i < 5; ++i )
-    {
-        if( std::filesystem::exists( currentPath / criticalFile ) )
-        {
-            std::filesystem::current_path( currentPath );
-            DT_CORE_INFO( "FOUND Valid Assets Root at: {}", currentPath.string() );
-            found = true;
-            break;
-        }
-
-        if( currentPath.has_parent_path() )
-            currentPath = currentPath.parent_path();
-        else
-            break;
-    }
-
-    if( !found )
-    {
-        DT_CORE_CRITICAL( "Could not find asset: '{}' in any parent directory!", criticalFile );
-        DT_CORE_CRITICAL( "Ensure CMake has copied the shaders to the build directory or set Working Directory in VS." );
-    }
-}
-
 int main()
 {
-    // 1. Initialize Logging and Config
+    // 1. Set up config
     EngineConfig config;
     config.headless = false;
     config.width    = 1280;
@@ -66,9 +29,6 @@ int main()
     Engine engine;
     if( engine.Init( config ) != Result::SUCCESS )
         return -1;
-
-    // 3. Set Working Directory to find shaders (must happen after Engine init logs)
-    FixWorkingDirectory();
 
     {
         // RAII Scope: Ensures Simulation/Renderer are destroyed BEFORE Engine shutdown
@@ -103,7 +63,7 @@ int main()
         computeEngine->Init();
 
         // Load the physics kernel
-        auto compShader = engine.GetDevice()->CreateShader( "assets/shaders/compute/move_cells.comp" );
+        auto compShader = engine.GetDevice()->CreateShader( FileSystem::GetPath( "shaders/compute/move_cells.comp" ).string() );
         if( !compShader )
         {
             DT_CORE_CRITICAL( "Failed to load move_cells.comp shader!" );

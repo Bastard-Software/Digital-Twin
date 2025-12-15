@@ -11,4 +11,5 @@ void main() {
     // No lighting, no discard, no transparency logic.
     // This is the safest way to ensure something draws on screen.
     outColor = inColor;
+    // outColor = vec4(1.0f);
 }

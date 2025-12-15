@@ -1,5 +1,6 @@
 #include "renderer/SimulationPass.hpp"
 
+#include "core/FileSystem.hpp"
 #include "core/Log.hpp"
 #include "rhi/BindingGroup.hpp"
 #include "rhi/Device.hpp"
@@ -18,8 +19,8 @@ namespace DigitalTwin
     void SimulationPass::Init( VkFormat colorFormat, VkFormat depthFormat )
     {
         // Load shaders directly from assets
-        auto vert = m_device->CreateShader( "assets/shaders/graphics/cell.vert" );
-        auto frag = m_device->CreateShader( "assets/shaders/graphics/cell.frag" );
+        auto vert = m_device->CreateShader( FileSystem::GetPath( "shaders/graphics/cell.vert" ).string() );
+        auto frag = m_device->CreateShader( FileSystem::GetPath( "shaders/graphics/cell.frag" ).string() );
 
         if( !vert || !frag )
         {

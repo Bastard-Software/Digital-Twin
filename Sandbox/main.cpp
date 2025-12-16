@@ -66,28 +66,48 @@ int main()
         auto computeEngine = CreateRef<ComputeEngine>( engine.GetDevice() );
         computeEngine->Init();
 
-        // Load the physics kernel
-        auto compShader = engine.GetDevice()->CreateShader( FileSystem::GetPath( "shaders/compute/move_cells.comp" ).string() );
-        if( !compShader )
+        // 1. Load the collision kernel
+        auto collShader = engine.GetDevice()->CreateShader( FileSystem::GetPath( "shaders/compute/solve_collisions.comp" ).string() );
+        if( !collShader )
+        {
+            DT_CORE_CRITICAL( "Failed to load solve_collisions.comp shader!" );
+            return -1;
+        }
+
+        ComputePipelineDesc pipeDesc;
+        pipeDesc.shader   = collShader;
+        auto collPipeline = engine.GetDevice()->CreateComputePipeline( pipeDesc );
+
+        auto collKernel = CreateRef<ComputeKernel>( engine.GetDevice(), collPipeline, "SolveCollisions" );
+        collKernel->SetGroupSize( 256, 1, 1 );
+
+        // Bind the Simulation Data (SSBO) to the Compute Shader
+        auto collBindings = collKernel->CreateBindingGroup();
+        collBindings->Set( "population", sim.GetContext()->GetCellBuffer() );
+        collBindings->Build();
+
+        // 2. Load the physics kernel
+        auto moveShader = engine.GetDevice()->CreateShader( FileSystem::GetPath( "shaders/compute/move_cells.comp" ).string() );
+        if( !moveShader )
         {
             DT_CORE_CRITICAL( "Failed to load move_cells.comp shader!" );
             return -1;
         }
 
-        ComputePipelineDesc pipeDesc;
-        pipeDesc.shader = compShader;
-        auto pipeline   = engine.GetDevice()->CreateComputePipeline( pipeDesc );
+        pipeDesc.shader   = moveShader;
+        auto movePipeline = engine.GetDevice()->CreateComputePipeline( pipeDesc );
 
-        auto kernel = CreateRef<ComputeKernel>( engine.GetDevice(), pipeline, "MoveCells" );
-        kernel->SetGroupSize( 256, 1, 1 );
+        auto moveKernel = CreateRef<ComputeKernel>( engine.GetDevice(), movePipeline, "MoveCells" );
+        moveKernel->SetGroupSize( 256, 1, 1 );
 
         // Bind the Simulation Data (SSBO) to the Compute Shader
-        auto bindings = kernel->CreateBindingGroup();
-        bindings->Set( "population", sim.GetContext()->GetCellBuffer() );
-        bindings->Build();
+        auto moveBindings = moveKernel->CreateBindingGroup();
+        moveBindings->Set( "population", sim.GetContext()->GetCellBuffer() );
+        moveBindings->Build();
 
         ComputeGraph graph;
-        graph.AddTask( kernel, bindings );
+        graph.AddTask( collKernel, collBindings );
+        graph.AddTask( moveKernel, moveBindings );
 
         // --- Renderer Setup ---
         Renderer renderer( engine );

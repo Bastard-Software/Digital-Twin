@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.24)
 
-project(Digital-Twin-Streaming)
+project(Digital-Twin-Resources)
 
 file(GLOB_RECURSE SOURCE_FILES "*.cpp" "*.hpp")
 

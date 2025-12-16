@@ -12,8 +12,7 @@ namespace DigitalTwin
         READBACK,
         STORAGE,
         UNIFORM,
-        VERTEX,
-        INDEX,
+        MESH,
         INDIRECT,
         ATOMIC_COUNTER,
         _MAX_ENUM

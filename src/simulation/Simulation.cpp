@@ -44,12 +44,17 @@ namespace DigitalTwin
 
         // 2. Upload Initial State (Cells + Atomic Counter)
         auto streamer = m_engine.GetStreamingManager();
+        auto resMgr   = m_engine.GetResourceManager();
 
-        streamer->BeginFrame( 0 ); // Use frame 0 slot for init
+        resMgr->BeginFrame( 0 ); // Use frame 0 slot for init
         m_context->UploadState( streamer.get(), m_initialCells );
-        streamer->EndFrame();
 
-        // Wait for upload to ensure GPU is ready before first compute dispatch
+        // 3. Upload mesh
+        m_cellMesh = resMgr->GetMesh( "Sphere" );
+
+        resMgr->EndFrame();
+
+        // 4. Wait for upload to ensure GPU is ready before first compute dispatch
         streamer->WaitForTransferComplete();
 
         DT_CORE_INFO( "[Simulation] GPU Initialization Complete. Active Agents: {}", m_initialCells.size() );

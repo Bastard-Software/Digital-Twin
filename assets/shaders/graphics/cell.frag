@@ -1,15 +1,14 @@
 #version 450
 
-// Input from Vertex Shader
 layout(location = 0) in vec4 inColor;
+layout(location = 1) in vec3 inNormal;
 
-// Final Output Color
 layout(location = 0) out vec4 outColor;
 
 void main() {
-    // Just output the interpolated color directly.
-    // No lighting, no discard, no transparency logic.
-    // This is the safest way to ensure something draws on screen.
-    outColor = inColor;
-    // outColor = vec4(1.0f);
+    // Simple fake lighting (N dot L)
+    vec3 lightDir = normalize(vec3(0.5, 1.0, 0.5));
+    float diff = max(dot(normalize(inNormal), lightDir), 0.2); // 0.2 ambient
+
+    outColor = vec4(inColor.rgb * diff, inColor.a);
 }

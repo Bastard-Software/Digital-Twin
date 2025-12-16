@@ -2,7 +2,7 @@
 #include "runtime/Engine.hpp"
 #include "simulation/SimulationContext.hpp"
 #include "simulation/Types.hpp"
-#include "streaming/StreamingManager.hpp"
+#include "resources/StreamingManager.hpp"
 #include <gtest/gtest.h>
 
 using namespace DigitalTwin;

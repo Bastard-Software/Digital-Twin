@@ -110,6 +110,8 @@ int main()
                     running = false;
             }
 
+            engine.GetResourceManager()->BeginFrame( engine.GetFrameCount() );
+
             // 3. Update Camera (Process Input for Orbit/Zoom)
             renderer.OnUpdate( 0.016f );
 
@@ -123,9 +125,22 @@ int main()
             scene.camera         = &renderer.GetCamera();
             scene.instanceBuffer = sim.GetContext()->GetCellBuffer();
             scene.instanceCount  = sim.GetContext()->GetMaxCellCount();
+            scene.mesh           = sim.GetCellMesh();
 
             // Submit render commands, synchronizing with the Compute Queue
             auto computeQueue = engine.GetDevice()->GetComputeQueue();
+
+            SyncPoint resSync = engine.GetResourceManager()->EndFrame();
+
+            std::vector<VkSemaphore> waitSems = { computeQueue->GetTimelineSemaphore() };
+            std::vector<uint64_t>    waitVals = { fenceValue };
+
+            if( resSync.semaphore )
+            {
+                waitSems.push_back( resSync.semaphore );
+                waitVals.push_back( resSync.value );
+            }
+
             renderer.Render( scene, { computeQueue->GetTimelineSemaphore() }, { fenceValue } );
 
             // 6. Frame Pacing (~60 FPS cap)

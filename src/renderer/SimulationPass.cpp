@@ -33,9 +33,9 @@ namespace DigitalTwin
         desc.fragmentShader         = frag;
         desc.colorAttachmentFormats = { colorFormat };
         desc.depthAttachmentFormat  = depthFormat; // Disabled depth for now
-        desc.depthTestEnable        = false;
-        desc.depthWriteEnable       = false;
-        desc.blendEnable            = true; // Nice for scientific viz
+        desc.depthTestEnable        = true;
+        desc.depthWriteEnable       = true;
+        desc.blendEnable            = false; // Nice for scientific viz
         desc.topology               = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
         desc.cullMode               = VK_CULL_MODE_NONE;
 
@@ -55,24 +55,32 @@ namespace DigitalTwin
         cmd->BindGraphicsPipeline( m_pipeline );
 
         // Transient Binding Group creation (per frame)
-        VkDescriptorSetLayout layout = m_pipeline->GetDescriptorSetLayout( 0 );
-        VkDescriptorSet       set    = VK_NULL_HANDLE;
-
-        if( m_device->AllocateDescriptor( layout, set ) == Result::SUCCESS )
+        // SET 0
+        VkDescriptorSet set0 = VK_NULL_HANDLE;
+        if( m_device->AllocateDescriptor( m_pipeline->GetDescriptorSetLayout( 0 ), set0 ) == Result::SUCCESS )
         {
-            auto bindings = CreateRef<BindingGroup>( m_device, set, m_pipeline->GetReflectionData() );
+            auto bindings = CreateRef<BindingGroup>( m_device, set0, m_pipeline->GetReflectionData() );
             bindings->Set( "population", scene.instanceBuffer );
             bindings->Build();
-
-            cmd->BindDescriptorSets( VK_PIPELINE_BIND_POINT_GRAPHICS, m_pipeline->GetLayout(), 0, { set } );
+            cmd->BindDescriptorSets( VK_PIPELINE_BIND_POINT_GRAPHICS, m_pipeline->GetLayout(), 0, { set0 } );
+        }
+        // SET 1
+        VkDescriptorSet set1 = VK_NULL_HANDLE;
+        if( m_device->AllocateDescriptor( m_pipeline->GetDescriptorSetLayout( 1 ), set1 ) == Result::SUCCESS )
+        {
+            auto bindings = CreateRef<BindingGroup>( m_device, set1, m_pipeline->GetReflectionData() );
+            bindings->Set( "mesh", scene.mesh->GetBuffer() );
+            bindings->Build();
+            cmd->BindDescriptorSets( VK_PIPELINE_BIND_POINT_GRAPHICS, m_pipeline->GetLayout(), 1, { set1 } );
         }
 
         PushConst pc;
         pc.viewProj = scene.camera ? scene.camera->GetViewProjection() : glm::mat4( 1.0f );
-
         cmd->PushConstants( m_pipeline->GetLayout(), VK_SHADER_STAGE_VERTEX_BIT, 0, pc );
 
-        // Instanced Draw: 36 vertices (Cube) * N instances
-        cmd->Draw( 36, scene.instanceCount, 0, 0 );
+        cmd->BindIndexBuffer( scene.mesh->GetBuffer(), scene.mesh->GetIndexOffset(), VK_INDEX_TYPE_UINT32 );
+
+        // Instanced Draw: IndexCount * N instances
+        cmd->DrawIndexed( scene.mesh->GetIndexCount(), scene.instanceCount, 0, 0, 0 );
     }
 } // namespace DigitalTwin

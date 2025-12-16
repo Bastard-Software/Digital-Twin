@@ -1,8 +1,9 @@
 #pragma once
 #include "core/Base.hpp"
 #include "platform/Window.hpp"
+#include "resources/ResourceManager.hpp"
+#include "resources/StreamingManager.hpp"
 #include "rhi/Device.hpp"
-#include "streaming/StreamingManager.hpp"
 #include <memory>
 
 namespace DigitalTwin
@@ -47,6 +48,7 @@ namespace DigitalTwin
         // --- Accessors ---
         Ref<Device>           GetDevice() const { return m_device; }
         Ref<StreamingManager> GetStreamingManager() const { return m_streamingManager; }
+        Ref<ResourceManager>  GetResourceManager() const { return m_resourceManager; }
         Window*               GetWindow() const { return m_window.get(); }
         const EngineConfig&   GetConfig() const { return m_config; }
 
@@ -60,6 +62,7 @@ namespace DigitalTwin
     private:
         Ref<Device>           m_device;
         Ref<StreamingManager> m_streamingManager;
+        Ref<ResourceManager>  m_resourceManager;
         Scope<Window>         m_window;
         EngineConfig          m_config;
 

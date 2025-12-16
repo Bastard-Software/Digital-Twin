@@ -11,6 +11,9 @@ namespace DigitalTwin
     using float32_t = float;
     using float64_t = double;
 
+    using AssetID                      = uint32_t;
+    constexpr AssetID INVALID_ASSET_ID = 0;
+
     // Error codes
     enum class Result : int32_t
     {

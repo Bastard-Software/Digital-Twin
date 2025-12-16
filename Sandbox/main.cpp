@@ -36,6 +36,7 @@ int main()
         // --- Simulation Setup ---
         // Initialize the simulation world
         Simulation sim( engine );
+        auto       resMgr = engine.GetResourceManager();
 
         // Spawn 4 cells for testing collision logic.
         // Arguments:
@@ -43,17 +44,20 @@ int main()
         // 2. Velocity (Vec3): x, y, z
         // 3. Color    (Vec4): r, g, b, a
 
+        AssetID sphereID = resMgr->GetMeshID( "Sphere" );
+        AssetID cubeID   = resMgr->GetMeshID( "Cube" );
+
         // Red Cell (moving right)
-        sim.SpawnCell( glm::vec4( -4.0f, 0.0f, 0.0f, 1.0f ), glm::vec3( 2.0f, 0.5f, 0.0f ), glm::vec4( 1.0f, 0.2f, 0.2f, 1.0f ) );
+        sim.SpawnCell( sphereID, glm::vec4( -4.0f, 0.0f, 0.0f, 1.0f ), glm::vec3( 2.0f, 0.5f, 0.0f ), glm::vec4( 1.0f, 0.2f, 0.2f, 1.0f ) );
 
         // Green Cell (moving left)
-        sim.SpawnCell( glm::vec4( 4.0f, 0.0f, 0.0f, 1.0f ), glm::vec3( -2.0f, -0.5f, 0.0f ), glm::vec4( 0.2f, 1.0f, 0.2f, 1.0f ) );
+        sim.SpawnCell( cubeID, glm::vec4( 4.0f, 0.0f, 0.0f, 1.0f ), glm::vec3( -2.0f, -0.5f, 0.0f ), glm::vec4( 0.2f, 1.0f, 0.2f, 1.0f ) );
 
         // Blue Cell (moving down)
-        sim.SpawnCell( glm::vec4( 0.0f, 4.0f, 0.0f, 1.0f ), glm::vec3( 0.1f, -2.0f, 0.0f ), glm::vec4( 0.2f, 0.2f, 1.0f, 1.0f ) );
+        sim.SpawnCell( sphereID, glm::vec4( 0.0f, 4.0f, 0.0f, 1.0f ), glm::vec3( 0.1f, -2.0f, 0.0f ), glm::vec4( 0.2f, 0.2f, 1.0f, 1.0f ) );
 
         // Yellow Cell (moving up)
-        sim.SpawnCell( glm::vec4( 0.0f, -4.0f, 0.0f, 1.0f ), glm::vec3( -0.1f, 2.0f, 0.0f ), glm::vec4( 1.0f, 1.0f, 0.2f, 1.0f ) );
+        sim.SpawnCell( cubeID, glm::vec4( 0.0f, -4.0f, 0.0f, 1.0f ), glm::vec3( -0.1f, 2.0f, 0.0f ), glm::vec4( 1.0f, 1.0f, 0.2f, 1.0f ) );
 
         // Upload initial data to GPU
         sim.InitializeGPU();
@@ -125,12 +129,11 @@ int main()
             scene.camera         = &renderer.GetCamera();
             scene.instanceBuffer = sim.GetContext()->GetCellBuffer();
             scene.instanceCount  = sim.GetContext()->GetMaxCellCount();
-            scene.mesh           = sim.GetCellMesh();
+            scene.activeMeshIDs  = sim.GetActiveMeshes();
 
             // Submit render commands, synchronizing with the Compute Queue
-            auto computeQueue = engine.GetDevice()->GetComputeQueue();
-
-            SyncPoint resSync = engine.GetResourceManager()->EndFrame();
+            auto      computeQueue = engine.GetDevice()->GetComputeQueue();
+            SyncPoint resSync      = engine.GetResourceManager()->EndFrame();
 
             std::vector<VkSemaphore> waitSems = { computeQueue->GetTimelineSemaphore() };
             std::vector<uint64_t>    waitVals = { fenceValue };

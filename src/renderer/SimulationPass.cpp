@@ -2,16 +2,19 @@
 
 #include "core/FileSystem.hpp"
 #include "core/Log.hpp"
+#include "resources/ResourceManager.hpp"
 #include "rhi/BindingGroup.hpp"
 #include "rhi/Device.hpp"
 
 namespace DigitalTwin
 {
 
-    SimulationPass::SimulationPass( Ref<Device> device )
+    SimulationPass::SimulationPass( Ref<Device> device, Ref<ResourceManager> resManager )
         : m_device( device )
+        , m_resManager( resManager )
     {
     }
+
     SimulationPass::~SimulationPass()
     {
     }
@@ -37,7 +40,7 @@ namespace DigitalTwin
         desc.depthWriteEnable       = true;
         desc.blendEnable            = false; // Nice for scientific viz
         desc.topology               = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
-        desc.cullMode               = VK_CULL_MODE_NONE;
+        desc.cullMode               = VK_CULL_MODE_BACK_BIT;
 
         m_pipeline = m_device->CreateGraphicsPipeline( desc );
     }
@@ -45,6 +48,7 @@ namespace DigitalTwin
     struct PushConst
     {
         glm::mat4 viewProj;
+        uint32_t  targetMeshID;
     };
 
     void SimulationPass::Draw( CommandBuffer* cmd, const Scene& scene )
@@ -54,8 +58,7 @@ namespace DigitalTwin
 
         cmd->BindGraphicsPipeline( m_pipeline );
 
-        // Transient Binding Group creation (per frame)
-        // SET 0
+        // Bind Instance Data (Global for all cells)
         VkDescriptorSet set0 = VK_NULL_HANDLE;
         if( m_device->AllocateDescriptor( m_pipeline->GetDescriptorSetLayout( 0 ), set0 ) == Result::SUCCESS )
         {
@@ -64,23 +67,36 @@ namespace DigitalTwin
             bindings->Build();
             cmd->BindDescriptorSets( VK_PIPELINE_BIND_POINT_GRAPHICS, m_pipeline->GetLayout(), 0, { set0 } );
         }
-        // SET 1
-        VkDescriptorSet set1 = VK_NULL_HANDLE;
-        if( m_device->AllocateDescriptor( m_pipeline->GetDescriptorSetLayout( 1 ), set1 ) == Result::SUCCESS )
+
+        // --- MULTI-MESH RENDERING LOOP ---
+        // For each mesh type present in the scene, we issue a Draw Call.
+        // The shader filters out instances that don't match the ID.
+        for( AssetID meshID: scene.activeMeshIDs )
         {
-            auto bindings = CreateRef<BindingGroup>( m_device, set1, m_pipeline->GetReflectionData() );
-            bindings->Set( "mesh", scene.mesh->GetBuffer() );
-            bindings->Build();
-            cmd->BindDescriptorSets( VK_PIPELINE_BIND_POINT_GRAPHICS, m_pipeline->GetLayout(), 1, { set1 } );
+            auto gpuMesh = m_resManager->GetMesh( meshID );
+            if( !gpuMesh )
+                continue;
+
+            // 1. Bind Geometry (Vertices)
+            VkDescriptorSet set1 = VK_NULL_HANDLE;
+            if( m_device->AllocateDescriptor( m_pipeline->GetDescriptorSetLayout( 1 ), set1 ) == Result::SUCCESS )
+            {
+                auto bindings = CreateRef<BindingGroup>( m_device, set1, m_pipeline->GetReflectionData() );
+                bindings->Set( "mesh", gpuMesh->GetBuffer() );
+                bindings->Build();
+                cmd->BindDescriptorSets( VK_PIPELINE_BIND_POINT_GRAPHICS, m_pipeline->GetLayout(), 1, { set1 } );
+            }
+
+            // 2. Push Constants (Pass current Mesh ID)
+            PushConst pc;
+            pc.viewProj     = scene.camera ? scene.camera->GetViewProjection() : glm::mat4( 1.0f );
+            pc.targetMeshID = meshID;
+
+            cmd->PushConstants( m_pipeline->GetLayout(), VK_SHADER_STAGE_VERTEX_BIT, 0, pc );
+
+            // 3. Bind Index Buffer & Draw
+            cmd->BindIndexBuffer( gpuMesh->GetBuffer(), gpuMesh->GetIndexOffset(), VK_INDEX_TYPE_UINT32 );
+            cmd->DrawIndexed( gpuMesh->GetIndexCount(), scene.instanceCount, 0, 0, 0 );
         }
-
-        PushConst pc;
-        pc.viewProj = scene.camera ? scene.camera->GetViewProjection() : glm::mat4( 1.0f );
-        cmd->PushConstants( m_pipeline->GetLayout(), VK_SHADER_STAGE_VERTEX_BIT, 0, pc );
-
-        cmd->BindIndexBuffer( scene.mesh->GetBuffer(), scene.mesh->GetIndexOffset(), VK_INDEX_TYPE_UINT32 );
-
-        // Instanced Draw: IndexCount * N instances
-        cmd->DrawIndexed( scene.mesh->GetIndexCount(), scene.instanceCount, 0, 0, 0 );
     }
 } // namespace DigitalTwin

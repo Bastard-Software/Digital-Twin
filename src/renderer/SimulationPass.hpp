@@ -7,7 +7,7 @@
 
 namespace DigitalTwin
 {
-
+    class ResourceManager;
     /**
      * @brief Responsible for drawing the Simulation Agents (Cells).
      * Manages Graphics Pipeline and Shaders.
@@ -15,7 +15,7 @@ namespace DigitalTwin
     class SimulationPass
     {
     public:
-        SimulationPass( Ref<Device> device );
+        SimulationPass( Ref<Device> device, Ref<ResourceManager> resManager );
         ~SimulationPass();
 
         void Init( VkFormat colorFormat, VkFormat depthFormat );
@@ -28,5 +28,6 @@ namespace DigitalTwin
     private:
         Ref<Device>           m_device;
         Ref<GraphicsPipeline> m_pipeline;
+        Ref<ResourceManager>  m_resManager;
     };
 } // namespace DigitalTwin

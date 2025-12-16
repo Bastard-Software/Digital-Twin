@@ -9,6 +9,7 @@
 namespace DigitalTwin
 {
     class Engine;
+    class ResourceManager;
 
     /**
      * @brief High-level visualization facade.
@@ -36,5 +37,6 @@ namespace DigitalTwin
         Scope<RenderContext>  m_ctx;
         Scope<SimulationPass> m_simPass;
         Scope<Camera>         m_camera;
+        Ref<ResourceManager>  m_resManager;
     };
 } // namespace DigitalTwin

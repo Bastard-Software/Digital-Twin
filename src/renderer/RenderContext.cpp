@@ -41,8 +41,9 @@ namespace DigitalTwin
         swapDesc.height       = m_window->GetHeight();
         swapDesc.vsync        = true;
         swapDesc.windowHandle = m_window->GetNativeWindow();
+        m_swapchain           = m_device->CreateSwapchain( swapDesc );
 
-        m_swapchain = m_device->CreateSwapchain( swapDesc );
+        CreateDepthResources();
 
         for( uint32_t i = 0; i < FRAMES_IN_FLIGHT; ++i )
         {
@@ -148,6 +149,34 @@ namespace DigitalTwin
     void RenderContext::RecreateSwapchain()
     {
         m_device->GetAPI().vkDeviceWaitIdle( m_device->GetHandle() );
+
+        // Resize swapchain (color buffers)
         m_swapchain->Resize( m_window->GetWidth(), m_window->GetHeight() );
+
+        // Resize depth buffer to match new window size
+        CreateDepthResources();
+    }
+
+    void RenderContext::CreateDepthResources()
+    {
+        // Reset old texture if exists
+        m_depthTexture.reset();
+
+        uint32_t width  = m_window->GetWidth();
+        uint32_t height = m_window->GetHeight();
+
+        // Create a 2D Texture for Depth/Stencil usage.
+        // Format: D32_SFLOAT (High precision depth)
+        // Usage: DEPTH_STENCIL_TARGET (allows it to be used as a depth attachment)
+        m_depthTexture = m_device->CreateTexture2D( width, height, GetDepthFormat(), TextureUsage::DEPTH_STENCIL_TARGET );
+
+        if( m_depthTexture )
+        {
+            DT_CORE_INFO( "[RenderContext] Created Depth Buffer ({}x{})", width, height );
+        }
+        else
+        {
+            DT_CORE_CRITICAL( "[RenderContext] Failed to create Depth Buffer!" );
+        }
     }
 } // namespace DigitalTwin

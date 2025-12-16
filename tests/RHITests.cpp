@@ -486,19 +486,11 @@ TEST_F( DeviceResourceTest, CreateBuffer_UNIFORM )
     ASSERT_NE( buffer, nullptr );
 }
 
-TEST_F( DeviceResourceTest, CreateBuffer_VERTEX )
+TEST_F( DeviceResourceTest, CreateBuffer_MESH )
 {
     if( !device )
         GTEST_SKIP();
-    auto buffer = device->CreateBuffer( { 1024, BufferType::VERTEX } );
-    ASSERT_NE( buffer, nullptr );
-}
-
-TEST_F( DeviceResourceTest, CreateBuffer_INDEX )
-{
-    if( !device )
-        GTEST_SKIP();
-    auto buffer = device->CreateBuffer( { 1024, BufferType::INDEX } );
+    auto buffer = device->CreateBuffer( { 1024, BufferType::MESH } );
     ASSERT_NE( buffer, nullptr );
 }
 

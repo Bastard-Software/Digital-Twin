@@ -17,7 +17,7 @@ target_include_directories(${PROJECT_NAME} PUBLIC
 target_link_libraries(${PROJECT_NAME} PUBLIC
     Digital-Twin-Core
     Digital-Twin-Runtime
-    Digital-Twin-Streaming
+    Digital-Twin-Resources
     Digital-Twin-RHI
     Digital-Twin-Compute
     entt

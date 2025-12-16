@@ -1,67 +1,58 @@
 #version 450
+#extension GL_EXT_buffer_reference : require
 
-// Data structure matching the C++ definition
+// --- SET 0: Instance Data ---
 struct Cell {
-    vec4 position; // .xyz = position, .w = radius
-    vec4 velocity; // .xyz = velocity
-    vec4 color;    // .rgba = color
+    vec4 position; // xyz, w = radius
+    vec4 velocity;
+    vec4 color;
 };
 
-// Read-only access to the storage buffer containing cell data
-// Binding 0, Set 0 must match C++ BindingGroup configuration
 layout(std430, set = 0, binding = 0) readonly buffer CellBuffer {
     Cell cells[];
 } population;
 
-// Push Constants for the View-Projection matrix
+// --- SET 1: Geometry Data (Unified Buffer) ---
+struct Vertex {
+    vec4 position; // xyz
+    vec4 normal;   // xyz
+    vec4 color;    // rgba
+};
+
+layout(std430, set = 1, binding = 0) readonly buffer MeshBuffer {
+    Vertex vertices[];
+} mesh;
+
+// --- Push Constants ---
 layout(push_constant) uniform Constants {
     mat4 viewProj;
 } pc;
 
-// Output to Fragment Shader
+// --- Outputs ---
 layout(location = 0) out vec4 fragColor;
-
-// Procedural Cube Geometry (Unit size: -0.5 to 0.5)
-// 36 vertices for 12 triangles (Standard Triangle List)
-const vec3 CUBE[36] = vec3[](
-    // Front face
-    vec3(-0.5,-0.5, 0.5), vec3( 0.5,-0.5, 0.5), vec3( 0.5, 0.5, 0.5),
-    vec3( 0.5, 0.5, 0.5), vec3(-0.5, 0.5, 0.5), vec3(-0.5,-0.5, 0.5),
-    // Back face
-    vec3(-0.5,-0.5,-0.5), vec3(-0.5, 0.5,-0.5), vec3( 0.5, 0.5,-0.5),
-    vec3( 0.5, 0.5,-0.5), vec3( 0.5,-0.5,-0.5), vec3(-0.5,-0.5,-0.5),
-    // Top face
-    vec3(-0.5, 0.5,-0.5), vec3(-0.5, 0.5, 0.5), vec3( 0.5, 0.5, 0.5),
-    vec3( 0.5, 0.5, 0.5), vec3( 0.5, 0.5,-0.5), vec3(-0.5, 0.5,-0.5),
-    // Bottom face
-    vec3(-0.5,-0.5,-0.5), vec3( 0.5,-0.5,-0.5), vec3( 0.5,-0.5, 0.5),
-    vec3( 0.5,-0.5, 0.5), vec3(-0.5,-0.5, 0.5), vec3(-0.5,-0.5,-0.5),
-    // Right face
-    vec3( 0.5,-0.5,-0.5), vec3( 0.5, 0.5,-0.5), vec3( 0.5, 0.5, 0.5),
-    vec3( 0.5, 0.5, 0.5), vec3( 0.5,-0.5, 0.5), vec3( 0.5,-0.5,-0.5),
-    // Left face
-    vec3(-0.5,-0.5,-0.5), vec3(-0.5,-0.5, 0.5), vec3(-0.5, 0.5, 0.5),
-    vec3(-0.5, 0.5, 0.5), vec3(-0.5, 0.5,-0.5), vec3(-0.5,-0.5,-0.5)
-);
+layout(location = 1) out vec3 outNormal; // Pass normal to frag for simple lighting
 
 void main() {
-    // 1. Fetch cell data based on Instance Index (one instance per cell)
+    // 1. Fetch Instance Data
     Cell cell = population.cells[gl_InstanceIndex];
+
+    // 2. Fetch Vertex Data (Programmable Pulling)
+    Vertex v = mesh.vertices[gl_VertexIndex];
+
+    // 3. Transform
+    // Sphere Generator creates unit sphere (radius 1.0) or diam 1.0 depending on params.
+    // Assuming generated sphere has radius 1.0. 
+    // Cell.w is radius.
+    // Final Scale = Cell.w (if mesh is radius 1)
     
-    // 2. Get local vertex position from the constant array
-    vec3 localPos = CUBE[gl_VertexIndex]; 
+    vec3 localPos = v.position.xyz;
+    float scale = cell.position.w; // Radius
     
-    // 3. Scale the cube
-    // The CUBE is size 1.0 (-0.5 to 0.5).
-    // The physical size should be (2 * Radius).
-    float diameter = 2.0 * cell.position.w;
-    
-    // 4. Calculate World Position
-    vec3 worldPos = (localPos * diameter) + cell.position.xyz;
-    
-    // 5. Output transformed position
+    vec3 worldPos = (localPos * scale) + cell.position.xyz;
+
     gl_Position = pc.viewProj * vec4(worldPos, 1.0);
-    
-    // 6. Pass color to fragment shader
+
+    // Pass data to fragment shader
     fragColor = cell.color;
+    outNormal = v.normal.xyz;
 }

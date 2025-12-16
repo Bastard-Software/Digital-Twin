@@ -18,7 +18,7 @@ target_link_libraries(${PROJECT_NAME} PRIVATE
     Digital-Twin-Core       
     Digital-Twin-Runtime
     Digital-Twin-RHI
-    Digital-Twin-Streaming
+    Digital-Twin-Resources
     Digital-Twin-Compute
     Digital-Twin-Simulation
     Digital-Twin-Renderer

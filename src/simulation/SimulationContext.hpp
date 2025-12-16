@@ -1,9 +1,9 @@
 #pragma once
 #include "core/Base.hpp"
+#include "resources/StreamingManager.hpp"
 #include "rhi/Buffer.hpp"
 #include "rhi/Device.hpp"
 #include "simulation/Types.hpp"
-#include "streaming/StreamingManager.hpp"
 #include <vector>
 
 namespace DigitalTwin

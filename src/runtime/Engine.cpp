@@ -61,13 +61,14 @@ namespace DigitalTwin
             return Result::FAIL;
         }
 
-        // 5. Initialize Streaming Manager (Data Transport)
+        // 5. Initialize Streaming adn Resources Manager
         m_streamingManager = CreateRef<StreamingManager>( m_device );
         if( m_streamingManager->Init() != Result::SUCCESS )
         {
             DT_CORE_CRITICAL( "[Engine] Failed to initialize StreamingManager!" );
             return Result::FAIL;
         }
+        m_resourceManager = CreateRef<ResourceManager>( m_device, m_streamingManager );
 
         m_initialized = true;
         return Result::SUCCESS;
@@ -86,6 +87,7 @@ namespace DigitalTwin
             }
 
             // Release managers first (they hold buffers)
+            m_resourceManager.reset();
             m_streamingManager.reset();
 
             // Destroy Device using RHI helper

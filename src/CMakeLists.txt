@@ -10,7 +10,7 @@ add_subdirectory(platform)
 add_subdirectory(runtime)
 add_subdirectory(simulation)
 add_subdirectory(rhi)
-add_subdirectory(streaming)
+add_subdirectory(resources)
 add_subdirectory(compute)
 add_subdirectory(renderer)
 
@@ -25,7 +25,7 @@ target_link_libraries(${PROJECT_NAME} INTERFACE
     Digital-Twin-Simulation
     Digital-Twin-Runtime
     Digital-Twin-RHI
-    Digital-Twin-Streaming
+    Digital-Twin-Resources
     Digital-Twin-Compute
     Digital-Twin-Renderer
 )
@@ -43,7 +43,7 @@ target_link_libraries(${PROJECT_NAME}-Python PRIVATE
     Digital-Twin-Runtime
     Digital-Twin-Core
     Digital-Twin-RHI
-    Digital-Twin-Streaming
+    Digital-Twin-Resources
     Digital-Twin-Compute
     Digital-Twin-Renderer
     nanobind-static

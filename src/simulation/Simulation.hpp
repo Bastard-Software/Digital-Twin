@@ -1,7 +1,7 @@
 #pragma once
+#include "resources/GPUMesh.hpp"
 #include "simulation/SimulationContext.hpp"
 #include "simulation/Types.hpp"
-#include "resources/GPUMesh.hpp"
 #include <glm/glm.hpp>
 #include <memory>
 #include <vector>
@@ -31,7 +31,7 @@ namespace DigitalTwin
         /**
          * @brief Spawns a new cell. Added to CPU staging list until InitializeGPU() is called.
          */
-        void SpawnCell( glm::vec4 position, glm::vec3 velocity, glm::vec4 phenotypeColor );
+        void SpawnCell( AssetID meshID, glm::vec4 position, glm::vec3 velocity, glm::vec4 phenotypeColor );
 
         /**
          * @brief Finalizes configuration, allocates GPU memory, and uploads initial state.
@@ -44,13 +44,13 @@ namespace DigitalTwin
         void Step( float dt );
 
         // Expose context for Renderer/Compute systems
-        SimulationContext* GetContext() { return m_context.get(); }
-        Ref<GPUMesh>       GetCellMesh() const { return m_cellMesh; }
+        SimulationContext*          GetContext() { return m_context.get(); }
+        const std::vector<AssetID>& GetActiveMeshes() const { return m_activeMeshes; }
 
     private:
         Engine&                            m_engine;
         std::unique_ptr<SimulationContext> m_context;
-        Ref<GPUMesh>                       m_cellMesh;
+        std::vector<AssetID>               m_activeMeshes;
 
         // Staging data on CPU (initial configuration)
         std::vector<Cell> m_initialCells;

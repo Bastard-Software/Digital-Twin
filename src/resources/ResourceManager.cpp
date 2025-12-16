@@ -18,24 +18,26 @@ namespace DigitalTwin
 
     void ResourceManager::Shutdown()
     {
-        m_meshCache.clear();
         while( !m_uploadQueue.empty() )
             m_uploadQueue.pop();
     }
 
-    Ref<GPUMesh> ResourceManager::GetMesh( const std::string& name )
+    AssetID ResourceManager::GetMeshID( const std::string& name )
     {
-        // 1. Cache Check
-        auto it = m_meshCache.find( name );
-        if( it != m_meshCache.end() )
+        // 1. Check if already exists
+        auto it = m_nameToId.find( name );
+        if( it != m_nameToId.end() )
         {
             return it->second;
         }
 
-        // 2. Generate CPU Data
-        DT_CORE_INFO( "[Resources] Generating mesh: '{}'", name );
-        Mesh data;
+        // 2. Create new ID and Mesh
+        AssetID newID = m_nextID++;
 
+        DT_CORE_INFO( "[Resources] Registering new mesh: '{}' -> ID: {}", name, newID );
+
+        // Generate CPU Data
+        Mesh data;
         if( name == "Cube" )
             data = ShapeGenerator::CreateCube();
         else if( name == "Sphere" )
@@ -46,11 +48,22 @@ namespace DigitalTwin
             data = ShapeGenerator::CreateCube();
         }
 
-        // 3. Create Unified GPU Mesh
-        auto mesh           = CreateGPUMesh( data );
-        m_meshCache[ name ] = mesh;
+        // Create GPU Resource (Queues upload)
+        auto mesh = CreateGPUMesh( data );
 
-        return mesh;
+        // Store
+        m_meshes[ newID ]  = mesh;
+        m_nameToId[ name ] = newID;
+
+        return newID;
+    }
+
+    Ref<GPUMesh> ResourceManager::GetMesh( AssetID id )
+    {
+        auto it = m_meshes.find( id );
+        if( it != m_meshes.end() )
+            return it->second;
+        return nullptr;
     }
 
     Ref<GPUMesh> ResourceManager::CreateGPUMesh( const Mesh& data )

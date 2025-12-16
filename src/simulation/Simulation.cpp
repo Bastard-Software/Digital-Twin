@@ -24,13 +24,22 @@ namespace DigitalTwin
         m_envParams.gravity   = gravity;
     }
 
-    void Simulation::SpawnCell( glm::vec4 position, glm::vec3 velocity, glm::vec4 phenotypeColor )
+    void Simulation::SpawnCell( AssetID meshID, glm::vec4 position, glm::vec3 velocity, glm::vec4 phenotypeColor )
     {
         Cell cell{};
         cell.position = position; // w = radius
         cell.velocity = glm::vec4( velocity, 0.0f );
         cell.color    = phenotypeColor;
+        cell.meshID   = meshID;
+
         m_initialCells.push_back( cell );
+
+        bool exists = false;
+        for( auto id: m_activeMeshes )
+            if( id == meshID )
+                exists = true;
+        if( !exists )
+            m_activeMeshes.push_back( meshID );
     }
 
     void Simulation::InitializeGPU()
@@ -43,18 +52,14 @@ namespace DigitalTwin
         m_context->Init( capacity );
 
         // 2. Upload Initial State (Cells + Atomic Counter)
-        auto streamer = m_engine.GetStreamingManager();
         auto resMgr   = m_engine.GetResourceManager();
+        auto streamer = m_engine.GetStreamingManager();
 
         resMgr->BeginFrame( 0 ); // Use frame 0 slot for init
         m_context->UploadState( streamer.get(), m_initialCells );
-
-        // 3. Upload mesh
-        m_cellMesh = resMgr->GetMesh( "Sphere" );
-
         resMgr->EndFrame();
 
-        // 4. Wait for upload to ensure GPU is ready before first compute dispatch
+        // 3. Wait for upload to ensure GPU is ready before first compute dispatch
         streamer->WaitForTransferComplete();
 
         DT_CORE_INFO( "[Simulation] GPU Initialization Complete. Active Agents: {}", m_initialCells.size() );

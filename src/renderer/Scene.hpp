@@ -16,6 +16,6 @@ namespace DigitalTwin
         uint32_t    instanceCount  = 0;
 
         // Geometry to render
-        Ref<GPUMesh> mesh = nullptr;
+        std::vector<AssetID> activeMeshIDs;
     };
 } // namespace DigitalTwin

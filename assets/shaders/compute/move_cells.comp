@@ -7,6 +7,11 @@ struct Cell {
     vec4 position; // .xyz = position, .w = radius
     vec4 velocity; // .xyz = velocity
     vec4 color;    // .rgba = color
+    // Metadata block
+    uint meshID;
+    uint pad0;
+    uint pad1;
+    uint pad2;
 };
 
 // Storage Buffer Binding

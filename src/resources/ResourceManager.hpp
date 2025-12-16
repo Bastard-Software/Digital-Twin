@@ -24,10 +24,14 @@ namespace DigitalTwin
         void Shutdown();
 
         /**
-         * @brief Requests a mesh by name.
-         * Returns a cached instance or creates a new one.
+         * @brief Gets or creates a mesh and returns its ID.
          */
-        Ref<GPUMesh> GetMesh( const std::string& name );
+        AssetID GetMeshID( const std::string& name );
+
+        /**
+         * @brief Retrieves the GPU resource by ID. Returns nullptr if invalid.
+         */
+        Ref<GPUMesh> GetMesh( AssetID id );
 
         void      BeginFrame( uint64_t frameNumber );
         SyncPoint EndFrame();
@@ -42,10 +46,17 @@ namespace DigitalTwin
         void ProcessPendingUploads();
 
     private:
-        Ref<Device>           m_device;
-        Ref<StreamingManager> m_streamer;
+        Ref<Device>                       m_device;
+        Ref<StreamingManager>             m_streamer;
+        std::queue<std::function<void()>> m_uploadQueue;
 
-        std::unordered_map<std::string, Ref<GPUMesh>> m_meshCache;
-        std::queue<std::function<void()>>             m_uploadQueue;
+        // Maps Name -> ID (e.g. "Sphere" -> 1)
+        std::unordered_map<std::string, AssetID> m_nameToId;
+
+        // Maps ID -> Resource
+        std::unordered_map<AssetID, Ref<GPUMesh>> m_meshes;
+
+        // Counter for generating new IDs
+        AssetID m_nextID = 1;
     };
 } // namespace DigitalTwin

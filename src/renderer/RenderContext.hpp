@@ -4,6 +4,7 @@
 #include "rhi/CommandBuffer.hpp"
 #include "rhi/Device.hpp"
 #include "rhi/Swapchain.hpp"
+#include "rhi/Texture.hpp"
 #include <vector>
 
 namespace DigitalTwin
@@ -30,14 +31,17 @@ namespace DigitalTwin
         uint32_t       GetCurrentImageIndex() const { return m_imageIndex; }
         VkFormat       GetColorFormat() const { return m_swapchain->GetFormat(); }
         VkFormat       GetDepthFormat() const { return VK_FORMAT_D32_SFLOAT; }
+        Ref<Texture>   GetDepthTexture() const { return m_depthTexture; }
 
     private:
         void RecreateSwapchain();
+        void CreateDepthResources();
 
     private:
         Ref<Device>    m_device;
         Window*        m_window;
         Ref<Swapchain> m_swapchain;
+        Ref<Texture>   m_depthTexture;
 
         static constexpr uint32_t FRAMES_IN_FLIGHT = 2;
 

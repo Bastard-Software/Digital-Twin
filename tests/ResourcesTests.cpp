@@ -145,7 +145,6 @@ protected:
         streamer = CreateRef<StreamingManager>( device );
         streamer->Init();
 
-        // Initialize ResourceManager with dependencies
         resources = CreateRef<ResourceManager>( device, streamer );
     }
 
@@ -166,23 +165,22 @@ TEST_F( ResourceManagerTests, GetMeshCreatesValidBuffers )
     if( !device )
         GTEST_SKIP() << "Device not initialized";
 
-    // 1. Request a Cube
-    // This should queue an upload task internally
-    auto mesh = resources->GetMesh( "Cube" );
+    // 1. Request a Cube ID (Creates resource internally)
+    AssetID cubeID = resources->GetMeshID( "Cube" );
+    EXPECT_NE( cubeID, 0 );
 
+    // 2. Retrieve Mesh by ID
+    auto mesh = resources->GetMesh( cubeID );
     ASSERT_NE( mesh, nullptr );
 
-    // 2. Verify Buffer Allocation
-    // The buffer should be allocated immediately, even before upload
+    // 3. Verify Buffer Allocation
     EXPECT_NE( mesh->GetBuffer(), nullptr );
     EXPECT_GT( mesh->GetBuffer()->GetSize(), 0 );
 
-    // Cube has 24 verts * 48 bytes + 36 indices * 4 bytes
-    // 1152 + 144 = 1296 bytes
+    // Cube has 24 verts * 48 bytes + 36 indices * 4 bytes = 1296 bytes
     EXPECT_GE( mesh->GetBuffer()->GetSize(), 1296 );
 
-    // 3. Verify Offsets
-    // Index offset should be after all vertices (24 * sizeof(Vertex))
+    // 4. Verify Offsets
     EXPECT_EQ( mesh->GetIndexOffset(), 24 * sizeof( Vertex ) );
     EXPECT_EQ( mesh->GetIndexCount(), 36 );
 }
@@ -193,11 +191,16 @@ TEST_F( ResourceManagerTests, CachingWorks )
         GTEST_SKIP() << "Device not initialized";
 
     // 1. Request "Sphere" twice
-    auto meshA = resources->GetMesh( "Sphere" );
-    auto meshB = resources->GetMesh( "Sphere" );
+    AssetID idA = resources->GetMeshID( "Sphere" );
+    AssetID idB = resources->GetMeshID( "Sphere" );
 
-    // 2. Pointers should be identical (shared_ptr pointing to same object)
-    // This confirms we are not wasting GPU memory
+    // IDs should be identical
+    EXPECT_EQ( idA, idB );
+
+    // 2. Pointers should be identical
+    auto meshA = resources->GetMesh( idA );
+    auto meshB = resources->GetMesh( idB );
+
     EXPECT_EQ( meshA, meshB );
     EXPECT_EQ( meshA->GetBuffer(), meshB->GetBuffer() );
 }
@@ -208,11 +211,10 @@ TEST_F( ResourceManagerTests, DeferredUploadExecution )
         GTEST_SKIP() << "Device not initialized";
 
     // 1. Request meshes (Queues upload lambda)
-    auto cube   = resources->GetMesh( "Cube" );
-    auto sphere = resources->GetMesh( "Sphere" );
+    AssetID cubeID   = resources->GetMeshID( "Cube" );
+    AssetID sphereID = resources->GetMeshID( "Sphere" );
 
     // 2. Run a frame to execute the upload queue
-    // If this crashes, the lambda capture or command recording is broken
     resources->BeginFrame( 0 );
     resources->EndFrame();
 

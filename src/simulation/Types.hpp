@@ -13,6 +13,11 @@ namespace DigitalTwin
         glm::vec4 position; // xyz = position, w = radius/size
         glm::vec4 velocity; // xyz = velocity, w = state/type
         glm::vec4 color;    // rgba = visualization color (phenotype expression)
+        // --- Metadata (16 bytes aligned) ---
+        uint32_t meshID; // Which mesh to render?
+        uint32_t _pad0;
+        uint32_t _pad1;
+        uint32_t _pad2; // Padding to align struct to 16 bytes multiple (total 64 bytes)
     };
 
     /**

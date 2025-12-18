@@ -67,6 +67,11 @@ namespace DigitalTwin
          * @return Result::SUCCESS, Result::TIMEOUT, or Result::FAIL.
          */
         Result WaitForQueue( Ref<Queue> queue, uint64_t waitValue, uint64_t timeout = UINT64_MAX );
+        /**
+         * @brief Blocks CPU execution until the GPU has finished all currently submitted commands.
+         * Useful before destroying resources to ensure they are not in use.
+         */
+        void WaitIdle();
 
         // Getters for queues (may point to the same object if hardware has a single queue family)
         Ref<Queue> GetGraphicsQueue() const { return m_graphicsQueue; }

@@ -80,11 +80,7 @@ namespace DigitalTwin
         {
             DT_CORE_INFO( "[Engine] Shutting down..." );
 
-            // Wait for GPU to finish all work before destroying resources
-            if( m_device )
-            {
-                m_device->GetAPI().vkDeviceWaitIdle( m_device->GetHandle() );
-            }
+            WaitIdle();
 
             // Release managers first (they hold buffers)
             m_resourceManager.reset();
@@ -148,5 +144,13 @@ namespace DigitalTwin
         }
 
         DT_CORE_INFO( "[Engine] Loop finished after {} frames.", m_frameCounter );
+    }
+
+    void Engine::WaitIdle()
+    {
+        if( m_device )
+        {
+            m_device->WaitIdle();
+        }
     }
 } // namespace DigitalTwin

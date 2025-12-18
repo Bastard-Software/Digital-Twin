@@ -1,0 +1,74 @@
+#version 450
+layout(local_size_x = 256) in;
+
+struct Cell {
+    vec4 position; // xyz = position, w = radius
+    vec4 velocity; // xyz = velocity
+    vec4 color;
+    uint meshID;   // Padding/Alignment must match C++ struct (16-byte alignment)
+    uint pad0;
+    uint pad1;
+    uint pad2;
+};
+
+// Bind to the same SSBO as the movement kernel
+layout(std430, set = 0, binding = 0) buffer CellBuffer {
+    Cell cells[];
+} population;
+
+void main() {
+    uint idx = gl_GlobalInvocationID.x;
+    if (idx >= population.cells.length()) return;
+
+    // Load current cell data
+    Cell myCell = population.cells[idx];
+    vec3 pos = myCell.position.xyz;
+    vec3 vel = myCell.velocity.xyz;
+    float radius = myCell.position.w;
+
+    // --- 1. World Boundary Collisions ---
+    // Simple box containment (-20 to 20)
+    // If a particle hits a wall, invert its velocity component
+    float limit = 20.0;
+    
+    if (pos.x > limit)  { pos.x = limit;  vel.x = -abs(vel.x); }
+    if (pos.x < -limit) { pos.x = -limit; vel.x = abs(vel.x); }
+    
+    if (pos.y > limit)  { pos.y = limit;  vel.y = -abs(vel.y); }
+    if (pos.y < -limit) { pos.y = -limit; vel.y = abs(vel.y); }
+    
+    if (pos.z > limit)  { pos.z = limit;  vel.z = -abs(vel.z); }
+    if (pos.z < -limit) { pos.z = -limit; vel.z = abs(vel.z); }
+
+    // --- 2. Cell-to-Cell Collisions ---
+    // Brute-force check against all other cells (O(N^2))
+    uint count = population.cells.length();
+    
+    for (uint i = 0; i < count; i++) {
+        if (i == idx) continue; // Skip self
+
+        Cell other = population.cells[i];
+        
+        vec3 dir = pos - other.position.xyz;
+        float dist = length(dir);
+        float minDist = radius + other.position.w; // Sum of radii
+
+        // Collision detected
+        if (dist < minDist && dist > 0.0001) {
+            vec3 normal = normalize(dir);
+
+            // Simple elastic bounce: reflect velocity vector
+            // We dampen it slightly (0.9) to simulate energy loss
+            vel = reflect(vel, -normal) * 0.9;
+
+            // Separation logic: Push particles apart to prevent overlapping
+            // This adds stability to the simulation
+            float overlap = minDist - dist;
+            pos += normal * overlap * 0.5;
+        }
+    }
+
+    // Write back updated state
+    population.cells[idx].velocity.xyz = vel;
+    population.cells[idx].position.xyz = pos;
+}

@@ -1,155 +1,143 @@
+#include "compute/ComputeKernel.hpp"
 #include "core/FileSystem.hpp"
 #include "core/Log.hpp"
-#include "runtime/Engine.hpp"
-#include "simulation/Simulation.hpp"
-
-// Compute
-#include "compute/ComputeEngine.hpp"
-#include "compute/ComputeGraph.hpp"
-#include "compute/ComputeKernel.hpp"
-
-// Renderer
-#include "platform/Input.hpp"
-#include "renderer/Renderer.hpp"
-#include "renderer/Scene.hpp"
-#include <filesystem>
-#include <thread>
+#include "runtime/EntryPoint.hpp" // Hooks into the Engine's main()
 
 using namespace DigitalTwin;
 
-int main()
+/**
+ * @brief Experiment class based on the Application architecture.
+ * Implements the exact logic from the working monolithic main.cpp.
+ */
+class Sandbox : public Application
 {
-    // 1. Set up config
-    EngineConfig config;
-    config.headless = false;
-    config.width    = 1280;
-    config.height   = 720;
-
-    // 2. Initialize Engine (Window, Device, Vulkan)
-    Engine engine;
-    if( engine.Init( config ) != Result::SUCCESS )
-        return -1;
-
+public:
+    Sandbox()
+        : Application( { "Digital Twin Simulation", 1280, 720, false } )
     {
-        // RAII Scope: Ensures Simulation/Renderer are destroyed BEFORE Engine shutdown
-
-        // --- Simulation Setup ---
-        // Initialize the simulation world
-        Simulation sim( engine );
-        auto       resMgr = engine.GetResourceManager();
-
-        // Spawn 4 cells for testing collision logic.
-        // Arguments:
-        // 1. Position (Vec4): x, y, z, radius (w)
-        // 2. Velocity (Vec3): x, y, z
-        // 3. Color    (Vec4): r, g, b, a
-
-        AssetID sphereID = resMgr->GetMeshID( "Sphere" );
-        AssetID cubeID   = resMgr->GetMeshID( "Cube" );
-
-        // Red Cell (moving right)
-        sim.SpawnCell( sphereID, glm::vec4( -4.0f, 0.0f, 0.0f, 1.0f ), glm::vec3( 2.0f, 0.5f, 0.0f ), glm::vec4( 1.0f, 0.2f, 0.2f, 1.0f ) );
-
-        // Green Cell (moving left)
-        sim.SpawnCell( cubeID, glm::vec4( 4.0f, 0.0f, 0.0f, 1.0f ), glm::vec3( -2.0f, -0.5f, 0.0f ), glm::vec4( 0.2f, 1.0f, 0.2f, 1.0f ) );
-
-        // Blue Cell (moving down)
-        sim.SpawnCell( sphereID, glm::vec4( 0.0f, 4.0f, 0.0f, 1.0f ), glm::vec3( 0.1f, -2.0f, 0.0f ), glm::vec4( 0.2f, 0.2f, 1.0f, 1.0f ) );
-
-        // Yellow Cell (moving up)
-        sim.SpawnCell( cubeID, glm::vec4( 0.0f, -4.0f, 0.0f, 1.0f ), glm::vec3( -0.1f, 2.0f, 0.0f ), glm::vec4( 1.0f, 1.0f, 0.2f, 1.0f ) );
-
-        // Upload initial data to GPU
-        sim.InitializeGPU();
-
-        // --- Compute Engine Setup ---
-        auto computeEngine = CreateRef<ComputeEngine>( engine.GetDevice() );
-        computeEngine->Init();
-
-        // Load the physics kernel
-        auto compShader = engine.GetDevice()->CreateShader( FileSystem::GetPath( "shaders/compute/move_cells.comp" ).string() );
-        if( !compShader )
-        {
-            DT_CORE_CRITICAL( "Failed to load move_cells.comp shader!" );
-            return -1;
-        }
-
-        ComputePipelineDesc pipeDesc;
-        pipeDesc.shader = compShader;
-        auto pipeline   = engine.GetDevice()->CreateComputePipeline( pipeDesc );
-
-        auto kernel = CreateRef<ComputeKernel>( engine.GetDevice(), pipeline, "MoveCells" );
-        kernel->SetGroupSize( 256, 1, 1 );
-
-        // Bind the Simulation Data (SSBO) to the Compute Shader
-        auto bindings = kernel->CreateBindingGroup();
-        bindings->Set( "population", sim.GetContext()->GetCellBuffer() );
-        bindings->Build();
-
-        ComputeGraph graph;
-        graph.AddTask( kernel, bindings );
-
-        // --- Renderer Setup ---
-        Renderer renderer( engine );
-        renderer.GetCamera().SetDistance( 20.0f ); // Zoom out to see the whole arena
-
-        // Show the window now that everything is loaded
-        engine.GetWindow()->Show();
-
-        DT_CORE_INFO( "[Sandbox] Starting Interactive Loop... Close window to exit." );
-
-        bool running = true;
-
-        // --- Main Loop ---
-        while( running )
-        {
-            // 1. Reset per-frame input states (e.g. scroll delta)
-            Input::ResetScroll();
-
-            // 2. Poll Window Events (Keyboard, Mouse, Resize, Close)
-            if( engine.GetWindow() )
-            {
-                engine.GetWindow()->OnUpdate();
-                if( engine.GetWindow()->IsClosed() )
-                    running = false;
-            }
-
-            engine.GetResourceManager()->BeginFrame( engine.GetFrameCount() );
-
-            // 3. Update Camera (Process Input for Orbit/Zoom)
-            renderer.OnUpdate( 0.016f );
-
-            // 4. Physics Step (Compute Shader)
-            // ExecuteGraph returns a timeline value we can wait on
-            uint64_t fenceValue = computeEngine->ExecuteGraph( graph, sim.GetContext()->GetMaxCellCount() );
-
-            // 5. Render Step
-            // Prepare scene description
-            Scene scene;
-            scene.camera         = &renderer.GetCamera();
-            scene.instanceBuffer = sim.GetContext()->GetCellBuffer();
-            scene.instanceCount  = sim.GetContext()->GetMaxCellCount();
-            scene.activeMeshIDs  = sim.GetActiveMeshes();
-
-            // Submit render commands, synchronizing with the Compute Queue
-            auto      computeQueue = engine.GetDevice()->GetComputeQueue();
-            SyncPoint resSync      = engine.GetResourceManager()->EndFrame();
-
-            std::vector<VkSemaphore> waitSems = { computeQueue->GetTimelineSemaphore() };
-            std::vector<uint64_t>    waitVals = { fenceValue };
-
-            if( resSync.semaphore )
-            {
-                waitSems.push_back( resSync.semaphore );
-                waitVals.push_back( resSync.value );
-            }
-
-            renderer.Render( scene, { computeQueue->GetTimelineSemaphore() }, { fenceValue } );
-
-            // 6. Frame Pacing (~60 FPS cap)
-            std::this_thread::sleep_for( std::chrono::milliseconds( 16 ) );
-        }
     }
 
-    return 0;
+    // --- PHASE 1: DATA SETUP ---
+    // This runs before GPU initialization. We define the world here.
+    void OnConfigureWorld() override
+    {
+        DT_CORE_INFO( "Setting up World Parameters & Agents (Logic from working main)..." );
+
+        // 1. Get Assets
+        // In Application, GetResourceManager returns a reference, not a pointer.
+        AssetID sphereID = GetResourceManager().GetMeshID( "Sphere" );
+        AssetID cubeID   = GetResourceManager().GetMeshID( "Cube" );
+
+        // 2. Set Environment
+        GetSimulation().SetMicroenvironment( 0.5f, 9.81f );
+
+        // 3. Spawn Cells
+        // Exact copy of the 4 cells from your working main.cpp
+
+        // Red Cell (moving right)
+        GetSimulation().SpawnCell( sphereID, glm::vec4( -4.0f, 0.0f, 0.0f, 1.0f ), glm::vec3( 2.0f, 0.5f, 0.0f ),
+                                   glm::vec4( 1.0f, 0.2f, 0.2f, 1.0f ) );
+
+        // Green Cell (moving left)
+        GetSimulation().SpawnCell( cubeID, glm::vec4( 4.0f, 0.0f, 0.0f, 1.0f ), glm::vec3( -2.0f, -0.5f, 0.0f ),
+                                   glm::vec4( 0.2f, 1.0f, 0.2f, 1.0f ) );
+
+        // Blue Cell (moving down)
+        GetSimulation().SpawnCell( sphereID, glm::vec4( 0.0f, 4.0f, 0.0f, 1.0f ), glm::vec3( 0.1f, -2.0f, 0.0f ),
+                                   glm::vec4( 0.2f, 0.2f, 1.0f, 1.0f ) );
+
+        // Yellow Cell (moving up)
+        GetSimulation().SpawnCell( cubeID, glm::vec4( 0.0f, -4.0f, 0.0f, 1.0f ), glm::vec3( -0.1f, 2.0f, 0.0f ),
+                                   glm::vec4( 1.0f, 1.0f, 0.2f, 1.0f ) );
+
+        // NOTE: InitializeGPU() is called automatically by the base class immediately after this function.
+    }
+
+    // --- PHASE 2: PHYSICS SETUP ---
+    // This runs after GPU buffers are created. We set up shaders here.
+    void OnConfigurePhysics() override
+    {
+        DT_CORE_INFO( "Setting up Compute Pipelines (Logic from working main)..." );
+
+        auto  device  = GetDevice();
+        auto  context = GetSimulation().GetContext(); // Context is valid here
+        auto& graph   = GetComputeGraph();
+
+        // --- 1. Load Collision Kernel ---
+        auto collShader = device->CreateShader( FileSystem::GetPath( "shaders/compute/solve_collisions.comp" ).string() );
+        if( !collShader )
+        {
+            DT_CORE_CRITICAL( "Failed to load solve_collisions.comp shader!" );
+            return;
+        }
+
+        ComputePipelineDesc collPipeDesc;
+        collPipeDesc.shader = collShader;
+        auto collPipeline   = device->CreateComputePipeline( collPipeDesc );
+
+        auto collKernel = CreateRef<ComputeKernel>( device, collPipeline, "SolveCollisions" );
+        collKernel->SetGroupSize( 256, 1, 1 );
+
+        // Create Bindings
+        // We bind ONLY "population" because that matches your working main.cpp.
+        // We do NOT bind "meshInfo" to avoid validation errors if the shader doesn't expect it.
+        auto collBindings = collKernel->CreateBindingGroup();
+        if( collBindings )
+        {
+            collBindings->Set( "population", context->GetCellBuffer() );
+            collBindings->Build();
+        }
+        else
+        {
+            DT_CORE_CRITICAL( "Failed to create bindings for Collision Kernel!" );
+            return;
+        }
+
+        // --- 2. Load Movement Kernel ---
+        auto moveShader = device->CreateShader( FileSystem::GetPath( "shaders/compute/move_cells.comp" ).string() );
+        if( !moveShader )
+        {
+            DT_CORE_CRITICAL( "Failed to load move_cells.comp shader!" );
+            return;
+        }
+
+        ComputePipelineDesc movePipeDesc;
+        movePipeDesc.shader = moveShader;
+        auto movePipeline   = device->CreateComputePipeline( movePipeDesc );
+
+        auto moveKernel = CreateRef<ComputeKernel>( device, movePipeline, "MoveCells" );
+        moveKernel->SetGroupSize( 256, 1, 1 );
+
+        // Create Bindings
+        auto moveBindings = moveKernel->CreateBindingGroup();
+        if( moveBindings )
+        {
+            moveBindings->Set( "population", context->GetCellBuffer() );
+            moveBindings->Build();
+        }
+        else
+        {
+            DT_CORE_CRITICAL( "Failed to create bindings for Movement Kernel!" );
+            return;
+        }
+
+        // --- 3. Build the Compute Graph ---
+        // Order: Solve Collisions -> Move Cells
+        graph.AddTask( collKernel, collBindings );
+        graph.AddTask( moveKernel, moveBindings );
+
+        DT_CORE_INFO( "Compute Graph configured successfully." );
+    }
+
+    void OnGui() override
+    {
+        // Future UI code will go here
+    }
+};
+
+// --- Entry Point Definition ---
+// This factory function allows the Engine to instantiate our specific experiment.
+DigitalTwin::Application* DigitalTwin::CreateApplication()
+{
+    return new Sandbox();
 }

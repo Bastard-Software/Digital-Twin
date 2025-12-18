@@ -45,6 +45,12 @@ namespace DigitalTwin
          */
         void Run( Simulation& simulation );
 
+        /**
+         * @brief Blocks CPU execution until the GPU has finished all currently submitted commands.
+         * Useful before destroying resources to ensure they are not in use.
+         */
+        void WaitIdle();
+
         // --- Accessors ---
         Ref<Device>           GetDevice() const { return m_device; }
         Ref<StreamingManager> GetStreamingManager() const { return m_streamingManager; }

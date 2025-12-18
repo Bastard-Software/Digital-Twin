@@ -1,5 +1,6 @@
 #include "rhi/RHI.hpp"
 #include "runtime/Engine.hpp"
+#include "runtime/Application.hpp"
 #include <gtest/gtest.h>
 
 using namespace DigitalTwin;

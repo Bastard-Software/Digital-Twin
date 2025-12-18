@@ -33,6 +33,12 @@ namespace DigitalTwin
 
     uint64_t ComputeEngine::ExecuteGraph( ComputeGraph& graph, uint32_t agentCount )
     {
+        if( graph.IsEmpty() )
+        {
+            DT_CORE_WARN( "[ComputeEngine] Skipping execution of empty graph." );
+            return 0;
+        }
+
         // 0. Opportunistic cleanup of finished tasks
         GarbageCollect();
 

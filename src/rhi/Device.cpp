@@ -422,6 +422,11 @@ namespace DigitalTwin
         return Result::FAIL;
     }
 
+    void Device::WaitIdle()
+    {
+        m_api.vkDeviceWaitIdle( m_device );
+    }
+
     Device::QueueFamilyIndices Device::FindQueueFamilies( VkPhysicalDevice device )
     {
         QueueFamilyIndices indices;

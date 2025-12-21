@@ -40,10 +40,9 @@ namespace DigitalTwin
         void Shutdown();
 
         /**
-         * @brief Starts the main loop. Blocks until the window is closed or simulation ends.
-         * @param simulation The simulation instance to update every frame.
+         * @brief Handles start-of-frame housekeeping (frame counter, descriptor resets)
          */
-        void Run( Simulation& simulation );
+        void BeginFrame();
 
         /**
          * @brief Blocks CPU execution until the GPU has finished all currently submitted commands.

@@ -103,47 +103,18 @@ namespace DigitalTwin
         }
     }
 
-    void Engine::Run( Simulation& simulation )
+    void Engine::BeginFrame()
     {
-        DT_CORE_INFO( "[Engine] Starting Main Loop..." );
+        // 1. Increment global frame counter
+        m_frameCounter++;
 
-        // Fixed timestep for physics/biology (e.g. 10ms = 100Hz)
-        const double dt      = 0.01;
-        bool         running = true;
-
-        while( running )
-        {
-            // 1. Platform Events
-            if( m_window )
-            {
-                m_window->OnUpdate();
-                if( m_window->IsClosed() )
-                    running = false;
-            }
-
-            // 2. Clear Descriptor Pools (CRITICAL for BindingGroup/Transient descriptors)
-            // This ensures we don't leak descriptor sets over time.
-            m_device->ResetDescriptorPools();
-
-            // 3. Simulation Step (Compute)
-            simulation.Step( static_cast<float>( dt ) );
-
-            // 4. Rendering (Placeholder)
-            // if (!m_config.headless) renderer.Draw(simulation.GetContext());
-
-            // 5. Frame Limiter / VSync emulation
-            std::this_thread::sleep_for( std::chrono::milliseconds( 16 ) ); // ~60 FPS
-
-            m_frameCounter++;
-
-            // For PoC safety: Stop after some frames if headless
-            if( m_config.headless && m_frameCounter > 1000 )
-            {
-                running = false;
-            }
-        }
-
-        DT_CORE_INFO( "[Engine] Loop finished after {} frames.", m_frameCounter );
+        // 2. Reset transient descriptor pools.
+        // This is crucial! Every frame (even compute-only), we might allocate
+        // new descriptors for binding groups. We need to clear the old ones.
+        // if( m_device )
+        // {
+        //     m_device->ResetDescriptorPools();
+        // }
     }
 
     void Engine::WaitIdle()

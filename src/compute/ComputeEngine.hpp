@@ -26,6 +26,9 @@ namespace DigitalTwin
         // Helper to block CPU until task completes (for testing/sync)
         void WaitForTask( uint64_t taskID );
 
+        // Access the Device
+        Ref<Device> GetDevice() const { return m_device; }
+
     private:
         // Checks completed fences and releases held command buffers
         void GarbageCollect();

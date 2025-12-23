@@ -1,9 +1,9 @@
 #pragma once
 #include "core/Base.hpp"
+#include "renderer/AgentRenderPass.hpp"
 #include "renderer/Camera.hpp"
 #include "renderer/RenderContext.hpp"
 #include "renderer/Scene.hpp"
-#include "renderer/SimulationPass.hpp"
 #include "rhi/Device.hpp"
 
 namespace DigitalTwin
@@ -33,10 +33,10 @@ namespace DigitalTwin
         bool    IsActive() const { return m_active; }
 
     private:
-        bool                  m_active = false;
-        Scope<RenderContext>  m_ctx;
-        Scope<SimulationPass> m_simPass;
-        Scope<Camera>         m_camera;
-        Ref<ResourceManager>  m_resManager;
+        bool                   m_active = false;
+        Scope<RenderContext>   m_ctx;
+        Scope<AgentRenderPass> m_simPass;
+        Scope<Camera>          m_camera;
+        Ref<ResourceManager>   m_resManager;
     };
 } // namespace DigitalTwin

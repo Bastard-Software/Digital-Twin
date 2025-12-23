@@ -1,59 +1,107 @@
 #pragma once
-#include "resources/GPUMesh.hpp"
-#include "simulation/SimulationContext.hpp"
+#include "compute/ComputeGraph.hpp"
+#include "core/Base.hpp"
 #include "simulation/Types.hpp"
-#include <glm/glm.hpp>
+#include <functional>
 #include <memory>
+#include <string>
 #include <vector>
 
 namespace DigitalTwin
 {
-    class Engine; // Forward declaration
+
+    class Application;
+    class Engine;
+    class ComputeEngine;
+    class SimulationContext;
+    class SimulationScheduler;
 
     /**
-     * @brief High-level API for defining and controlling biological simulations.
-     * Decoupled from low-level rendering/compute details.
+     * @brief Base class for User Experiments.
+     * Users inherit from this class to define their simulation logic.
      */
     class Simulation
     {
     public:
-        // Simulation needs the Engine to access GPU resources
-        Simulation( Engine& engine );
-        ~Simulation();
+        Simulation();
+        virtual ~Simulation();
 
-        // --- Biological API ---
+        // --- USER API (Virtuals) ---
 
         /**
-         * @brief Sets global microenvironment parameters.
+         * @brief Phase 1: Setup world parameters and spawn initial cells.
+         * Called once before GPU initialization.
          */
+        virtual void OnConfigureWorld() = 0;
+
+        /**
+         * @brief Phase 2: Define Compute Logic.
+         * Register systems and graphs here. Called after GPU init.
+         */
+        virtual void OnConfigureSystems() = 0;
+
+        /**
+         * @brief Optional: Called every frame (CPU side).
+         * Use this for custom stop conditions, logging, or interacting with the scheduler.
+         * @param realDt Real elapsed time in seconds.
+         */
+        virtual void OnUpdate( float realDt ) {}
+
+        /**
+         * @brief Optional: Called during UI render pass.
+         * Use ImGui calls here to add custom sliders/buttons.
+         */
+        virtual void OnRenderGui() {}
+
+        // --- USER API (Actions) ---
+    protected:
         void SetMicroenvironment( float viscosity, float gravity );
+        void SpawnCell( uint32_t meshID, glm::vec4 pos, glm::vec3 vel, glm::vec4 color );
 
         /**
-         * @brief Spawns a new cell. Added to CPU staging list until InitializeGPU() is called.
+         * @brief Registers a Compute Graph to be executed at a fixed interval.
+         * @param name Debug name of the system.
+         * @param graph The compute graph (kernels + bindings).
+         * @param interval Simulation time interval (e.g., 0.016 for 60Hz physics).
          */
-        void SpawnCell( AssetID meshID, glm::vec4 position, glm::vec3 velocity, glm::vec4 phenotypeColor );
+        void RegisterSystem( const std::string& name, ComputeGraph graph, float interval );
 
-        /**
-         * @brief Finalizes configuration, allocates GPU memory, and uploads initial state.
-         * MUST be called before Engine::Run().
-         */
-        void InitializeGPU();
+        // Control API
+        void  SetTimeScale( float scale );
+        float GetTimeScale() const;
+        void  Pause();
+        void  Resume();
 
-        // --- Internal System API (Called by Engine) ---
+        // Accessors for building graphs
+        SimulationContext* GetContext();
+        // Helper to get Global UBO for shader binding
+        Ref<Buffer> GetGlobalUniformBuffer();
 
-        void Step( float dt );
+        friend class Application;
 
-        // Expose context for Renderer/Compute systems
-        SimulationContext*          GetContext() { return m_context.get(); }
-        const std::vector<AssetID>& GetActiveMeshes() const { return m_activeMeshes; }
+        // --- INTERNAL ENGINE API (Hidden from common usage) ---
+    protected:
+        void                         InitializeRuntime( Engine& engine, Ref<ComputeEngine> computeEngine );
+        void                         Tick( float realDt ); // Called by Application
+        const std::vector<uint32_t>& GetActiveMeshes() const;
+        uint64_t                     GetComputeSignal() const;
+        AssetID                      GetMeshID( const std::string& name ) const;
 
     private:
-        Engine&                            m_engine;
-        std::unique_ptr<SimulationContext> m_context;
-        std::vector<AssetID>               m_activeMeshes;
+        // Pimpl dependencies to keep header clean
+        Engine*                    m_engineRef = nullptr;
+        Ref<ComputeEngine>         m_computeEngine;
+        Ref<SimulationContext>     m_context;
+        Scope<SimulationScheduler> m_scheduler;
 
-        // Staging data on CPU (initial configuration)
+        std::vector<uint32_t> m_activeMeshes;
+
+        // Staging data
         std::vector<Cell> m_initialCells;
         EnvironmentParams m_envParams{};
     };
+
+    // --- FACTORY ---
+    // User must implement this in their main.cpp
+    extern Simulation* CreateSimulation();
 } // namespace DigitalTwin

@@ -1,28 +1,32 @@
 #pragma once
-#include "core/Base.hpp"
+#include "core/Log.hpp"
 #include "runtime/Application.hpp"
 
-// External declaration: The user must define this function in their client app (Sandbox)
-extern DigitalTwin::Application* DigitalTwin::CreateApplication();
+// The user must implement this function to return their Simulation instance.
+extern DigitalTwin::Simulation* DigitalTwin::CreateSimulation();
 
 int main( int argc, char** argv )
 {
-    auto app = DigitalTwin::CreateApplication();
-    if( app )
-    {
-        try
-        {
-            app->Run();
-        }
-        catch( const std::exception& e )
-        {
-            DT_CORE_CRITICAL( "Application crashed: {}", e.what() );
-            delete app;
-            return -1;
-        }
+    DigitalTwin::Log::Init();
 
-        delete app;
+    // 1. Create the User's Experiment
+    auto* experiment = DigitalTwin::CreateSimulation();
+
+    // 2. Wrap it in the Application Host
+    DigitalTwin::Application app( experiment );
+
+    // 3. Run
+    try
+    {
+        app.Run();
+    }
+    catch( const std::exception& e )
+    {
+        DT_CORE_CRITICAL( "Application crash: {}", e.what() );
+        return -1;
     }
 
+    // 4. Cleanup
+    delete experiment;
     return 0;
 }

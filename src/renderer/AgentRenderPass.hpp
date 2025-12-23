@@ -12,11 +12,11 @@ namespace DigitalTwin
      * @brief Responsible for drawing the Simulation Agents (Cells).
      * Manages Graphics Pipeline and Shaders.
      */
-    class SimulationPass
+    class AgentRenderPass
     {
     public:
-        SimulationPass( Ref<Device> device, Ref<ResourceManager> resManager );
-        ~SimulationPass();
+        AgentRenderPass( Ref<Device> device, Ref<ResourceManager> resManager );
+        ~AgentRenderPass();
 
         void Init( VkFormat colorFormat, VkFormat depthFormat );
 

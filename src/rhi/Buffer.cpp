@@ -92,7 +92,8 @@ namespace DigitalTwin
             case BufferType::UNIFORM:
                 // Constant buffer (UBO)
                 bufferInfo.usage = VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT;
-                allocInfo.usage  = VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE;
+                allocInfo.usage  = VMA_MEMORY_USAGE_CPU_TO_GPU;
+                allocInfo.flags  = VMA_ALLOCATION_CREATE_MAPPED_BIT;
                 break;
 
             case BufferType::MESH:
@@ -145,7 +146,7 @@ namespace DigitalTwin
 
     void* Buffer::Map()
     {
-        DT_ASSERT( m_type == BufferType::UPLOAD || m_type == BufferType::READBACK, "Mapping is only allowed for UPLOAD and READBACK buffers!" );
+        DT_ASSERT( m_type == BufferType::UPLOAD || m_type == BufferType::READBACK || m_type == BufferType::UNIFORM, "Mapping is only allowed for UNIFORM, UPLOAD and READBACK buffers!" );
 
         if( m_mappedData )
             return m_mappedData;
@@ -161,7 +162,8 @@ namespace DigitalTwin
 
     void Buffer::Unmap()
     {
-        DT_ASSERT( m_type == BufferType::UPLOAD || m_type == BufferType::READBACK, "Mapping is only allowed for UPLOAD and READBACK buffers!" );
+        DT_ASSERT( m_type == BufferType::UPLOAD || m_type == BufferType::READBACK || m_type == BufferType::UNIFORM,
+                   "Mapping is only allowed for UNIFORM, UPLOAD and READBACK buffers!" );
 
         if( !m_mappedData )
         {
@@ -171,7 +173,8 @@ namespace DigitalTwin
 
     void Buffer::Write( const void* data, size_t size, size_t offset )
     {
-        DT_ASSERT( m_type == BufferType::UPLOAD || m_type == BufferType::READBACK, "Host writting is only allowed for UPLOAD and READBACK buffers!" );
+        DT_ASSERT( m_type == BufferType::UPLOAD || m_type == BufferType::READBACK || m_type == BufferType::UNIFORM,
+                   "Host writting is only allowed for UNIFORM, UPLOAD and READBACK buffers!" );
 
         void* ptr = Map();
         if( ptr )
@@ -183,7 +186,8 @@ namespace DigitalTwin
 
     void Buffer::Read( void* outData, size_t size, size_t offset )
     {
-        DT_ASSERT( m_type == BufferType::UPLOAD || m_type == BufferType::READBACK, "Host reading is only allowed for UPLOAD and READBACK buffers!" );
+        DT_ASSERT( m_type == BufferType::UPLOAD || m_type == BufferType::READBACK || m_type == BufferType::UNIFORM,
+                   "Host reading is only allowed for UNIFORM, UPLOAD and READBACK buffers!" );
 
         void* ptr = Map();
         if( ptr )

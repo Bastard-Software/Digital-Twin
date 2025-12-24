@@ -1,7 +1,25 @@
 #version 450
+/**
+ * @brief Compute shader responsible for integrating cell movement logic.
+ * Handles position updates based on velocity and boundary enforcement.
+ */
 
-// Thread group size (must match C++ dispatch setup)
 layout(local_size_x = 256, local_size_y = 1, local_size_z = 1) in;
+
+// --- SET 0: Global Context ---
+
+/**
+ * @brief Global uniform data provided by the engine.
+ * IMPORTANT: This structure must match 'GlobalContextData' in SimulationScheduler.cpp exactly.
+ * No instance name is used to allow direct access to member variables.
+ */
+layout(std140, set = 0, binding = 0) uniform GlobalData {
+    float time;         // offset 0
+    float deltaTime;    // offset 4
+    float timeScale;    // offset 8
+    float frameCount;   // offset 12
+    float worldSize;    // offset 16
+}; 
 
 struct Cell {
     vec4 position; // .xyz = position, .w = radius
@@ -14,39 +32,40 @@ struct Cell {
     uint pad2;
 };
 
-// Storage Buffer Binding
-layout(std430, set = 0, binding = 0) buffer CellBuffer {
+// Binding 1: Population Storage Buffer
+layout(std430, set = 0, binding = 1) buffer CellBuffer {
     Cell cells[];
 } population;
 
-// Simulation Constants
-const uint CELL_COUNT = 4;
-const float BOUNDS = 8.0;   // Size of the simulation box
-const float DT = 0.05;      // Fixed time step
+// --- LOGIC ---
 
 void main() {
     uint index = gl_GlobalInvocationID.x;
     
     // Safety check to avoid accessing out of bounds
-    if (index >= CELL_COUNT) return;
+    if (index >= population.cells.length()) return;
 
     // 1. Fetch data
     vec3 pos = population.cells[index].position.xyz;
     vec3 vel = population.cells[index].velocity.xyz;
 
     // 2. Wall Collisions (Invert velocity if hitting bounds)
+    // Using hardcoded bounds or worldSize from UBO if needed.
+    const float BOUNDS = 8.0;
+
     if (pos.x > BOUNDS)  { pos.x = BOUNDS;  vel.x *= -1.0; }
     if (pos.x < -BOUNDS) { pos.x = -BOUNDS; vel.x *= -1.0; }
     
     if (pos.y > BOUNDS)  { pos.y = BOUNDS;  vel.y *= -1.0; }
     if (pos.y < -BOUNDS) { pos.y = -BOUNDS; vel.y *= -1.0; }
     
-    // Optional Z bounds (if operating in 3D depth)
+    // Optional Z bounds
     // if (pos.z > BOUNDS)  { pos.z = BOUNDS;  vel.z *= -1.0; }
     // if (pos.z < -BOUNDS) { pos.z = -BOUNDS; vel.z *= -1.0; }
 
     // 3. Integration (Move position)
-    pos += vel * DT;
+    // Direct access to 'deltaTime' because the uniform block instance name was removed.
+    pos += vel * deltaTime;
 
     // 4. Write back results
     population.cells[index].position.xyz = pos;

@@ -1,4 +1,4 @@
-#include "renderer/SimulationPass.hpp"
+#include "renderer/AgentRenderPass.hpp"
 
 #include "core/FileSystem.hpp"
 #include "core/Log.hpp"
@@ -9,17 +9,17 @@
 namespace DigitalTwin
 {
 
-    SimulationPass::SimulationPass( Ref<Device> device, Ref<ResourceManager> resManager )
+    AgentRenderPass::AgentRenderPass( Ref<Device> device, Ref<ResourceManager> resManager )
         : m_device( device )
         , m_resManager( resManager )
     {
     }
 
-    SimulationPass::~SimulationPass()
+    AgentRenderPass::~AgentRenderPass()
     {
     }
 
-    void SimulationPass::Init( VkFormat colorFormat, VkFormat depthFormat )
+    void AgentRenderPass::Init( VkFormat colorFormat, VkFormat depthFormat )
     {
         // Load shaders directly from assets
         auto vert = m_device->CreateShader( FileSystem::GetPath( "shaders/graphics/cell.vert" ).string() );
@@ -27,7 +27,7 @@ namespace DigitalTwin
 
         if( !vert || !frag )
         {
-            DT_CORE_CRITICAL( "Failed to load SimulationPass shaders!" );
+            DT_CORE_CRITICAL( "Failed to load AgentRenderPass shaders!" );
             return;
         }
 
@@ -51,50 +51,76 @@ namespace DigitalTwin
         uint32_t  targetMeshID;
     };
 
-    void SimulationPass::Draw( CommandBuffer* cmd, const Scene& scene )
+    void AgentRenderPass::Draw( CommandBuffer* cmd, const Scene& scene )
     {
-        if( !scene.instanceBuffer || scene.instanceCount == 0 )
+        DT_CORE_ASSERT( cmd, "CommandBuffer is null!" );
+
+        // Ensure we have data to draw
+        if( !scene.instanceBuffer || scene.activeMeshIDs.empty() )
             return;
 
         cmd->BindGraphicsPipeline( m_pipeline );
 
-        // Bind Instance Data (Global for all cells)
+        // --- 1. BIND SET 0: POPULATION DATA ---
+        // This set is static for the duration of the render pass (all meshes use the same population buffer).
         VkDescriptorSet set0 = VK_NULL_HANDLE;
+
+        // Allocate Set 0 based on the pipeline layout
         if( m_device->AllocateDescriptor( m_pipeline->GetDescriptorSetLayout( 0 ), set0 ) == Result::SUCCESS )
         {
+            // Create binding group helper
             auto bindings = CreateRef<BindingGroup>( m_device, set0, m_pipeline->GetReflectionData() );
+
+            // Bind the simulation buffer to the "population" resource in the shader (Set 0, Binding 0)
             bindings->Set( "population", scene.instanceBuffer );
             bindings->Build();
+
+            // Bind Descriptor Set 0
             cmd->BindDescriptorSets( VK_PIPELINE_BIND_POINT_GRAPHICS, m_pipeline->GetLayout(), 0, { set0 } );
         }
+        else
+        {
+            DT_CORE_ERROR( "[AgentRenderPass] Failed to allocate Descriptor Set 0 (Population)!" );
+            return;
+        }
 
-        // --- MULTI-MESH RENDERING LOOP ---
-        // For each mesh type present in the scene, we issue a Draw Call.
-        // The shader filters out instances that don't match the ID.
+        // --- 2. DRAW LOOP (Iterate over active mesh types) ---
         for( AssetID meshID: scene.activeMeshIDs )
         {
+            // Retrieve mesh from Resource Manager
             auto gpuMesh = m_resManager->GetMesh( meshID );
             if( !gpuMesh )
                 continue;
 
-            // 1. Bind Geometry (Vertices)
+            // --- BIND SET 1: GEOMETRY DATA ---
             VkDescriptorSet set1 = VK_NULL_HANDLE;
             if( m_device->AllocateDescriptor( m_pipeline->GetDescriptorSetLayout( 1 ), set1 ) == Result::SUCCESS )
             {
                 auto bindings = CreateRef<BindingGroup>( m_device, set1, m_pipeline->GetReflectionData() );
+
+                // Bind the unified vertex/index buffer to "mesh" (Set 1, Binding 0)
                 bindings->Set( "mesh", gpuMesh->GetBuffer() );
                 bindings->Build();
+
+                // Bind Descriptor Set 1
                 cmd->BindDescriptorSets( VK_PIPELINE_BIND_POINT_GRAPHICS, m_pipeline->GetLayout(), 1, { set1 } );
             }
+            else
+            {
+                DT_CORE_WARN( "[AgentRenderPass] Failed to allocate Set 1 for Mesh {}", meshID );
+                continue;
+            }
 
-            // 2. Push Constants (Pass current Mesh ID)
+            // --- PUSH CONSTANTS ---
+            // Update camera matrix and target mesh ID for filtering
             PushConst pc;
             pc.viewProj     = scene.camera ? scene.camera->GetViewProjection() : glm::mat4( 1.0f );
             pc.targetMeshID = meshID;
 
             cmd->PushConstants( m_pipeline->GetLayout(), VK_SHADER_STAGE_VERTEX_BIT, 0, pc );
 
-            // 3. Bind Index Buffer & Draw
+            // --- DRAW CALL ---
+            // Use instanced rendering: draw 'instanceCount' instances of this mesh.
             cmd->BindIndexBuffer( gpuMesh->GetBuffer(), gpuMesh->GetIndexOffset(), VK_INDEX_TYPE_UINT32 );
             cmd->DrawIndexed( gpuMesh->GetIndexCount(), scene.instanceCount, 0, 0, 0 );
         }

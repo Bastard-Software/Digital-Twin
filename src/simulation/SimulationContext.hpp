@@ -43,6 +43,8 @@ namespace DigitalTwin
 
         uint32_t GetMaxCellCount() const { return m_maxCellCount; }
 
+        Ref<Device> GetDevice() const { return m_device; }
+
     private:
         Ref<Device> m_device;
 

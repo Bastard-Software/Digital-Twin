@@ -55,7 +55,7 @@ namespace DigitalTwin
                 pushConstants.insert( pushConstants.end(), pcs.begin(), pcs.end() );
             }
 
-            // 2. Create Descriptor Set Layouts
+            // 2a. Create Descriptor Set Layouts for active resources
             for( const auto& [ setIndex, bindingsMap ]: mergedResources )
             {
                 std::vector<VkDescriptorSetLayoutBinding> vkBindings;
@@ -81,6 +81,59 @@ namespace DigitalTwin
                     continue;
                 }
                 result.descriptorSetLayouts[ setIndex ] = layout;
+            }
+
+            // 2b. FILL GAPS: Ensure no null handles in the contiguous range [0, maxSet]
+            // If Set 0 is optimized out by shader compiler, but Set 1 exists, we must provide an empty layout for Set 0.
+            if( !result.descriptorSetLayouts.empty() )
+            {
+                uint32_t maxSet = result.descriptorSetLayouts.rbegin()->first;
+                for( uint32_t i = 0; i < maxSet; ++i )
+                {
+                    if( result.descriptorSetLayouts.find( i ) == result.descriptorSetLayouts.end() )
+                    {
+                        // Gap detected at index 'i'.
+                        VkDescriptorSetLayoutCreateInfo           layoutInfo = { VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO };
+                        std::vector<VkDescriptorSetLayoutBinding> forcedBindings;
+
+                        // --- CRITICAL FIX: Enforce GlobalData Layout for Set 0 ---
+                        // If Set 0 is missing (optimized out by shader), we must recreate it
+                        // so that vkUpdateDescriptorSets in the engine doesn't crash when binding the Global UBO.
+                        if( i == 0 )
+                        {
+                            DT_CORE_WARN( "PipelineUtils: Shader optimized out Set 0 (GlobalData). Enforcing layout compatibility." );
+
+                            VkDescriptorSetLayoutBinding globalBinding{};
+                            globalBinding.binding            = 0; // GlobalData is always at Binding 0
+                            globalBinding.descriptorType     = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+                            globalBinding.descriptorCount    = 1;
+                            globalBinding.stageFlags         = VK_SHADER_STAGE_ALL;
+                            globalBinding.pImmutableSamplers = nullptr;
+
+                            forcedBindings.push_back( globalBinding );
+
+                            layoutInfo.bindingCount = static_cast<uint32_t>( forcedBindings.size() );
+                            layoutInfo.pBindings    = forcedBindings.data();
+                        }
+                        else
+                        {
+                            // For other gaps (e.g. Set 1 missing but Set 2 present), create an empty dummy layout.
+                            // This allows Pipeline Layout creation but prevents writing descriptors to this set.
+                            layoutInfo.bindingCount = 0;
+                            layoutInfo.pBindings    = nullptr;
+                        }
+
+                        VkDescriptorSetLayout layout = VK_NULL_HANDLE;
+                        if( api->vkCreateDescriptorSetLayout( device, &layoutInfo, nullptr, &layout ) == VK_SUCCESS )
+                        {
+                            result.descriptorSetLayouts[ i ] = layout;
+                        }
+                        else
+                        {
+                            DT_CORE_CRITICAL( "PipelineUtils: Failed to create gap-filling layout for Set {}", i );
+                        }
+                    }
+                }
             }
 
             // 3. Create Pipeline Layout

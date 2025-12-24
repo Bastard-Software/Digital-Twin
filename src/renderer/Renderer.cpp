@@ -18,7 +18,7 @@ namespace DigitalTwin
         m_ctx    = CreateScope<RenderContext>( engine.GetDevice(), engine.GetWindow() );
         m_ctx->Init();
 
-        m_simPass = CreateScope<SimulationPass>( engine.GetDevice(), m_resManager );
+        m_simPass = CreateScope<AgentRenderPass>( engine.GetDevice(), m_resManager );
         m_simPass->Init( m_ctx->GetColorFormat(), m_ctx->GetDepthFormat() );
 
         m_camera = CreateScope<Camera>( 45.0f, static_cast<float>( engine.GetConfig().width ) / static_cast<float>( engine.GetConfig().height ), 0.1f,

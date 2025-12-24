@@ -1,5 +1,21 @@
 #version 450
+/**
+ * @brief Compute shader for solving cell-to-cell and cell-to-world collisions.
+ * Implements a simple elastic collision model.
+ */
+
 layout(local_size_x = 256) in;
+
+// --- SET 0: Global Context ---
+
+// Matches C++ GlobalContextData struct exactly
+layout(std140, set = 0, binding = 0) uniform GlobalData {
+    float time;
+    float deltaTime;
+    float timeScale;
+    float frameCount;
+    float worldSize;
+};
 
 struct Cell {
     vec4 position; // xyz = position, w = radius
@@ -11,14 +27,23 @@ struct Cell {
     uint pad2;
 };
 
-// Bind to the same SSBO as the movement kernel
-layout(std430, set = 0, binding = 0) buffer CellBuffer {
+// Binding 1: Population Storage Buffer
+layout(std430, set = 0, binding = 1) buffer CellBuffer {
     Cell cells[];
 } population;
 
+/**
+ * @brief Main entry point for collision resolution.
+ */
 void main() {
     uint idx = gl_GlobalInvocationID.x;
+    
+    // Safety check
     if (idx >= population.cells.length()) return;
+
+    // If time step is effectively zero, skip physics to avoid NaN or division issues
+    // accessing 'deltaTime' directly from the GlobalData block
+    if (deltaTime <= 0.00001) return; 
 
     // Load current cell data
     Cell myCell = population.cells[idx];
@@ -27,8 +52,7 @@ void main() {
     float radius = myCell.position.w;
 
     // --- 1. World Boundary Collisions ---
-    // Simple box containment (-20 to 20)
-    // If a particle hits a wall, invert its velocity component
+    // Using a larger limit for the "kill zone" or secondary bounds
     float limit = 20.0;
     
     if (pos.x > limit)  { pos.x = limit;  vel.x = -abs(vel.x); }
@@ -58,11 +82,10 @@ void main() {
             vec3 normal = normalize(dir);
 
             // Simple elastic bounce: reflect velocity vector
-            // We dampen it slightly (0.9) to simulate energy loss
+            // Dampen it slightly (0.9) to simulate energy loss
             vel = reflect(vel, -normal) * 0.9;
 
             // Separation logic: Push particles apart to prevent overlapping
-            // This adds stability to the simulation
             float overlap = minDist - dist;
             pos += normal * overlap * 0.5;
         }

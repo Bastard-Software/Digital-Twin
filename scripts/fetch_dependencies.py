@@ -65,7 +65,11 @@ DEPENDENCIES = {
     "spirv-reflect": {
         "url": "https://github.com/KhronosGroup/SPIRV-Reflect.git",
         "commit": "ef913b3ab3da1becca3cf46b15a10667c67bebe5" # v1.328.0
-    }  
+    },
+    "imgui": {
+        "url": "https://github.com/ocornut/imgui.git",
+        "commit": "396b33d0d011290f11915b6a2a2bf7737fb42dd7" # v1.92.5-docking
+    },  
 }
 
 def remove_readonly(func, path, excinfo):

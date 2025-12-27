@@ -360,6 +360,33 @@ namespace DigitalTwin
         }
     }
 
+    VkDescriptorPool Device::CreateDescriptorPool( uint32_t maxSets, const std::vector<VkDescriptorPoolSize>& poolSizes )
+    {
+        VkDescriptorPoolCreateInfo poolInfo = { VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO };
+        // ImGui requires the FreeDescriptorSet bit because it releases sets individually
+        poolInfo.flags         = VK_DESCRIPTOR_POOL_CREATE_FREE_DESCRIPTOR_SET_BIT;
+        poolInfo.maxSets       = maxSets;
+        poolInfo.poolSizeCount = static_cast<uint32_t>( poolSizes.size() );
+        poolInfo.pPoolSizes    = poolSizes.data();
+
+        VkDescriptorPool pool = VK_NULL_HANDLE;
+        if( m_api.vkCreateDescriptorPool( m_device, &poolInfo, nullptr, &pool ) != VK_SUCCESS )
+        {
+            DT_CORE_CRITICAL( "Failed to create descriptor pool!" );
+            return VK_NULL_HANDLE;
+        }
+
+        return pool;
+    }
+
+    void Device::DestroyDescriptorPool( VkDescriptorPool pool )
+    {
+        if( pool )
+        {
+            m_api.vkDestroyDescriptorPool( m_device, pool, nullptr );
+        }
+    }
+
     void Device::UpdateDescriptorSets( const std::vector<VkWriteDescriptorSet>& writes )
     {
         if( writes.empty() )

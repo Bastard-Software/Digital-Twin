@@ -5,6 +5,7 @@
 #include "core/Timer.hpp"
 #include "platform/Input.hpp"
 #include "simulation/SimulationContext.hpp"
+#include "renderer/ImGuiLayer.hpp"
 #include <thread>
 
 namespace DigitalTwin
@@ -108,64 +109,108 @@ namespace DigitalTwin
 
     void Application::Render()
     {
-        // 1. Get Resource Manager
+        // 1. Begin Frame (Acquire Swapchain Image)
         auto resMgr = m_engine->GetResourceManager();
-
-        // 2. Begin Transfer Frame
-        // Prepares staging buffers and acquires the next swapchain image index if needed (depending on implementation)
         resMgr->BeginFrame( m_engine->GetFrameCount() );
 
-        // 3. Update Renderer Logic
-        // Updates camera matrices, UI state, and other per-frame logic
-        m_renderer->OnUpdate( 0.016f );
+        // BeginFrame resets the command buffer and prepares it for recording.
+        // Returns nullptr if swapchain is out of date (window resize pending).
+        auto cmd = m_renderer->GetContext()->BeginFrame();
+        if( !cmd )
+            return;
 
-        // 4. Prepare Scene Data
-        // Collects all necessary buffers and mesh IDs from the simulation context
+        // 2. Prepare Scene Data
         Scene scene;
-        scene.camera         = &m_renderer->GetCamera();
         scene.instanceBuffer = m_simulation->GetContext()->GetCellBuffer();
-        scene.instanceCount  = m_simulation->GetContext()->GetMaxCellCount();
-        scene.activeMeshIDs  = m_simulation->GetActiveMeshes();
+        scene.instanceCount = m_simulation->GetContext()->GetMaxCellCount();
+        scene.activeMeshIDs = m_simulation->GetActiveMeshes();
+        scene.camera        = &m_renderer->GetCamera();
 
-        // 5. Submit Transfer Commands (CRITICAL FIX)
-        // We must call EndFrame() BEFORE rendering. This submits the transfer command buffer to the GPU.
-        // It returns a semaphore signaling when the data upload is complete.
+        // 3. UI Logic & Resize Handling (CRITICAL: MUST BE BEFORE RENDER SIMULATION)
+        // We handle UI first because resizing the ImGui Viewport window triggers 'ResizeViewport'.
+        // ResizeViewport destroys old textures and creates new ones.
+        // If we rendered simulation first, we would be recording commands to textures that get destroyed immediately after.
+        if( auto gui = m_renderer->GetGui() )
+        {
+            gui->Begin();
+            gui->BeginDockspace();
+
+            // -- Control Panel --
+            ImGui::Begin( "Control Panel" );
+            if( ImGui::Button( m_running ? "Pause ||" : "Play >", ImVec2( -1, 0 ) ) )
+            {
+                m_running = !m_running;
+                if( m_running )
+                    m_simulation->Resume();
+                else
+                    m_simulation->Pause();
+            }
+            ImGui::Separator();
+
+            // Stats
+            ImGui::Text( "Active Cells: %d", scene.instanceCount );
+            ImGui::Text( "Frame Time: %.3f ms", 1000.0f / ImGui::GetIO().Framerate );
+
+            if( m_simulation )
+                m_simulation->OnRenderGui();
+            ImGui::End();
+
+            // -- Viewport Window --
+            ImGui::PushStyleVar( ImGuiStyleVar_WindowPadding, ImVec2( 0, 0 ) );
+            ImGui::Begin( "Viewport" );
+
+            ImVec2 viewportSize = ImGui::GetContentRegionAvail();
+
+            // Check if viewport size changed.
+            // If yes, this will WaitIdle, destroy old textures, and create new ones.
+            m_renderer->ResizeViewport( ( uint32_t )viewportSize.x, ( uint32_t )viewportSize.y );
+
+            // Display the texture (uses the ID matching the current frame resources)
+            ImGui::Image( m_renderer->GetViewportTextureID(), viewportSize );
+
+            // Optional: Handle input block when mouse is not hovering viewport
+            // m_renderer->GetCamera().SetInputEnabled( ImGui::IsItemHovered() );
+
+            ImGui::End();
+            ImGui::PopStyleVar();
+
+            gui->EndDockspace();
+        }
+
+        // 4. Render Simulation (Offscreen Pass)
+        // Now it is safe to record render commands because textures are guaranteed to be valid and sized correctly.
+        m_renderer->RenderSimulation( scene );
+
+        // 5. Submit Resource Transfers
         auto resSync = resMgr->EndFrame();
 
-        // 6. Prepare Synchronization Primitives
-        // The graphics queue needs to wait for two things:
-        // A. Compute Physics to finish (so positions are updated)
-        // B. Data Transfer to finish (so buffers/matrices are valid)
+        // Prepare semaphores for the main graphics submission
         std::vector<VkSemaphore> waitSems;
         std::vector<uint64_t>    waitVals;
 
-        // A. Wait for Transfer
-        if( resSync.semaphore != VK_NULL_HANDLE )
+        // Wait for Resource Uploads (Transfer Queue)
+        if( resSync.semaphore )
         {
             waitSems.push_back( resSync.semaphore );
             waitVals.push_back( resSync.value );
         }
 
-        // B. Wait for Compute
-        // Get the timeline value signaled by the compute engine this frame
-        uint64_t waitValue = m_simulation->GetComputeSignal();
-
-        // Retrieve the compute queue's timeline semaphore
-        auto computeQueue = m_engine->GetDevice()->GetComputeQueue();
+        // Wait for Physics/Compute Engine
+        uint64_t waitValue    = m_simulation->GetComputeSignal();
+        auto     computeQueue = m_engine->GetDevice()->GetComputeQueue();
         if( computeQueue && waitValue > 0 )
         {
             VkSemaphore computeSem = computeQueue->GetTimelineSemaphore();
-            if( computeSem != VK_NULL_HANDLE )
+            if( computeSem )
             {
                 waitSems.push_back( computeSem );
                 waitVals.push_back( waitValue );
             }
         }
 
-        // 7. Execute Rendering
-        // Submits graphics commands, waiting on the specified semaphores.
-        // This also handles the final Swapchain Present.
-        m_renderer->Render( scene, waitSems, waitVals );
+        // 6. Render UI to Swapchain & Present
+        // This submits the command buffer (containing Sim + UI passes) and presents the image.
+        m_renderer->RenderUI( waitSems, waitVals );
     }
 
     void Application::Close()

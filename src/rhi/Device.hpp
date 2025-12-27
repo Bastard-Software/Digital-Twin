@@ -44,6 +44,21 @@ namespace DigitalTwin
         void   ResetDescriptorPools();
 
         /**
+         * @brief Creates a raw Vulkan Descriptor Pool.
+         * Useful for middleware like ImGui that manages its own descriptor sets.
+         * * @param maxSets Maximum number of descriptor sets that can be allocated.
+         * @param poolSizes Distribution of descriptor types.
+         * @return VkDescriptorPool The created pool handle.
+         */
+        VkDescriptorPool CreateDescriptorPool( uint32_t maxSets, const std::vector<VkDescriptorPoolSize>& poolSizes );
+
+        /**
+         * @brief Destroys a raw Vulkan Descriptor Pool.
+         * @param pool The pool to destroy.
+         */
+        void DestroyDescriptorPool( VkDescriptorPool pool );
+
+        /**
          * @brief Updates descriptor sets with the provided writes.
          * Wraps vkUpdateDescriptorSets to keep raw Vulkan calls out of high-level logic.
          */

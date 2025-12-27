@@ -2,6 +2,7 @@
 #include "core/Base.hpp"
 #include "renderer/AgentRenderPass.hpp"
 #include "renderer/Camera.hpp"
+#include "renderer/ImGuiLayer.hpp"
 #include "renderer/RenderContext.hpp"
 #include "renderer/Scene.hpp"
 #include "rhi/Device.hpp"
@@ -20,17 +21,23 @@ namespace DigitalTwin
         Renderer( Engine& engine );
         ~Renderer();
 
-        /**
-         * @brief Renders the scene.
-         * Safe to call in headless mode (no-op).
-         */
-        void Render( const Scene& scene, const std::vector<VkSemaphore>& waitSemaphores = {}, const std::vector<uint64_t>& waitValues = {} );
+        void RenderSimulation( const Scene& scene );
+        void RenderUI( const std::vector<VkSemaphore>& waitSemaphores = {}, const std::vector<uint64_t>& waitValues = {} );
 
         void OnUpdate( float dt );
-        void OnResize( uint32_t width, uint32_t height );
+        void ResizeViewport( uint32_t width, uint32_t height );
 
-        Camera& GetCamera() { return *m_camera; }
-        bool    IsActive() const { return m_active; }
+        // Getters
+        Camera&        GetCamera() { return *m_camera; }
+        RenderContext* GetContext() { return m_ctx.get(); }
+        ImGuiLayer*    GetGui() const { return m_gui.get(); }
+
+        ImTextureID GetViewportTextureID();
+
+        bool IsActive() const { return m_active; }
+
+    private:
+        void UpdateImGuiTextures();
 
     private:
         bool                   m_active = false;
@@ -38,5 +45,8 @@ namespace DigitalTwin
         Scope<AgentRenderPass> m_simPass;
         Scope<Camera>          m_camera;
         Ref<ResourceManager>   m_resManager;
+
+        Scope<ImGuiLayer>        m_gui;
+        std::vector<ImTextureID> m_viewportTextureIDs;
     };
 } // namespace DigitalTwin

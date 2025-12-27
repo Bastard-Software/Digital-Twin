@@ -17,4 +17,5 @@ target_link_libraries(${PROJECT_NAME} PUBLIC
     Digital-Twin-RHI
     Digital-Twin-Platform
     Digital-Twin-Simulation
+    imgui
 )

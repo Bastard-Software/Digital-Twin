@@ -104,8 +104,6 @@ public:
         // Example: Pause after 10 seconds
         static float timer = 0.0f;
         timer += dt;
-        if( timer > 10.0f )
-            Pause();
     }
 
     void OnRenderGui() override

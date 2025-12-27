@@ -66,12 +66,39 @@ if(EXISTS ${EXTERNAL_DIR}/googletest)
     set(gtest_force_shared_crt ON CACHE BOOL "" FORCE)
     add_subdirectory(${EXTERNAL_DIR}/googletest)
     
-    # Używamy naszej funkcji, bo gtest tworzy 4 targety (gtest, gtest_main, gmock, gmock_main)
     set_target_folder_recursive(${EXTERNAL_DIR}/googletest "external/googletest")
     
     message(STATUS "Using bundled googletest")
 else()
     message(WARNING "googletest not found.")
+endif()
+
+if(EXISTS ${EXTERNAL_DIR}/imgui)
+    set(IMGUI_SOURCES
+        ${EXTERNAL_DIR}/imgui/imgui.cpp
+        ${EXTERNAL_DIR}/imgui/imgui_demo.cpp
+        ${EXTERNAL_DIR}/imgui/imgui_draw.cpp
+        ${EXTERNAL_DIR}/imgui/imgui_tables.cpp
+        ${EXTERNAL_DIR}/imgui/imgui_widgets.cpp
+        ${EXTERNAL_DIR}/imgui/backends/imgui_impl_glfw.cpp
+        ${EXTERNAL_DIR}/imgui/backends/imgui_impl_vulkan.cpp
+    )
+
+    add_library(imgui STATIC ${IMGUI_SOURCES})
+
+    target_include_directories(imgui PUBLIC
+        ${EXTERNAL_DIR}/imgui
+        ${EXTERNAL_DIR}/imgui/backends
+    )
+
+    target_compile_definitions(imgui PUBLIC IMGUI_IMPL_VULKAN_NO_PROTOTYPES)
+
+    target_link_libraries(imgui PUBLIC glfw volk)
+
+    set_property(TARGET imgui PROPERTY FOLDER "external")
+    message(STATUS "Using bundled ImGui (Docking)")
+else()
+    message(FATAL_ERROR "ImGui not found. Run: python scripts/fetch_dependencies.py")
 endif()
 
 # ==============================================================================
@@ -89,14 +116,13 @@ endif()
 
 # 2. SPIRV-Tools (Needs headers)
 if(EXISTS ${EXTERNAL_DIR}/spirv-tools)
-    # Wyłączamy zbędne narzędzia, żeby zmniejszyć liczbę projektów
+
     set(SPIRV_SKIP_TESTS ON CACHE BOOL "" FORCE)
     set(SPIRV_SKIP_EXECUTABLES ON CACHE BOOL "" FORCE) # To usunie spirv-as, spirv-dis itp.
     set(SPIRV_WERROR OFF CACHE BOOL "" FORCE)
     
     add_subdirectory(${EXTERNAL_DIR}/spirv-tools)
     
-    # Sprzątamy to co zostało
     set_target_folder_recursive(${EXTERNAL_DIR}/spirv-tools "external/shaderc/tools")
     
     message(STATUS "Using bundled spirv-tools")

@@ -3,13 +3,17 @@
 #include "platform/Window.hpp"
 #include "rhi/CommandBuffer.hpp"
 #include "rhi/Device.hpp"
+#include "rhi/Sampler.hpp"
 #include "rhi/Swapchain.hpp"
 #include "rhi/Texture.hpp"
 #include <vector>
 
 namespace DigitalTwin
 {
-
+    /**
+     * @brief Manages rendering targets: Swapchain (Screen) and Viewport (Offscreen).
+     * Uses Timeline Semaphores for CPU-GPU synchronization.
+     */
     class RenderContext
     {
     public:
@@ -20,47 +24,66 @@ namespace DigitalTwin
         void   Shutdown();
 
         // --- Frame Lifecycle ---
-        CommandBuffer* BeginFrame();
 
+        // Waits for the GPU to finish the previous cycle of this frame, then resets the command buffer.
+        Ref<CommandBuffer> BeginFrame();
+
+        // Submits the frame and updates synchronization values.
         void EndFrame( const std::vector<VkSemaphore>& waitSemaphores = {}, const std::vector<uint64_t>& waitValues = {} );
 
-        void OnResize( uint32_t width, uint32_t height );
+        // --- Resizing ---
+        void OnResizeSwapchain( uint32_t width, uint32_t height );
+
+        // Returns true if viewport resources were recreated (size changed)
+        bool OnResizeViewport( uint32_t width, uint32_t height );
 
         // --- Getters ---
         Ref<Swapchain> GetSwapchain() const { return m_swapchain; }
         uint32_t       GetCurrentImageIndex() const { return m_imageIndex; }
+        uint32_t       GetCurrentFrameIndex() const { return m_frameIndex; }
         VkFormat       GetColorFormat() const { return m_swapchain->GetFormat(); }
-        VkFormat       GetDepthFormat() const { return VK_FORMAT_D32_SFLOAT; }
-        Ref<Texture>   GetDepthTexture() const { return m_depthTexture; }
+
+        // Multi-buffered resources getters
+        Ref<Texture>                     GetViewportTexture() const { return m_viewportColors[ m_frameIndex ]; }
+        Ref<Texture>                     GetViewportDepth() const { return m_viewportDepths[ m_frameIndex ]; }
+        Ref<Sampler>                     GetViewportSampler() const { return m_viewportSampler; }
+        const std::vector<Ref<Texture>>& GetAllViewportTextures() const { return m_viewportColors; }
+
+        Ref<CommandBuffer> GetActiveCommandBuffer() const { return m_frames[ m_frameIndex ].cmd; }
+
+        static constexpr uint32_t FRAMES_IN_FLIGHT = 2;
 
     private:
         void RecreateSwapchain();
-        void CreateDepthResources();
+        void CreateViewportResources( uint32_t width, uint32_t height );
 
     private:
         Ref<Device>    m_device;
         Window*        m_window;
         Ref<Swapchain> m_swapchain;
-        Ref<Texture>   m_depthTexture;
 
-        static constexpr uint32_t FRAMES_IN_FLIGHT = 2;
+        // --- Viewport Resources ---
+        std::vector<Ref<Texture>> m_viewportColors;
+        std::vector<Ref<Texture>> m_viewportDepths;
+        Ref<Sampler>              m_viewportSampler;
+
+        uint32_t m_imageIndex = 0;
+        uint32_t m_frameIndex = 0;
 
         struct FrameData
         {
             Ref<CommandBuffer> cmd;
 
-            // Semaphore signalled when Rendering is done (created by Context)
+            // Binary semaphore for Present engine
             VkSemaphore renderFinished = VK_NULL_HANDLE;
 
-            // Semaphore signalled when Image is available (owned by Swapchain, just a handle here)
+            // Handle to semaphore from Swapchain (we don't own this)
             VkSemaphore currentImageAvailable = VK_NULL_HANDLE;
 
-            // Timeline value to wait for on CPU before reusing this frame slot
+            // The value on the Graphics Queue Timeline we must wait for
+            // before re-using this frame's command buffer.
             uint64_t timelineValue = 0;
         };
-
-        FrameData m_frames[ FRAMES_IN_FLIGHT ];
-        uint32_t  m_frameIndex = 0;
-        uint32_t  m_imageIndex = 0;
+        std::vector<FrameData> m_frames;
     };
 } // namespace DigitalTwin

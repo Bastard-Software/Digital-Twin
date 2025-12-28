@@ -1,97 +1,57 @@
 #version 450
-/**
- * @brief Compute shader for solving cell-to-cell and cell-to-world collisions.
- * Implements a simple elastic collision model.
- */
-
 layout(local_size_x = 256) in;
 
-// --- SET 0: Global Context ---
-
-// Matches C++ GlobalContextData struct exactly
-layout(std140, set = 0, binding = 0) uniform GlobalData {
-    float time;
-    float deltaTime;
-    float timeScale;
-    float frameCount;
-    float worldSize;
-};
-
+// Must match C++ struct alignment (16-byte align for vec4)
 struct Cell {
-    vec4 position; // xyz = position, w = radius
-    vec4 velocity; // xyz = velocity
+    vec4 position;
+    vec4 velocity;
     vec4 color;
-    uint meshID;   // Padding/Alignment must match C++ struct (16-byte alignment)
-    uint pad0;
-    uint pad1;
-    uint pad2;
+    uint meshID;
+    float padding[3]; // Padding to match C++ alignment (16 bytes total for last chunk)
 };
 
-// Binding 1: Population Storage Buffer
-layout(std430, set = 0, binding = 1) buffer CellBuffer {
-    Cell cells[];
-} population;
+// Binding 0: Global Uniform Data
+layout(std140, binding = 0) uniform GlobalData {
+    float dt;
+    float time;
+    vec2  resolution;
+    float viscosity;
+    float gravity;
+    float padding[2];
+} u_Global;
 
-/**
- * @brief Main entry point for collision resolution.
- */
+// Binding 1: INPUT Buffer (Read-Only, Previous State)
+layout(std430, binding = 1) readonly buffer InPopulation {
+    Cell cellsIn[];
+};
+
+// Binding 2: OUTPUT Buffer (Write-Only, Next State)
+layout(std430, binding = 2) buffer OutPopulation {
+    Cell cellsOut[];
+};
+
 void main() {
     uint idx = gl_GlobalInvocationID.x;
-    
-    // Safety check
-    if (idx >= population.cells.length()) return;
 
-    // If time step is effectively zero, skip physics to avoid NaN or division issues
-    // accessing 'deltaTime' directly from the GlobalData block
-    if (deltaTime <= 0.00001) return; 
-
-    // Load current cell data
-    Cell myCell = population.cells[idx];
-    vec3 pos = myCell.position.xyz;
-    vec3 vel = myCell.velocity.xyz;
-    float radius = myCell.position.w;
-
-    // --- 1. World Boundary Collisions ---
-    // Using a larger limit for the "kill zone" or secondary bounds
-    float limit = 20.0;
-    
-    if (pos.x > limit)  { pos.x = limit;  vel.x = -abs(vel.x); }
-    if (pos.x < -limit) { pos.x = -limit; vel.x = abs(vel.x); }
-    
-    if (pos.y > limit)  { pos.y = limit;  vel.y = -abs(vel.y); }
-    if (pos.y < -limit) { pos.y = -limit; vel.y = abs(vel.y); }
-    
-    if (pos.z > limit)  { pos.z = limit;  vel.z = -abs(vel.z); }
-    if (pos.z < -limit) { pos.z = -limit; vel.z = abs(vel.z); }
-
-    // --- 2. Cell-to-Cell Collisions ---
-    // Brute-force check against all other cells (O(N^2))
-    uint count = population.cells.length();
-    
-    for (uint i = 0; i < count; i++) {
-        if (i == idx) continue; // Skip self
-
-        Cell other = population.cells[i];
-        
-        vec3 dir = pos - other.position.xyz;
-        float dist = length(dir);
-        float minDist = radius + other.position.w; // Sum of radii
-
-        // Collision detected
-        if (dist < minDist && dist > 0.0001) {
-            vec3 normal = normalize(dir);
-
-            // Simple elastic bounce: reflect velocity vector
-            // Dampen it slightly (0.9) to simulate energy loss
-            vel = reflect(vel, -normal) * 0.9;
-
-            // Separation logic: Push particles apart to prevent overlapping
-            float overlap = minDist - dist;
-            pos += normal * overlap * 0.5;
-        }
+    // Safety check against buffer size
+    if (idx >= cellsIn.length()) {
+        return;
     }
 
-    // Write back updated state
-    population.cells[idx].velocity.xyz = vel;
-    population.cells[idx].position.xyz = pos;
+    // 1. Read from Previous State (Input)
+    Cell c = cellsIn[idx];
+
+    // 2. Physics Logic
+    // Apply gravity to velocity
+    c.velocity.y -= u_Global.gravity * u_Global.dt;
+
+    // Simple ground collision (floor at y = -10.0)
+    if (c.position.y < -10.0) {
+        c.position.y = -10.0;
+        // Simple bounce with damping
+        c.velocity.y *= -0.8;
+    }
+
+    // 3. Write to Next State (Output)
+    cellsOut[idx] = c;
 }

@@ -21,6 +21,8 @@ namespace DigitalTwin
         Renderer( Engine& engine );
         ~Renderer();
 
+        bool BeginFrame();
+
         void RenderSimulation( const Scene& scene );
         void RenderUI( const std::vector<VkSemaphore>& waitSemaphores = {}, const std::vector<uint64_t>& waitValues = {} );
 

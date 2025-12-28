@@ -1,6 +1,7 @@
 #include "simulation/SimulationContext.hpp"
 
 #include "core/Log.hpp"
+#include "simulation/SystemBindings.hpp" // FULL DEFINITION NEEDED HERE
 
 namespace DigitalTwin
 {
@@ -8,7 +9,6 @@ namespace DigitalTwin
         : m_device( device )
     {
     }
-
     SimulationContext::~SimulationContext()
     {
         Shutdown();
@@ -20,66 +20,62 @@ namespace DigitalTwin
         if( m_maxCellCount == 0 )
             return;
 
-        // 1. Allocate Main Cell Buffer (SSBO)
         VkDeviceSize bufferSize = m_maxCellCount * sizeof( Cell );
+        BufferDesc   cellDesc{ bufferSize, BufferType::STORAGE };
 
-        BufferDesc cellDesc{};
-        cellDesc.size = bufferSize;
-        cellDesc.type = BufferType::STORAGE;
-        m_cellBuffer  = m_device->CreateBuffer( cellDesc );
-        if( !m_cellBuffer )
+        m_cellBuffers[ 0 ] = m_device->CreateBuffer( cellDesc );
+        m_cellBuffers[ 1 ] = m_device->CreateBuffer( cellDesc );
+
+        if( !m_cellBuffers[ 0 ] || !m_cellBuffers[ 1 ] )
         {
-            DT_CORE_CRITICAL( "[Simulation] Failed to allocate Cell Buffer!" );
+            DT_CORE_CRITICAL( "[Simulation] Failed to allocate buffers!" );
             return;
         }
 
-        // 2. Allocate Atomic Counter (4 bytes)
-        // This holds the single uint32_t count of living agents.
-        BufferDesc counterDesc{};
-        counterDesc.size = sizeof( uint32_t );
-        counterDesc.type = BufferType::ATOMIC_COUNTER;
-        m_atomicCounter  = m_device->CreateBuffer( counterDesc );
-        if( !m_atomicCounter )
-        {
-            DT_CORE_CRITICAL( "[Simulation] Failed to allocate Atomic Counter!" );
-            return;
-        }
+        BufferDesc cntDesc{ sizeof( uint32_t ), BufferType::ATOMIC_COUNTER };
+        m_atomicCounter = m_device->CreateBuffer( cntDesc );
 
-        DT_CORE_INFO( "[Simulation] Context Initialized. Capacity: {0} cells ({1:.2f} MB). Counter created.", m_maxCellCount,
-                      bufferSize / ( 1024.f * 1024.f ) );
+        DT_CORE_INFO( "[Simulation] Context Init. Capacity: {}", m_maxCellCount );
     }
 
     void SimulationContext::UploadState( StreamingManager* streamer, const std::vector<Cell>& cells )
     {
-        if( !m_cellBuffer || !m_atomicCounter )
+        if( !m_cellBuffers[ 0 ] )
             return;
-
-        if( cells.size() > m_maxCellCount )
-        {
-            DT_CORE_ERROR( "[Simulation] Upload count ({0}) exceeds capacity ({1})!", cells.size(), m_maxCellCount );
-            return;
-        }
-
-        // 1. Upload Cell Data
         VkDeviceSize dataSize = cells.size() * sizeof( Cell );
         if( dataSize > 0 )
         {
-            streamer->UploadToBuffer( m_cellBuffer, cells.data(), dataSize, 0 );
+            streamer->UploadToBuffer( m_cellBuffers[ 0 ], cells.data(), dataSize, 0 );
+            streamer->UploadToBuffer( m_cellBuffers[ 1 ], cells.data(), dataSize, 0 );
         }
+        uint32_t count = ( uint32_t )cells.size();
+        streamer->UploadToBuffer( m_atomicCounter, &count, sizeof( uint32_t ), 0 );
+    }
 
-        // 2. Update Atomic Counter to match initial count
-        uint32_t initialCount = static_cast<uint32_t>( cells.size() );
+    void SimulationContext::SwapBuffers()
+    {
+        m_frameIndex = 1 - m_frameIndex;
+    }
 
-        // We upload the count (4 bytes) to the atomic counter buffer
-        streamer->UploadToBuffer( m_atomicCounter, &initialCount, sizeof( uint32_t ), 0 );
+    Ref<SystemBindings> SimulationContext::CreateSystemBindings( Ref<ComputeKernel> kernel )
+    {
+        return CreateRef<SystemBindings>( this, kernel );
+    }
 
-        DT_CORE_INFO( "[Simulation] State uploaded. Active cells: {0}", initialCount );
+    Ref<Buffer> SimulationContext::GetBuffer( uint32_t index ) const
+    {
+        return m_cellBuffers[ index % 2 ];
+    }
+
+    Ref<Buffer> SimulationContext::GetCellBuffer() const
+    {
+        return m_cellBuffers[ m_frameIndex ];
     }
 
     void SimulationContext::Shutdown()
     {
-        m_cellBuffer.reset();
+        m_cellBuffers[ 0 ].reset();
+        m_cellBuffers[ 1 ].reset();
         m_atomicCounter.reset();
-        m_maxCellCount = 0;
     }
 } // namespace DigitalTwin

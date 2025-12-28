@@ -13,7 +13,10 @@ int main( int argc, char** argv )
     auto* experiment = DigitalTwin::CreateSimulation();
 
     // 2. Wrap it in the Application Host
-    DigitalTwin::Application app( experiment );
+    DigitalTwin::AppConfig config;
+    config.width  = 1280;
+    config.height = 720;
+    DigitalTwin::Application app( experiment, config );
 
     // 3. Run
     try

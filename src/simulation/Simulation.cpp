@@ -1,23 +1,36 @@
 #include "simulation/Simulation.hpp"
 
+#include "compute/ComputeEngine.hpp"
 #include "core/Log.hpp"
 #include "runtime/Engine.hpp"
 #include "simulation/SimulationContext.hpp"
-#include "simulation/SimulationScheduler.hpp"
 
 namespace DigitalTwin
 {
+    // Must match Shader layout (std140)
+    struct GlobalData
+    {
+        float     dt;
+        float     time;
+        glm::vec2 resolution;
+        float     viscosity;
+        float     gravity;
+        float     padding[ 2 ];
+    };
+
     Simulation::Simulation() = default;
 
     Simulation::~Simulation()
     {
-        if( m_computeEngine )
+        // FIX: Wait for GPU to finish before destroying resources
+        if( m_engineRef )
         {
-            m_computeEngine->Shutdown();
+            m_engineRef->GetDevice()->WaitIdle();
         }
-        DT_CORE_INFO( "[Simulation] Shutting down..." );
-        m_engineRef->GetDevice()->ResetDescriptorPools();
-        m_scheduler.reset();
+
+        if( m_computeEngine )
+            m_computeEngine->Shutdown();
+        m_globalUBO.reset();
         m_context.reset();
     }
 
@@ -26,144 +39,186 @@ namespace DigitalTwin
         m_engineRef     = &engine;
         m_computeEngine = computeEngine;
 
-        DT_CORE_INFO( "[Simulation] Initializing Runtime Environment..." );
+        DT_CORE_INFO( "[Simulation] Initializing Runtime..." );
 
-        // 1. Create the Simulation Context (Vulkan Buffers Wrapper)
         m_context = CreateRef<SimulationContext>( engine.GetDevice() );
 
-        // 2. Call User Code: Configure World
-        // This populates m_initialCells and environment params on the CPU
+        // 1. Configure World
         OnConfigureWorld();
 
-        // 3. Initialize GPU Memory
-        // Ensure at least 1024 cells capacity to prevent empty buffer errors
+        // 2. Init Buffers
         uint32_t capacity = std::max( ( uint32_t )m_initialCells.size(), 1024u );
         m_context->Init( capacity );
 
-        // 4. Create the Scheduler
-        // The scheduler needs the Compute Engine to dispatch jobs and Context to access data
-        m_scheduler = CreateScope<SimulationScheduler>( computeEngine, m_context );
+        // 3. Create UBO
+        BufferDesc uboDesc{};
+        uboDesc.size = sizeof( GlobalData );
+        uboDesc.type = BufferType::UNIFORM;
+        m_globalUBO  = engine.GetDevice()->CreateBuffer( uboDesc );
 
-        // 5. Upload Initial State to GPU
+        // 4. Upload Initial State
+        // FIX: We must Start a Frame to record Copy Commands!
         auto resMgr   = engine.GetResourceManager();
         auto streamer = engine.GetStreamingManager();
 
-        DT_CORE_INFO( "[Simulation] Uploading {} agents to GPU...", m_initialCells.size() );
+        resMgr->BeginFrame( 0 ); // Start Recording CommandBuffer
+        {
+            m_context->UploadState( streamer.get(), m_initialCells );
 
-        resMgr->BeginFrame( 0 );
-        m_context->UploadState( streamer.get(), m_initialCells );
-        resMgr->EndFrame();
+            // Upload initial Global Data as well to avoid empty UBO validation errors
+            UpdateGlobalData( 0.0f );
+        }
+        resMgr->EndFrame(); // Submit Recording
 
-        // Block until upload is complete to ensure validity before first tick
         streamer->WaitForTransferComplete();
 
-        // 6. Call User Code: Configure Systems
-        // User registers compute graphs here
+        // 5. Configure Systems (Builds Graphs)
         OnConfigureSystems();
 
-        DT_CORE_INFO( "[Simulation] Initialization Complete." );
+        DT_CORE_INFO( "[Simulation] Ready. Systems: {}", m_systems.size() );
+    }
+
+    void Simulation::ShutdownRuntime()
+    {
+    }
+
+    void Simulation::RegisterSystem( const std::string& name, GraphBuilder builder, float interval )
+    {
+        DT_CORE_INFO( "[Simulation] Registering System: {}", name );
+
+        SystemInstance sys;
+        sys.name     = name;
+        sys.interval = interval;
+
+        // --- Double Build ---
+        // Pass 0
+        m_context->SetFrameIndex( 0 );
+        sys.graphs[ 0 ] = builder( *m_context );
+
+        // Pass 1
+        m_context->SetFrameIndex( 1 );
+        sys.graphs[ 1 ] = builder( *m_context );
+
+        // Reset
+        m_context->SetFrameIndex( 0 );
+
+        m_systems.push_back( std::move( sys ) );
     }
 
     void Simulation::Tick( float realDt )
     {
-        // 1. Execute User CPU Logic
+        float dt = realDt * m_timeScale;
         OnUpdate( realDt );
 
-        // 2. Execute Scheduler (GPU Logic)
-        if( m_scheduler )
+        if( m_paused || !m_computeEngine )
+            return;
+
+        m_totalTime += dt;
+
+        // Update UBO (Streamer inside handles command recording usually,
+        // but if it uses vkCmdCopyBuffer directly it relies on the frame being active.
+        // Application::Run() usually wraps Tick() in BeginFrame/EndFrame, so this is safe here.)
+        UpdateGlobalData( dt );
+
+        uint32_t frameIdx    = m_context->GetFrameIndex();
+        bool     anyExecuted = false;
+
+        for( auto& sys: m_systems )
         {
-            m_scheduler->Tick( realDt );
+            sys.timer += dt;
+            if( sys.timer >= sys.interval )
+            {
+                sys.timer -= sys.interval;
+
+                ComputeGraph& activeGraph = sys.graphs[ frameIdx ];
+                if( !activeGraph.IsEmpty() )
+                {
+                    m_lastComputeSignal = m_computeEngine->ExecuteGraph( activeGraph, m_context->GetMaxCellCount() );
+                    anyExecuted         = true;
+                }
+            }
+        }
+
+        if( anyExecuted )
+        {
+            m_context->SwapBuffers();
         }
     }
 
-    // --- Protected User API Implementation ---
-
-    void Simulation::SetMicroenvironment( float viscosity, float gravity )
+    void Simulation::UpdateGlobalData( float dt )
     {
-        m_envParams.viscosity = viscosity;
-        m_envParams.gravity   = gravity;
+        if( !m_globalUBO )
+            return;
+        GlobalData data{};
+        data.dt        = dt;
+        data.time      = m_totalTime;
+        data.viscosity = m_envParams.viscosity;
+        data.gravity   = m_envParams.gravity;
+
+        auto streamer = m_engineRef->GetStreamingManager();
+        streamer->UploadToBuffer( m_globalUBO, &data, sizeof( GlobalData ), 0 );
+    }
+
+    // --- Helpers ---
+
+    void Simulation::SetMicroenvironment( float v, float g )
+    {
+        m_envParams.viscosity = v;
+        m_envParams.gravity   = g;
     }
 
     void Simulation::SpawnCell( uint32_t meshID, glm::vec4 pos, glm::vec3 vel, glm::vec4 color )
     {
-        Cell c{};
-        c.position = pos;
-        c.velocity = glm::vec4( vel, 0.0f );
-        c.color    = color;
-        c.meshID   = meshID;
-
-        m_initialCells.push_back( c );
-
-        // Track active meshes for the Renderer
-        bool exists = false;
+        m_initialCells.push_back( { pos, glm::vec4( vel, 0.0f ), color, meshID } );
+        bool found = false;
         for( auto id: m_activeMeshes )
-        {
             if( id == meshID )
-                exists = true;
-        }
-        if( !exists )
+                found = true;
+        if( !found )
             m_activeMeshes.push_back( meshID );
-    }
-
-    void Simulation::RegisterSystem( const std::string& name, ComputeGraph graph, float interval )
-    {
-        if( m_scheduler )
-        {
-            m_scheduler->AddSystem( name, graph, interval );
-            DT_CORE_INFO( "[Simulation] System Registered: '{}' @ {:.2f} ms", name, interval * 1000.0f );
-        }
-        else
-        {
-            DT_CORE_ERROR( "[Simulation] Cannot register system '{}'. Scheduler is null!", name );
-        }
-    }
-
-    void Simulation::SetTimeScale( float scale )
-    {
-        if( m_scheduler )
-            m_scheduler->GetTimeController().SetTimeScale( scale );
-    }
-
-    float Simulation::GetTimeScale() const
-    {
-        return m_scheduler ? m_scheduler->GetTimeController().GetTimeScale() : 1.0f;
-    }
-
-    void Simulation::Pause()
-    {
-        SetTimeScale( 0.0f );
-    }
-
-    void Simulation::Resume()
-    {
-        SetTimeScale( 1.0f );
     }
 
     SimulationContext* Simulation::GetContext()
     {
         return m_context.get();
     }
-
-    std::shared_ptr<Buffer> Simulation::GetGlobalUniformBuffer()
+    Ref<Buffer> Simulation::GetGlobalUniformBuffer()
     {
-        return m_scheduler ? m_scheduler->GetGlobalBuffer() : nullptr;
+        return m_globalUBO;
+    }
+    Ref<Device> Simulation::GetDevice()
+    {
+        return m_engineRef->GetDevice();
     }
 
     const std::vector<uint32_t>& Simulation::GetActiveMeshes() const
     {
         return m_activeMeshes;
     }
-
     uint64_t Simulation::GetComputeSignal() const
     {
-        return m_scheduler ? m_scheduler->GetLastComputeSignal() : 0;
+        return m_lastComputeSignal;
     }
 
     AssetID Simulation::GetMeshID( const std::string& name ) const
     {
-        DT_CORE_ASSERT( m_engineRef, "Engine reference is null! Cannot access resources." );
-
         return m_engineRef->GetResourceManager()->GetMeshID( name );
     }
 
+    void Simulation::SetTimeScale( float scale )
+    {
+        m_timeScale = scale;
+    }
+    float Simulation::GetTimeScale() const
+    {
+        return m_timeScale;
+    }
+    void Simulation::Pause()
+    {
+        m_paused = true;
+    }
+    void Simulation::Resume()
+    {
+        m_paused = false;
+    }
 } // namespace DigitalTwin

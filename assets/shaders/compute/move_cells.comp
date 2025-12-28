@@ -1,73 +1,46 @@
 #version 450
-/**
- * @brief Compute shader responsible for integrating cell movement logic.
- * Handles position updates based on velocity and boundary enforcement.
- */
-
-layout(local_size_x = 256, local_size_y = 1, local_size_z = 1) in;
-
-// --- SET 0: Global Context ---
-
-/**
- * @brief Global uniform data provided by the engine.
- * IMPORTANT: This structure must match 'GlobalContextData' in SimulationScheduler.cpp exactly.
- * No instance name is used to allow direct access to member variables.
- */
-layout(std140, set = 0, binding = 0) uniform GlobalData {
-    float time;         // offset 0
-    float deltaTime;    // offset 4
-    float timeScale;    // offset 8
-    float frameCount;   // offset 12
-    float worldSize;    // offset 16
-}; 
+layout(local_size_x = 256) in;
 
 struct Cell {
-    vec4 position; // .xyz = position, .w = radius
-    vec4 velocity; // .xyz = velocity
-    vec4 color;    // .rgba = color
-    // Metadata block
+    vec4 position;
+    vec4 velocity;
+    vec4 color;
     uint meshID;
-    uint pad0;
-    uint pad1;
-    uint pad2;
+    float padding[3];
 };
 
-// Binding 1: Population Storage Buffer
-layout(std430, set = 0, binding = 1) buffer CellBuffer {
-    Cell cells[];
-} population;
+// Binding 0: Global Data
+layout(std140, binding = 0) uniform GlobalData {
+    float dt;
+    float time;
+    vec2  resolution;
+    float viscosity;
+    float gravity;
+    float padding[2];
+} u_Global;
 
-// --- LOGIC ---
+// Binding 2: OUTPUT Buffer (Read/Write)
+// We are modifying the data written by the collision step.
+// Notice we do NOT use binding 1 (InPopulation) here based on your main.cpp logic.
+layout(std430, binding = 2) buffer OutPopulation {
+    Cell cellsOut[];
+};
 
 void main() {
-    uint index = gl_GlobalInvocationID.x;
-    
-    // Safety check to avoid accessing out of bounds
-    if (index >= population.cells.length()) return;
+    uint idx = gl_GlobalInvocationID.x;
 
-    // 1. Fetch data
-    vec3 pos = population.cells[index].position.xyz;
-    vec3 vel = population.cells[index].velocity.xyz;
+    // Safety check
+    if (idx >= cellsOut.length()) {
+        return;
+    }
 
-    // 2. Wall Collisions (Invert velocity if hitting bounds)
-    // Using hardcoded bounds or worldSize from UBO if needed.
-    const float BOUNDS = 8.0;
+    // 1. Read the cell (modified by previous kernel in this frame)
+    Cell c = cellsOut[idx];
 
-    if (pos.x > BOUNDS)  { pos.x = BOUNDS;  vel.x *= -1.0; }
-    if (pos.x < -BOUNDS) { pos.x = -BOUNDS; vel.x *= -1.0; }
-    
-    if (pos.y > BOUNDS)  { pos.y = BOUNDS;  vel.y *= -1.0; }
-    if (pos.y < -BOUNDS) { pos.y = -BOUNDS; vel.y *= -1.0; }
-    
-    // Optional Z bounds
-    // if (pos.z > BOUNDS)  { pos.z = BOUNDS;  vel.z *= -1.0; }
-    // if (pos.z < -BOUNDS) { pos.z = -BOUNDS; vel.z *= -1.0; }
+    // 2. Apply movement
+    // pos = pos + vel * dt
+    c.position.xyz += c.velocity.xyz * u_Global.dt;
 
-    // 3. Integration (Move position)
-    // Direct access to 'deltaTime' because the uniform block instance name was removed.
-    pos += vel * deltaTime;
-
-    // 4. Write back results
-    population.cells[index].position.xyz = pos;
-    population.cells[index].velocity.xyz = vel;
+    // 3. Write back
+    cellsOut[idx] = c;
 }

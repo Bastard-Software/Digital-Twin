@@ -27,7 +27,7 @@ namespace DigitalTwin
             uint64_t lastValue = m_inflightWork.back().fenceValue;
             WaitForTask( lastValue );
         }
-
+        
         m_inflightWork.clear();
     }
 

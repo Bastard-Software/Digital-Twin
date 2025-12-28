@@ -2,6 +2,8 @@
 
 #include "core/FileSystem.hpp"
 #include "core/Log.hpp"
+#include "platform/Input.hpp"
+#include "renderer/Renderer.hpp"
 #include "rhi/RHI.hpp"
 #include "simulation/Simulation.hpp"
 #include <chrono>
@@ -18,7 +20,6 @@ namespace DigitalTwin
 
     Result Engine::Init( const EngineConfig& config )
     {
-        // 1. Initialize Logging and
         Log::Init();
         FileSystem::Init();
 
@@ -29,45 +30,48 @@ namespace DigitalTwin
         }
 
         m_config = config;
-        DT_CORE_INFO( "[Engine] Initializing... Mode: {} ({}x{})", m_config.headless ? "HEADLESS" : "GRAPHICS", m_config.width, m_config.height );
+        DT_CORE_INFO( "[Engine] Init: {} ({}x{})", m_config.headless ? "HEADLESS" : "GUI", m_config.width, m_config.height );
 
-        // 2. Create Window (if not headless)
+        // 1. Create Window
         if( !m_config.headless )
         {
             WindowConfig winConfig;
             winConfig.width  = m_config.width;
             winConfig.height = m_config.height;
             winConfig.title  = "Digital Twin Simulation";
-            m_window         = CreateScope<Window>( winConfig );
+            m_window         = CreateRef<Window>( winConfig );
         }
 
-        // 3. Initialize RHI Core (Volk, Instance)
+        // 2. Init RHI Core
         RHIConfig rhiConfig;
-        rhiConfig.enableValidation = true;
+        rhiConfig.enableValidation = true; // Dev mode
         rhiConfig.headless         = m_config.headless;
 
         if( RHI::Init( rhiConfig ) != Result::SUCCESS )
         {
-            DT_CORE_CRITICAL( "[Engine] Failed to initialize RHI!" );
             return Result::FAIL;
         }
 
-        // 4. Create GPU Device (Adapter 0 - usually discrete GPU)
-        // Note: In a robust engine, we would select the best adapter.
+        // 3. Create Device
+        // Adapter 0
         m_device = RHI::CreateDevice( 0 );
         if( !m_device )
+            return Result::FAIL;
+
+        // 4. Initialize Device
+        DeviceDesc deviceDesc;
+        deviceDesc.headless = m_config.headless;
+        if( m_device->Init( deviceDesc ) != Result::SUCCESS )
         {
-            DT_CORE_CRITICAL( "[Engine] Failed to create Logical Device!" );
+            DT_CORE_CRITICAL( "[Engine] Device Init failed!" );
             return Result::FAIL;
         }
 
-        // 5. Initialize Streaming adn Resources Manager
+        // 5. Managers
         m_streamingManager = CreateRef<StreamingManager>( m_device );
         if( m_streamingManager->Init() != Result::SUCCESS )
-        {
-            DT_CORE_CRITICAL( "[Engine] Failed to initialize StreamingManager!" );
             return Result::FAIL;
-        }
+
         m_resourceManager = CreateRef<ResourceManager>( m_device, m_streamingManager );
 
         m_initialized = true;
@@ -78,50 +82,59 @@ namespace DigitalTwin
     {
         if( m_initialized )
         {
-            DT_CORE_INFO( "[Engine] Shutting down..." );
-
             WaitIdle();
 
-            // Release managers first (they hold buffers)
             m_resourceManager.reset();
             m_streamingManager.reset();
 
-            // Destroy Device using RHI helper
             if( m_device )
             {
                 RHI::DestroyDevice( m_device );
                 m_device.reset();
             }
 
-            // Destroy Window
             m_window.reset();
-
-            // Shutdown RHI Core
             RHI::Shutdown();
 
             m_initialized = false;
         }
     }
 
-    void Engine::BeginFrame()
-    {
-        // 1. Increment global frame counter
-        m_frameCounter++;
-
-        // 2. Reset transient descriptor pools.
-        // This is crucial! Every frame (even compute-only), we might allocate
-        // new descriptors for binding groups. We need to clear the old ones.
-        // if( m_device )
-        // {
-        //     m_device->ResetDescriptorPools();
-        // }
-    }
-
     void Engine::WaitIdle()
     {
         if( m_device )
-        {
             m_device->WaitIdle();
+    }
+
+    void Engine::PollEvents()
+    {
+        if( m_window )
+            m_window->OnUpdate();
+    }
+
+    void Engine::BeginFrame()
+    {
+        PollEvents();
+        m_frameCounter++;
+        m_resourceManager->BeginFrame( m_frameCounter );
+    }
+
+    void Engine::EndFrame( Simulation& simulation, Renderer& renderer )
+    {
+        auto resSync = m_resourceManager->EndFrame();
+
+        std::vector<VkSemaphore> waitSems;
+        std::vector<uint64_t>    waitVals;
+
+        if( resSync.semaphore )
+        {
+            waitSems.push_back( resSync.semaphore );
+            waitVals.push_back( resSync.value );
         }
+
+        // Renderer handles swapchain presentation internally
+        renderer.RenderUI( waitSems, waitVals );
+
+        Input::ResetScroll();
     }
 } // namespace DigitalTwin

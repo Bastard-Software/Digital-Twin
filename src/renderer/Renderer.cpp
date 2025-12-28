@@ -15,10 +15,10 @@ namespace DigitalTwin
         }
 
         m_active = true;
-        m_ctx    = CreateScope<RenderContext>( engine.GetDevice(), engine.GetWindow() );
+        m_ctx    = CreateScope<RenderContext>( engine.GetDevice(), engine.GetWindow().get() );
         m_ctx->Init();
 
-        m_gui = CreateScope<ImGuiLayer>( engine.GetDevice(), engine.GetWindow(), m_ctx->GetColorFormat() );
+        m_gui = CreateScope<ImGuiLayer>( engine.GetDevice(), engine.GetWindow().get(), m_ctx->GetColorFormat() );
 
         // AgentRenderPass uses Viewport format (RGBA8), not Swapchain format
         m_simPass = CreateScope<AgentRenderPass>( engine.GetDevice(), m_resManager );
@@ -34,6 +34,15 @@ namespace DigitalTwin
         if( m_ctx )
             m_ctx->Shutdown();
         m_gui.reset();
+    }
+
+    bool Renderer::BeginFrame()
+    {
+        if( !m_active )
+            return false;
+
+        // Starts the Command Buffer and Acquires Image
+        return m_ctx->BeginFrame() != nullptr;
     }
 
     void Renderer::UpdateImGuiTextures()

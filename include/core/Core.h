@@ -5,6 +5,16 @@
 #include <string_view>
 #include <vector>
 
+#if defined( _WIN32 ) || defined( _WIN64 )
+#    ifdef DT_BUILD_DLL
+#        define DT_API __declspec( dllexport )
+#    else
+#        define DT_API __declspec( dllimport )
+#    endif
+#else
+#    define DT_API
+#endif
+
 namespace DigitalTwin
 {
     using bool_t    = bool;
@@ -71,8 +81,6 @@ namespace DigitalTwin
     template<typename T>
     using Weak = std::weak_ptr<T>;
 } // namespace DigitalTwin
-
-#include "Core/Log.hpp"
 
 #if defined( _MSC_VER )
 #    define DT_DEBUGBREAK() __debugbreak()

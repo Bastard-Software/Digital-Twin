@@ -1,4 +1,5 @@
 #pragma once
+#include "DigitalTwinTypes.h"
 
 #include "core/Core.h"
 #include <string>
@@ -12,10 +13,14 @@ namespace DigitalTwin
         DigitalTwin();
         ~DigitalTwin();
 
+        Result Initialize( const DigitalTwinConfig& config );
+        void   Shutdown();
+
         void Print();
 
     private:
-        std::string m_name;
+        struct Impl;
+        std::unique_ptr<Impl> m_impl;
     };
 
-} // namespace DT
+} // namespace DigitalTwin

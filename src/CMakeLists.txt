@@ -13,11 +13,6 @@ file(GLOB_RECURSE ENGINE_SOURCES
     "${SRC_DIR}/*.h"
 )
 
-message(STATUS "--- ENGINE SOURCES FOUND: ---")
-foreach(f ${ENGINE_SOURCES})
-    message(STATUS "  Found: ${f}")
-endforeach()
-
 # Scan for public header files within INCLUDE_DIR
 file(GLOB_RECURSE ENGINE_HEADERS 
     "${INCLUDE_DIR}/*.hpp" 
@@ -58,18 +53,12 @@ target_compile_definitions(Digital-Twin-Obj PUBLIC VK_NO_PROTOTYPES)
 
 # --- Dependency Linking (For Compilation) ---
 
-# A. PUBLIC DEPENDENCIES
+# PUBLIC DEPENDENCIES
 # Libraries that are part of our public API (e.g., used in public headers).
 # We link them here so the Object Library can find their headers.
 target_link_libraries(Digital-Twin-Obj PUBLIC 
     imgui
     glm
-)
-
-# B. PRIVATE DEPENDENCIES
-# Libraries used internally (implementation details).
-# We link them here so the Object Library can find their headers.
-target_link_libraries(Digital-Twin-Obj PRIVATE
     volk
     VulkanMemoryAllocator
     entt

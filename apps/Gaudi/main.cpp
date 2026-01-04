@@ -1,17 +1,19 @@
 #include <DigitalTwin.h>
+#include <core/Log.h>
 #include <iostream>
 
 int main()
 {
-    std::cout << "[EXE] Starting Editor..." << std::endl;
 
-    DigitalTwin::DigitalTwin engine;
+    DigitalTwin::DigitalTwin       engine;
     DigitalTwin::DigitalTwinConfig config;
     engine.Initialize( config );
-    engine.Print();
-    engine.Shutdown();
+    DT_INFO( "Starting Editor..." );
 
-    std::cout << "[EXE] Editor closing..." << std::endl;
+    engine.Print();
+
+    DT_INFO( "Editor closing..." );
+    engine.Shutdown();
 
     return 0;
 }

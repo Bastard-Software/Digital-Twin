@@ -18,6 +18,9 @@ namespace DigitalTwin
 
         void Print();
 
+    public:
+        FileSystem* GetFileSystem() const;
+
     private:
         struct Impl;
         std::unique_ptr<Impl> m_impl;

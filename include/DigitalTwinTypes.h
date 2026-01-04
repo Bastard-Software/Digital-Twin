@@ -2,10 +2,12 @@
 
 namespace DigitalTwin
 {
+    class Log;
+    class FileSystem;
 
     struct DigitalTwinConfig
     {
-        // TODO: Add configuration options as needed
+        const char* rootDirectory = nullptr;
     };
 
 } // namespace DigitalTwin

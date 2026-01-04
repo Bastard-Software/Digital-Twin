@@ -92,6 +92,7 @@ target_compile_definitions(Digital-Twin PUBLIC VK_NO_PROTOTYPES)
 # A. PUBLIC (Visible to Consumers like Editor)
 # Consumers will automatically inherit include paths for these.
 target_link_libraries(Digital-Twin PUBLIC 
+    spdlog::spdlog
     imgui
     glm
 )
@@ -103,7 +104,6 @@ target_link_libraries(Digital-Twin PRIVATE
     volk
     VulkanMemoryAllocator
     entt
-    spdlog::spdlog
     shaderc_combined
     spirv-reflect
     glfw

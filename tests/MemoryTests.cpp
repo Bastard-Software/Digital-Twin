@@ -12,13 +12,6 @@ class MemorySystemTest : public ::testing::Test
 protected:
     void SetUp() override
     {
-        static bool logInitialized = false;
-        if( !logInitialized )
-        {
-            Log::Init();
-            logInitialized = true;
-        }
-
         m_memorySystem = std::make_unique<MemorySystem>();
         m_memorySystem->Initialize();
     }

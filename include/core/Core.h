@@ -108,7 +108,7 @@ namespace DigitalTwin
         {                                                                                                                                            \
             if( !( x ) )                                                                                                                             \
             {                                                                                                                                        \
-                DT_CORE_ERROR( "Assertion Failed: {0}", __VA_ARGS__ );                                                                               \
+                DT_ERROR( "Assertion Failed: {0}", __VA_ARGS__ );                                                                                    \
                 DT_DEBUGBREAK();                                                                                                                     \
             }                                                                                                                                        \
         }

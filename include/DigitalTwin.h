@@ -1,6 +1,8 @@
 #pragma once
 #include "DigitalTwinTypes.h"
 
+#include "platform/Window.h"
+
 #include "core/Core.h"
 #include <string>
 
@@ -16,7 +18,9 @@ namespace DigitalTwin
         Result Initialize( const DigitalTwinConfig& config );
         void   Shutdown();
 
-        void Print();
+        std::unique_ptr<Window> CreateWindow( const std::string& title, uint32_t width, uint32_t height );
+
+        void OnUpdate();
 
     public:
         FileSystem* GetFileSystem() const;

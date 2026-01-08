@@ -3,6 +3,7 @@
 #include "core/FileSystem.h"
 #include "core/Log.h"
 #include "core/memory/MemorySystem.h"
+#include "platform/PlatformSystem.h"
 #include <iostream>
 
 namespace DigitalTwin
@@ -81,10 +82,11 @@ namespace DigitalTwin
     // Impl
     struct DigitalTwin::Impl
     {
-        DigitalTwinConfig             m_config;
-        bool                          m_initialized;
-        std::unique_ptr<MemorySystem> m_memorySystem;
-        std::unique_ptr<FileSystem>   m_fileSystem;
+        DigitalTwinConfig               m_config;
+        bool                            m_initialized;
+        std::unique_ptr<MemorySystem>   m_memorySystem;
+        std::unique_ptr<FileSystem>     m_fileSystem;
+        std::unique_ptr<PlatformSystem> m_platformSystem;
 
         Impl()
             : m_initialized( false )
@@ -156,7 +158,27 @@ namespace DigitalTwin
                 }
             }
 
-            // 5. ....
+            // 5. Platform System
+            if( !m_config.headless )
+            {
+                m_platformSystem = std::make_unique<PlatformSystem>();
+
+                Result psRes = m_platformSystem->Initialize();
+                if( fsRes != Result::SUCCESS )
+                {
+                    m_fileSystem->Shutdown();
+                    m_fileSystem.reset();
+                    m_memorySystem->Shutdown();
+                    m_memorySystem.reset();
+
+                    DT_ERROR( "Failed to initialize PlatformSystem." );
+                    return Result::FAIL;
+                }
+            }
+            else
+            {
+                DT_INFO( "Running in Headless mode. Platform System skipped." );
+            }
 
             m_initialized = true;
 
@@ -169,6 +191,12 @@ namespace DigitalTwin
                 return;
 
             DT_INFO( "Shutting down..." );
+
+            if( m_platformSystem )
+            {
+                m_platformSystem->Shutdown();
+                m_platformSystem.reset();
+            }
 
             if( m_fileSystem )
             {
@@ -204,12 +232,16 @@ namespace DigitalTwin
         m_impl->Shutdown();
     }
 
-    void DigitalTwin::Print()
+    std::unique_ptr<Window> DigitalTwin::CreateWindow( const std::string& title, uint32_t width, uint32_t height )
     {
-        std::cout << "------------------------------------------------" << std::endl;
-        std::cout << "Hello from DLL!" << std::endl;
-        std::cout << "Linker works properly if you see this message." << std::endl;
-        std::cout << "------------------------------------------------" << std::endl;
+        WindowDesc desc = { title, width, height };
+
+        return m_impl->m_platformSystem->CreateWindow( desc );
+    }
+
+    void DigitalTwin::OnUpdate()
+    {
+        m_impl->m_platformSystem->OnUpdate();
     }
 
     FileSystem* DigitalTwin::GetFileSystem() const

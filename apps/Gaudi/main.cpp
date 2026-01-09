@@ -1,16 +1,35 @@
 #include <DigitalTwin.h>
 #include <core/Log.h>
 #include <iostream>
+#include <platform/Input.h>
 
 int main()
 {
 
     DigitalTwin::DigitalTwin       engine;
     DigitalTwin::DigitalTwinConfig config;
+    config.headless = false;
     engine.Initialize( config );
     DT_INFO( "Starting Editor..." );
 
-    engine.Print();
+    // Create the window via Engine API
+    auto window = engine.CreateWindow( "Gaudi Editor", 1280, 720 );
+
+    if( !window )
+    {
+        DT_ERROR( "Failed to create main window!" );
+        engine.Shutdown();
+        return -1;
+    }
+
+    // Main Engine Loop
+    while( !window->IsClosed() )
+    {
+        // 1. Poll events (input, window resize, etc.)
+        engine.OnUpdate();
+    }
+
+    window.reset();
 
     DT_INFO( "Editor closing..." );
     engine.Shutdown();

@@ -1,5 +1,7 @@
 #pragma once
 
+#include "core/Core.h"
+
 namespace DigitalTwin
 {
     class Log;
@@ -7,6 +9,7 @@ namespace DigitalTwin
 
     struct DigitalTwinConfig
     {
+        bool_t      headless      = true;
         const char* rootDirectory = nullptr;
     };
 

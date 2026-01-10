@@ -4,7 +4,13 @@
 #include "core/Log.h"
 #include "core/memory/MemorySystem.h"
 #include "platform/PlatformSystem.h"
+#include "rhi/Device.h"
+#include "rhi/RHI.h"
 #include <iostream>
+
+#if defined( CreateWindow )
+#    undef CreateWindow
+#endif
 
 namespace DigitalTwin
 {
@@ -82,11 +88,13 @@ namespace DigitalTwin
     // Impl
     struct DigitalTwin::Impl
     {
-        DigitalTwinConfig               m_config;
-        bool                            m_initialized;
-        std::unique_ptr<MemorySystem>   m_memorySystem;
-        std::unique_ptr<FileSystem>     m_fileSystem;
-        std::unique_ptr<PlatformSystem> m_platformSystem;
+        DigitalTwinConfig     m_config;
+        bool                  m_initialized;
+        Scope<MemorySystem>   m_memorySystem;
+        Scope<FileSystem>     m_fileSystem;
+        Scope<PlatformSystem> m_platformSystem;
+        Scope<RHI>            m_rhi;
+        Scope<Device>         m_device;
 
         Impl()
             : m_initialized( false )
@@ -106,11 +114,11 @@ namespace DigitalTwin
             DT_INFO( "Initializing DigitalTwin Engine..." );
 
             // 3. Memory
-            m_memorySystem = std::make_unique<MemorySystem>();
+            m_memorySystem = CreateScope<MemorySystem>();
             m_memorySystem->Initialize();
 
             // 4. FileSystem
-            m_fileSystem = std::make_unique<FileSystem>( m_memorySystem.get() );
+            m_fileSystem = CreateScope<FileSystem>( m_memorySystem.get() );
             // Resolve Project Root (Priority 1 - User/App files)
             std::filesystem::path projectRoot;
             if( m_config.rootDirectory && m_config.rootDirectory[ 0 ] != '\0' )
@@ -161,11 +169,12 @@ namespace DigitalTwin
             // 5. Platform System
             if( !m_config.headless )
             {
-                m_platformSystem = std::make_unique<PlatformSystem>();
+                m_platformSystem = CreateScope<PlatformSystem>();
 
                 Result psRes = m_platformSystem->Initialize();
                 if( fsRes != Result::SUCCESS )
                 {
+                    m_platformSystem.reset();
                     m_fileSystem->Shutdown();
                     m_fileSystem.reset();
                     m_memorySystem->Shutdown();
@@ -180,6 +189,63 @@ namespace DigitalTwin
                 DT_INFO( "Running in Headless mode. Platform System skipped." );
             }
 
+            // 6. RHI
+            m_rhi = CreateScope<RHI>();
+
+            RHIConfig rhiConfig;
+            rhiConfig.headless         = m_config.headless;
+            rhiConfig.enableValidation = true;
+
+            std::vector<const char*> platformExtensions;
+            if( m_platformSystem )
+                platformExtensions = m_platformSystem->GetRequiredVulkanExtensions();
+
+            if( m_rhi->Initialize( rhiConfig, platformExtensions ) != Result::SUCCESS )
+            {
+                m_rhi.reset();
+                m_platformSystem->Shutdown();
+                m_platformSystem.reset();
+                m_fileSystem->Shutdown();
+                m_fileSystem.reset();
+                m_memorySystem->Shutdown();
+                m_memorySystem.reset();
+
+                DT_ERROR( "Failed to initialize RHI." );
+                return Result::FAIL;
+            }
+
+            // 7. Device
+            const auto& adapters = m_rhi->GetAdapters();
+            if( adapters.empty() )
+            {
+                m_rhi->Shutdown();
+                m_rhi.reset();
+                m_platformSystem->Shutdown();
+                m_platformSystem.reset();
+                m_fileSystem->Shutdown();
+                m_fileSystem.reset();
+                m_memorySystem->Shutdown();
+                m_memorySystem.reset();
+                DT_ERROR( "No GPU Adapters found!" );
+                return Result::FAIL;
+            }
+            uint32_t selectedAdapter = SelectGPU( m_config.gpuType, adapters );
+
+            if( m_rhi->CreateDevice( selectedAdapter, m_device ) != Result::SUCCESS )
+            {
+                m_device.reset();
+                m_rhi->Shutdown();
+                m_rhi.reset();
+                m_platformSystem->Shutdown();
+                m_platformSystem.reset();
+                m_fileSystem->Shutdown();
+                m_fileSystem.reset();
+                m_memorySystem->Shutdown();
+                m_memorySystem.reset();
+                DT_ERROR( "Failed to create Logical Device." );
+                return Result::FAIL;
+            }
+
             m_initialized = true;
 
             return Result::SUCCESS;
@@ -191,6 +257,18 @@ namespace DigitalTwin
                 return;
 
             DT_INFO( "Shutting down..." );
+
+            if( m_device )
+            {
+                m_device->Shutdown();
+                m_device.reset();
+            }
+
+            if( m_rhi )
+            {
+                m_rhi->Shutdown();
+                m_rhi.reset();
+            }
 
             if( m_platformSystem )
             {
@@ -211,10 +289,103 @@ namespace DigitalTwin
             }
             m_initialized = false;
         }
+
+        /**
+         * @brief Selects the best GPU adapter index based on the user preference.
+         * @param preference The GPUType preference (Default, Discrete, Integrated).
+         * @param adapters The list of available adapters.
+         * @return The index of the selected adapter.
+         */
+        uint32_t SelectGPU( GPUType preference, const std::vector<AdapterInfo>& adapters )
+        {
+            if( adapters.empty() )
+                return 0;
+
+            // 1. Handle Explicit Preference: DISCRETE
+            // Return the first discrete GPU found.
+            if( preference == GPUType::DISCRETE )
+            {
+                for( uint32_t i = 0; i < adapters.size(); ++i )
+                {
+                    if( adapters[ i ].IsDiscrete() )
+                    {
+                        DT_INFO( "GPU Selection: Forced DISCRETE. Found: {0}", adapters[ i ].name );
+                        return i;
+                    }
+                }
+                DT_WARN( "GPU Selection: Preferred DISCRETE GPU not found. Falling back to DEFAULT logic." );
+            }
+            // 2. Handle Explicit Preference: INTEGRATED
+            // Return the first integrated GPU found.
+            else if( preference == GPUType::INTEGRATED )
+            {
+                for( uint32_t i = 0; i < adapters.size(); ++i )
+                {
+                    // Check explicitly for integrated type
+                    if( adapters[ i ].type == VK_PHYSICAL_DEVICE_TYPE_INTEGRATED_GPU )
+                    {
+                        DT_INFO( "GPU Selection: Forced INTEGRATED. Found: {0}", adapters[ i ].name );
+                        return i;
+                    }
+                }
+                DT_WARN( "GPU Selection: Preferred INTEGRATED GPU not found. Falling back to DEFAULT logic." );
+            }
+
+            // 3. Handle DEFAULT (or Fallback)
+            // Algorithm:
+            // - Prioritize Discrete GPUs over Integrated.
+            // - Within the same category, pick the one with the largest VRAM.
+
+            int      bestDiscreteIndex = -1;
+            uint64_t maxDiscreteVRAM   = 0;
+
+            int      bestIntegratedIndex = -1;
+            uint64_t maxIntegratedVRAM   = 0;
+
+            for( uint32_t i = 0; i < adapters.size(); ++i )
+            {
+                const auto& info = adapters[ i ];
+                if( info.IsDiscrete() )
+                {
+                    if( info.deviceMemorySize >= maxDiscreteVRAM )
+                    {
+                        maxDiscreteVRAM   = info.deviceMemorySize;
+                        bestDiscreteIndex = ( int )i;
+                    }
+                }
+                else
+                {
+                    // Treat everything else (Integrated, Virtual, CPU) as secondary
+                    if( info.deviceMemorySize >= maxIntegratedVRAM )
+                    {
+                        maxIntegratedVRAM   = info.deviceMemorySize;
+                        bestIntegratedIndex = ( int )i;
+                    }
+                }
+            }
+
+            // Prioritize Discrete
+            if( bestDiscreteIndex != -1 )
+            {
+                DT_INFO( "GPU Selection: DEFAULT -> Selected Best Discrete: {0}", adapters[ bestDiscreteIndex ].name );
+                return ( uint32_t )bestDiscreteIndex;
+            }
+
+            // Then Integrated
+            if( bestIntegratedIndex != -1 )
+            {
+                DT_INFO( "GPU Selection: DEFAULT -> Selected Best Integrated: {0}", adapters[ bestIntegratedIndex ].name );
+                return ( uint32_t )bestIntegratedIndex;
+            }
+
+            // Absolute fallback
+            DT_WARN( "GPU Selection: Logic failed to find optimal GPU. Returning index 0." );
+            return 0;
+        }
     };
 
     DigitalTwin::DigitalTwin()
-        : m_impl( std::make_unique<Impl>() )
+        : m_impl( CreateScope<Impl>() )
     {
     }
 
@@ -232,7 +403,7 @@ namespace DigitalTwin
         m_impl->Shutdown();
     }
 
-    std::unique_ptr<Window> DigitalTwin::CreateWindow( const std::string& title, uint32_t width, uint32_t height )
+    Scope<Window> DigitalTwin::CreateWindow( const std::string& title, uint32_t width, uint32_t height )
     {
         WindowDesc desc = { title, width, height };
 

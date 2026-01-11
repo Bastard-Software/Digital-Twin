@@ -123,7 +123,7 @@ namespace DigitalTwin
             Result r = ( x );                                                                                                                        \
             if( r != ::DigitalTwin::Result::SUCCESS )                                                                                                \
             {                                                                                                                                        \
-                DT_CORE_ERROR( "Check Failed: {0}", ::DigitalTwin::toString( r ) );                                                                  \
+                DT_ERROR( "Check Failed: {0}", ::DigitalTwin::toString( r ) );                                                                       \
                 DT_DEBUGBREAK();                                                                                                                     \
             }                                                                                                                                        \
         }

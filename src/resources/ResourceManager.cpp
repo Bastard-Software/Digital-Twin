@@ -113,7 +113,22 @@ namespace DigitalTwin
             {
                 devicePtr->DestroyTexture( keptResource.get() );
             }
-            // TODO: Add other resource types here
+            else if constexpr( std::is_same_v<T, Sampler> )
+            {
+                devicePtr->DestroySampler( keptResource.get() );
+            }
+            else if constexpr( std::is_same_v<T, Shader> )
+            {
+                devicePtr->DestroyShader( keptResource.get() );
+            }
+            else if constexpr( std::is_same_v<T, ComputePipeline> )
+            {
+                devicePtr->DestroyComputePipeline( keptResource.get() );
+            }
+            else if constexpr( std::is_same_v<T, GraphicsPipeline> )
+            {
+                devicePtr->DestroyGraphicsPipeline( keptResource.get() );
+            }
         };
 
         m_zombies.push_back( std::move( zombie ) );

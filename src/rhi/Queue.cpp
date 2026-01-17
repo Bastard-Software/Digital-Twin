@@ -40,6 +40,23 @@ namespace DigitalTwin
         }
     }
 
+    bool_t Queue::IsValueCompleted( uint64_t value ) const
+    {
+        if( value == 0 )
+            return true; // Value 0 is always completed
+
+        uint64_t completedValue = 0;
+        VkResult result         = m_api.vkGetSemaphoreCounterValue( m_device, m_timelineSemaphore, &completedValue );
+
+        if( result != VK_SUCCESS )
+        {
+            DT_ERROR( "Failed to get semaphore counter value!" );
+            return false;
+        }
+
+        return completedValue >= value;
+    }
+
     void Queue::WaitIdle() const
     {
         if( m_queue )

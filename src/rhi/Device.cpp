@@ -1,6 +1,12 @@
 #include "rhi/Device.h"
 
 #include "core/Log.h"
+#include "rhi/Buffer.h"
+#include "rhi/Pipeline.h"
+#include "rhi/Queue.h"
+#include "rhi/Sampler.h"
+#include "rhi/Shader.h"
+#include "rhi/Texture.h"
 #include <set>
 #include <vector>
 
@@ -23,7 +29,6 @@ namespace DigitalTwin
 
     Device::~Device()
     {
-        Shutdown();
     }
 
     Result Device::Initialize( const DeviceDesc& desc )
@@ -58,6 +63,19 @@ namespace DigitalTwin
         VkPhysicalDeviceFeatures         deviceFeatures = {};
         VkPhysicalDeviceVulkan12Features features12     = { VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES };
         features12.timelineSemaphore                    = VK_TRUE;
+        features12.bufferDeviceAddress                  = VK_TRUE;
+
+        VkPhysicalDeviceVulkan13Features features13 = { VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_FEATURES };
+        features13.pNext                            = &features12;
+        features13.synchronization2                 = VK_TRUE;
+        features13.dynamicRendering                 = VK_TRUE;
+
+        VkPhysicalDeviceVulkan14Features features14 = { VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_4_FEATURES };
+        features14.pNext                            = &features13;
+
+        VkPhysicalDeviceFeatures2 deviceFeatures2 = { VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2 };
+        deviceFeatures2.features                  = deviceFeatures;
+        deviceFeatures2.pNext                     = &features13;
 
         std::vector<const char*> deviceExtensions;
         if( !m_desc.headless )
@@ -69,7 +87,7 @@ namespace DigitalTwin
 #endif
 
         VkDeviceCreateInfo createInfo      = { VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO };
-        createInfo.pNext                   = &features12;
+        createInfo.pNext                   = &features14;
         createInfo.queueCreateInfoCount    = static_cast<uint32_t>( queueCreateInfos.size() );
         createInfo.pQueueCreateInfos       = queueCreateInfos.data();
         createInfo.pEnabledFeatures        = &deviceFeatures;
@@ -200,6 +218,120 @@ namespace DigitalTwin
             m_api.vkDestroyDevice( m_device, nullptr );
             m_device = VK_NULL_HANDLE;
             DT_INFO( "Device Shutdown." );
+        }
+    }
+
+    Result Device::CreateBuffer( const BufferDesc& desc, Buffer* buffer )
+    {
+        if( !buffer )
+        {
+            DT_ERROR( "CreateBuffer: buffer pointer is null!" );
+            return Result::FAIL;
+        }
+
+        return buffer->Create( desc );
+    }
+
+    void Device::DestroyBuffer( Buffer* buffer )
+    {
+        if( buffer )
+        {
+            buffer->Destroy();
+        }
+    }
+
+    Result Device::CreateTexture( const TextureDesc& desc, Texture* texture )
+    {
+        if( !texture )
+        {
+            DT_ERROR( "CreateTexture: texture pointer is null!" );
+            return Result::FAIL;
+        }
+
+        return texture->Create( desc );
+    }
+
+    void Device::DestroyTexture( Texture* texture )
+    {
+        if( texture )
+        {
+            texture->Destroy();
+        }
+    }
+
+    Result Device::CreateSampler( const SamplerDesc& desc, Sampler* sampler )
+    {
+        if( !sampler )
+        {
+            DT_ERROR( "CreateSampler: sampler pointer is null!" );
+            return Result::FAIL;
+        }
+
+        return sampler->Create( desc );
+    }
+
+    void Device::DestroySampler( Sampler* sampler )
+    {
+        if( sampler )
+        {
+            sampler->Destroy();
+        }
+    }
+
+    Result Device::CreateShader( const std::string& filepath, Shader* shader )
+    {
+        if( !shader )
+        {
+            DT_ERROR( "CreateSampler: sampler pointer is null!" );
+            return Result::FAIL;
+        }
+
+        return shader->Create( filepath );
+    }
+
+    void Device::DestroyShader( Shader* shader )
+    {
+        if( shader )
+        {
+            shader->Destroy();
+        }
+    }
+
+    Result Device::CreateComputePipeline( const ComputePipelineNativeDesc& desc, ComputePipeline* pipeline )
+    {
+        if( !pipeline )
+        {
+            DT_ERROR( "CreateComputePipeline: pipeline pointer is null!" );
+            return Result::FAIL;
+        }
+
+        return pipeline->Create( desc );
+    }
+
+    void Device::DestroyComputePipeline( ComputePipeline* pipeline )
+    {
+        if( pipeline )
+        {
+            pipeline->Destroy();
+        }
+    }
+
+    Result Device::CreateGraphicsPipeline( const GraphicsPipelineNativeDesc& desc, GraphicsPipeline* pipeline )
+    {
+        if( !pipeline )
+        {
+            DT_ERROR( "CreateGraphicsPipeline: pipeline pointer is null!" );
+            return Result::FAIL;
+        }
+
+        return pipeline->Create( desc );
+    }
+
+    void Device::DestroyGraphicsPipeline( GraphicsPipeline* pipeline )
+    {
+        if( pipeline )
+        {
+            pipeline->Destroy();
         }
     }
 

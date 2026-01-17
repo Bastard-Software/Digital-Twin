@@ -4,6 +4,7 @@
 #include "core/Log.h"
 #include "core/memory/MemorySystem.h"
 #include "platform/PlatformSystem.h"
+#include "resources/ResourceMAnager.h"
 #include "rhi/Device.h"
 #include "rhi/RHI.h"
 #include <iostream>
@@ -88,13 +89,14 @@ namespace DigitalTwin
     // Impl
     struct DigitalTwin::Impl
     {
-        DigitalTwinConfig     m_config;
-        bool                  m_initialized;
-        Scope<MemorySystem>   m_memorySystem;
-        Scope<FileSystem>     m_fileSystem;
-        Scope<PlatformSystem> m_platformSystem;
-        Scope<RHI>            m_rhi;
-        Scope<Device>         m_device;
+        DigitalTwinConfig      m_config;
+        bool                   m_initialized;
+        Scope<MemorySystem>    m_memorySystem;
+        Scope<FileSystem>      m_fileSystem;
+        Scope<PlatformSystem>  m_platformSystem;
+        Scope<RHI>             m_rhi;
+        Scope<Device>          m_device;
+        Scope<ResourceManager> m_resourceManager;
 
         Impl()
             : m_initialized( false )
@@ -246,6 +248,25 @@ namespace DigitalTwin
                 return Result::FAIL;
             }
 
+            // 8. Resource Manager
+            m_resourceManager = CreateScope<ResourceManager>( m_device.get(), m_memorySystem.get() );
+            if( m_resourceManager->Initialize() != Result::SUCCESS )
+            {
+                m_resourceManager.reset();
+                m_device->Shutdown();
+                m_device.reset();
+                m_rhi->Shutdown();
+                m_rhi.reset();
+                m_platformSystem->Shutdown();
+                m_platformSystem.reset();
+                m_fileSystem->Shutdown();
+                m_fileSystem.reset();
+                m_memorySystem->Shutdown();
+                m_memorySystem.reset();
+                DT_ERROR( "Failed to initialize Resource Manager." );
+                return Result::FAIL;
+            }
+
             m_initialized = true;
 
             return Result::SUCCESS;
@@ -257,6 +278,12 @@ namespace DigitalTwin
                 return;
 
             DT_INFO( "Shutting down..." );
+
+            if( m_resourceManager )
+            {
+                m_resourceManager->Shutdown();
+                m_resourceManager.reset();
+            }
 
             if( m_device )
             {

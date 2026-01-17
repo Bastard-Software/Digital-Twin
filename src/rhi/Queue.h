@@ -23,6 +23,18 @@ namespace DigitalTwin
         QueueType GetType() const { return m_type; }
 
         /**
+         * @brief Checks if the timeline semaphore has reached the specified value.
+         * @return True if the GPU execution has passed this point.
+         */
+        bool_t IsValueCompleted( uint64_t value ) const;
+
+        /**
+         * @brief Returns the value that will be signaled by the next submission.
+         * Effectively, the 'current' time of the CPU regarding submissions.
+         */
+        uint64_t GetLastSubmittedValue() const { return m_nextValue - 1; }
+
+        /**
          * @brief Returns the timeline semaphore associated with this queue.
          * Used for CPU-GPU and GPU-GPU synchronization.
          */

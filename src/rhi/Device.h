@@ -18,6 +18,24 @@ namespace DigitalTwin
         Result Initialize( const DeviceDesc& desc );
         void   Shutdown();
 
+        Result CreateBuffer( const BufferDesc& desc, Buffer* buffer );
+        void   DestroyBuffer( Buffer* buffer );
+
+        Result CreateTexture( const TextureDesc& desc, Texture* texture );
+        void   DestroyTexture( Texture* texture );
+
+        Result CreateSampler( const SamplerDesc& desc, Sampler* sampler );
+        void   DestroySampler( Sampler* sampler );
+
+        Result CreateShader( const std::string& filepath, Shader* shader );
+        void   DestroyShader( Shader* shader );
+
+        Result CreateComputePipeline( const ComputePipelineNativeDesc& desc, ComputePipeline* pipeline );
+        void   DestroyComputePipeline( ComputePipeline* pipeline );
+
+        Result CreateGraphicsPipeline( const GraphicsPipelineNativeDesc& desc, GraphicsPipeline* pipeline );
+        void   DestroyGraphicsPipeline( GraphicsPipeline* pipeline );
+
         VkDevice         GetHandle() const { return m_device; }
         VkPhysicalDevice GetPhysicalDevice() const { return m_physicalDevice; }
         VmaAllocator     GetAllocator() const { return m_allocator; }

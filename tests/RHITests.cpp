@@ -2,6 +2,7 @@
 
 #include "core/Memory/MemorySystem.h"
 #include "rhi/Buffer.h"
+#include "rhi/DescriptorAllocator.h"
 #include "rhi/Device.h"
 #include "rhi/Pipeline.h"
 #include "rhi/RHI.h"
@@ -862,4 +863,109 @@ TEST_F( PipelineTest, CreateGraphicsPipeline )
     EXPECT_NE( pipeline.GetDescriptorSetLayout( 0 ), VK_NULL_HANDLE );
 
     m_device->DestroyGraphicsPipeline( &pipeline );
+}
+
+// =================================================================================================
+// Descriptor Allocator Tests
+// =================================================================================================
+
+class DescriptorAllocatorTest : public DeviceResourceTest
+{
+protected:
+    std::unique_ptr<DescriptorAllocator> allocator;
+    VkDescriptorSetLayout                testLayout = VK_NULL_HANDLE;
+
+    void SetUp() override
+    {
+        DeviceResourceTest::SetUp();
+        if( m_device )
+        {
+            // PASS API TABLE HERE
+            allocator = std::make_unique<DescriptorAllocator>( m_device->GetHandle(), &m_device->GetAPI() );
+            allocator->Initialize();
+
+            // Create a dummy layout for testing (1 UBO binding)
+            // Note: We use the device API directly here for setup helper
+            VkDescriptorSetLayoutBinding binding{};
+            binding.binding         = 0;
+            binding.descriptorType  = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+            binding.descriptorCount = 1;
+            binding.stageFlags      = VK_SHADER_STAGE_VERTEX_BIT;
+
+            VkDescriptorSetLayoutCreateInfo info{ VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO };
+            info.bindingCount = 1;
+            info.pBindings    = &binding;
+
+            m_device->GetAPI().vkCreateDescriptorSetLayout( m_device->GetHandle(), &info, nullptr, &testLayout );
+        }
+    }
+
+    void TearDown() override
+    {
+        if( m_device )
+        {
+            if( testLayout != VK_NULL_HANDLE )
+                m_device->GetAPI().vkDestroyDescriptorSetLayout( m_device->GetHandle(), testLayout, nullptr );
+
+            allocator->Shutdown();
+            allocator.reset();
+        }
+        DeviceResourceTest::TearDown();
+    }
+};
+
+// 1. Basic Allocation Test
+TEST_F( DescriptorAllocatorTest, BasicAllocation )
+{
+    if( !m_device )
+        GTEST_SKIP();
+
+    VkDescriptorSet set = VK_NULL_HANDLE;
+    Result          res = allocator->Allocate( testLayout, set );
+
+    EXPECT_EQ( res, Result::SUCCESS );
+    EXPECT_NE( set, VK_NULL_HANDLE );
+}
+
+// 2. Pool Growing Test (Force new pool creation)
+TEST_F( DescriptorAllocatorTest, PoolGrowing )
+{
+    if( !m_device )
+        GTEST_SKIP();
+
+    // The allocator creates pools of size 1000.
+    // We try to allocate 1500 sets to ensure it creates a second pool internally.
+    std::vector<VkDescriptorSet> sets;
+    const int                    count = 1500;
+    sets.resize( count );
+
+    for( int i = 0; i < count; ++i )
+    {
+        Result res = allocator->Allocate( testLayout, sets[ i ] );
+        ASSERT_EQ( res, Result::SUCCESS ) << "Failed to allocate set at index " << i;
+        ASSERT_NE( sets[ i ], VK_NULL_HANDLE );
+    }
+}
+
+// 3. Reset Functionality Test
+TEST_F( DescriptorAllocatorTest, ResetPools )
+{
+    if( !m_device )
+        GTEST_SKIP();
+
+    VkDescriptorSet set1 = VK_NULL_HANDLE;
+    allocator->Allocate( testLayout, set1 );
+    EXPECT_NE( set1, VK_NULL_HANDLE );
+
+    // Reset logic (simulating end of frame)
+    allocator->ResetPools();
+
+    // After reset, we should be able to allocate again.
+    // Note: Technically set1 is now invalid/dangling in Vulkan terms, but the pointer value remains.
+
+    VkDescriptorSet set2 = VK_NULL_HANDLE;
+    Result          res  = allocator->Allocate( testLayout, set2 );
+
+    EXPECT_EQ( res, Result::SUCCESS );
+    EXPECT_NE( set2, VK_NULL_HANDLE );
 }

@@ -36,6 +36,9 @@ namespace DigitalTwin
         Result CreateGraphicsPipeline( const GraphicsPipelineNativeDesc& desc, GraphicsPipeline* pipeline );
         void   DestroyGraphicsPipeline( GraphicsPipeline* pipeline );
 
+        ThreadContextHandle CreateThreadContext();
+        ThreadContext*      GetThreadContext( ThreadContextHandle handle );
+
         VkDevice         GetHandle() const { return m_device; }
         VkPhysicalDevice GetPhysicalDevice() const { return m_physicalDevice; }
         VmaAllocator     GetAllocator() const { return m_allocator; }
@@ -69,6 +72,8 @@ namespace DigitalTwin
         Queue* m_transferQueue = nullptr;
 
         // To control lifetime of owned queues
-        std::vector<Scope<Queue>> m_ownedQueues;
+        std::vector<Scope<Queue>>         m_ownedQueues;
+        std::vector<Scope<ThreadContext>> m_threadContexts;
+        std::mutex                        m_threadContextMutex;
     };
 } // namespace DigitalTwin

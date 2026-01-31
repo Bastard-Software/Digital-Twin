@@ -7,6 +7,7 @@
 #include "rhi/Sampler.h"
 #include "rhi/Shader.h"
 #include "rhi/Texture.h"
+#include "rhi/ThreadContext.h"
 #include <set>
 #include <vector>
 
@@ -205,16 +206,19 @@ namespace DigitalTwin
                 m_allocator = VK_NULL_HANDLE;
             }
 
-            // 2. Destroy all queues immediately.
+            // 2. Destroy Thread Contexts
+            m_threadContexts.clear();
+
+            // 3. Destroy all queues immediately.
             // Queue destructors call vkDestroySemaphore, so VkDevice must still be valid here.
             m_ownedQueues.clear();
 
-            // 3. Clear raw pointers to prevent dangling usage (safety)
+            // 4. Clear raw pointers to prevent dangling usage (safety)
             m_graphicsQueue = nullptr;
             m_computeQueue  = nullptr;
             m_transferQueue = nullptr;
 
-            // 4. Destroy Device
+            // 5. Destroy Device
             m_api.vkDestroyDevice( m_device, nullptr );
             m_device = VK_NULL_HANDLE;
             DT_INFO( "Device Shutdown." );
@@ -341,6 +345,33 @@ namespace DigitalTwin
         {
             m_api.vkDeviceWaitIdle( m_device );
         }
+    }
+
+    ThreadContextHandle Device::CreateThreadContext()
+    {
+        uint32_t familyIndex = m_graphicsQueue->GetFamilyIndex();
+
+        auto ctx = CreateScope<ThreadContext>();
+        if( ctx->Initialize( m_device, &m_api, familyIndex ) != Result::SUCCESS )
+        {
+            return ThreadContextHandle::Invalid;
+        }
+
+        std::lock_guard<std::mutex> lock( m_threadContextMutex );
+
+        uint32_t index = ( uint32_t )m_threadContexts.size();
+        m_threadContexts.push_back( std::move( ctx ) );
+
+        return ThreadContextHandle( index, 1 );
+    }
+
+    ThreadContext* Device::GetThreadContext( ThreadContextHandle handle )
+    {
+        std::lock_guard<std::mutex> lock( m_threadContextMutex );
+
+        if( !handle.IsValid() || handle.GetIndex() >= m_threadContexts.size() )
+            return nullptr;
+        return m_threadContexts[ handle.GetIndex() ].get();
     }
 
     Device::QueueFamilyIndices Device::FindQueueFamilies( VkPhysicalDevice device )

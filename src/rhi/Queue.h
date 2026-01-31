@@ -4,6 +4,7 @@
 
 #include "core/Core.h"
 #include <volk.h>
+#include <mutex>
 
 namespace DigitalTwin
 {
@@ -21,6 +22,13 @@ namespace DigitalTwin
         VkQueue   GetHandle() const { return m_queue; }
         uint32_t  GetFamilyIndex() const { return m_familyIndex; }
         QueueType GetType() const { return m_type; }
+
+        /**
+         * @brief Submits command buffers to the queue using Timeline Semaphores.
+         */
+        Result Submit( const std::vector<CommandBuffer*>& cmdBuffers, const std::vector<VkSemaphore>& waitSemaphores = {},
+                       const std::vector<uint64_t>& waitValues = {}, const std::vector<VkSemaphore>& signalSemaphores = {},
+                       const std::vector<uint64_t>& signalValues = {} );
 
         /**
          * @brief Checks if the timeline semaphore has reached the specified value.
@@ -54,5 +62,7 @@ namespace DigitalTwin
 
         VkSemaphore m_timelineSemaphore; // Owned, created in constructor
         uint64_t    m_nextValue = 1;     // Next wait value for the timeline
+
+        mutable std::mutex m_submitMutex;
     };
 } // namespace DigitalTwin

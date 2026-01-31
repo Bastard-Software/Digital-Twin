@@ -19,6 +19,8 @@ namespace DigitalTwin
     class Shader;
     class ComputePipeline;
     class GraphicsPipeline;
+    class CommandBuffer;
+    class ThreadContext;
 
     /**
      * @brief Configuration for RHI initialization.

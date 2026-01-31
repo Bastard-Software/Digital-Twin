@@ -46,6 +46,8 @@ namespace DigitalTwin
     DEFINE_HANDLE( MeshHandle );
     DEFINE_HANDLE( ComputePipelineHandle );
     DEFINE_HANDLE( GraphicsPipelineHandle );
+    DEFINE_HANDLE( ThreadContextHandle );
+    DEFINE_HANDLE( CommandBufferHandle );
 
 } // namespace DigitalTwin
 

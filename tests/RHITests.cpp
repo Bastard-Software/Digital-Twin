@@ -1,6 +1,7 @@
 #include "rhi/RHITypes.h"
 
 #include "core/Memory/MemorySystem.h"
+#include "core/jobs/JobSystem.h"
 #include "rhi/Buffer.h"
 #include "rhi/DescriptorAllocator.h"
 #include "rhi/Device.h"
@@ -9,6 +10,7 @@
 #include "rhi/Sampler.h"
 #include "rhi/Shader.h"
 #include "rhi/Texture.h"
+#include "rhi/ThreadContext.h"
 #include <filesystem>
 #include <fstream>
 #include <gtest/gtest.h>
@@ -968,4 +970,204 @@ TEST_F( DescriptorAllocatorTest, ResetPools )
 
     EXPECT_EQ( res, Result::SUCCESS );
     EXPECT_NE( set2, VK_NULL_HANDLE );
+}
+
+// =================================================================================================
+// Command Buffer & Thread Context Tests
+// =================================================================================================
+
+class CommandBufferTest : public DeviceResourceTest
+{
+};
+
+// 1. Test Creation and Lifecycle
+TEST_F( CommandBufferTest, CreateAndLifecycle )
+{
+    if( !m_device )
+        GTEST_SKIP();
+
+    // 1. Create Context Handle
+    ThreadContextHandle ctxHandle = m_device->CreateThreadContext();
+    ASSERT_TRUE( ctxHandle.IsValid() );
+    ThreadContext* ctx = m_device->GetThreadContext( ctxHandle );
+    ASSERT_NE( ctx, nullptr );
+
+    // 2. Allocate Buffer Handle
+    CommandBufferHandle cmdHandle = ctx->CreateCommandBuffer( QueueType::GRAPHICS );
+    ASSERT_TRUE( cmdHandle.IsValid() );
+
+    // 3. Get Pointer
+    CommandBuffer* cmd = ctx->GetCommandBuffer( cmdHandle );
+    ASSERT_NE( cmd, nullptr );
+    EXPECT_NE( cmd->GetHandle(), VK_NULL_HANDLE );
+
+    // 4. Recording
+    EXPECT_EQ( cmd->Begin(), Result::SUCCESS );
+    // State check optional depending on build (debug only)
+
+    EXPECT_EQ( cmd->End(), Result::SUCCESS );
+
+    // 5. Reset via Context
+    ctx->Reset();
+    // Handles are conceptually invalidated or reset to initial state
+}
+
+// 2. Test Submission with Timeline Semaphores
+TEST_F( CommandBufferTest, SubmitClearColor )
+{
+    if( !m_device )
+        GTEST_SKIP();
+
+    auto ctxHandle = m_device->CreateThreadContext();
+    auto ctx       = m_device->GetThreadContext( ctxHandle );
+
+    auto cmdHandle = ctx->CreateCommandBuffer( QueueType::GRAPHICS );
+    auto cmd       = ctx->GetCommandBuffer( cmdHandle );
+
+    // Create a Texture to clear
+    TextureDesc texDesc;
+    texDesc.width  = 64;
+    texDesc.height = 64;
+    texDesc.usage  = TextureUsage::TRANSFER_DST | TextureUsage::SAMPLED;
+
+    Texture texture( m_device->GetAllocator(), m_device->GetHandle(), &m_device->GetAPI() );
+    ASSERT_EQ( m_device->CreateTexture( texDesc, &texture ), Result::SUCCESS );
+
+    // Record Clear
+    cmd->Begin();
+
+    // Transition (Simplified)
+    VkImageMemoryBarrier2 barrier = { VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2 };
+    barrier.srcStageMask          = VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT;
+    barrier.srcAccessMask         = 0;
+    barrier.dstStageMask          = VK_PIPELINE_STAGE_2_TRANSFER_BIT;
+    barrier.dstAccessMask         = VK_ACCESS_2_TRANSFER_WRITE_BIT;
+    barrier.oldLayout             = VK_IMAGE_LAYOUT_UNDEFINED;
+    barrier.newLayout             = VK_IMAGE_LAYOUT_GENERAL;
+    barrier.image                 = texture.GetHandle();
+    barrier.subresourceRange      = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1 };
+
+    cmd->PipelineBarrier( 0, 0, 0, 0, nullptr, 0, nullptr, 1, &barrier );
+
+    VkClearColorValue clearColor = { { 1.0f, 0.0f, 1.0f, 1.0f } }; // Magenta
+    cmd->ClearColorImage( &texture, VK_IMAGE_LAYOUT_GENERAL, clearColor );
+
+    cmd->End();
+
+    // Submit with Timeline
+    auto        queue       = m_device->GetGraphicsQueue();
+    VkSemaphore timeline    = queue->GetTimelineSemaphore();
+    uint64_t    signalValue = queue->GetLastSubmittedValue() + 1;
+
+    // Submit: Wait {}, Signal {timeline: signalValue}
+    Result res = queue->Submit( { cmd }, {}, {}, { timeline }, { signalValue } );
+    ASSERT_EQ( res, Result::SUCCESS );
+
+    // Wait on Host
+    VkSemaphoreWaitInfo waitInfo = { VK_STRUCTURE_TYPE_SEMAPHORE_WAIT_INFO };
+    waitInfo.semaphoreCount      = 1;
+    waitInfo.pSemaphores         = &timeline;
+    waitInfo.pValues             = &signalValue;
+
+    VkResult waitRes = m_device->GetAPI().vkWaitSemaphores( m_device->GetHandle(), &waitInfo, 1000000000 );
+    EXPECT_EQ( waitRes, VK_SUCCESS );
+
+    m_device->DestroyTexture( &texture );
+}
+
+// 3. Test Multi-threaded Recording and Submission
+// This test verifies that multiple threads can:
+// - Create their own ThreadContexts safely (Device::CreateThreadContext)
+// - Allocate CommandBuffers independently
+// - Record commands in parallel without race conditions
+// - Submit work to the shared Graphics Queue safely (Queue::Submit)
+TEST_F( CommandBufferTest, MultithreadedRecordingAndSubmission )
+{
+    if( !m_device )
+        GTEST_SKIP();
+
+    // 1. Initialize JobSystem with 4 worker threads
+    JobSystem         jobSystem;
+    JobSystem::Config jobConfig;
+    jobConfig.workerCount = 4;
+    jobSystem.Initialize( jobConfig );
+
+    // 2. Prepare Resources (Textures to be cleared)
+    const uint32_t       cmdCount = 16; // Number of jobs/textures
+    std::vector<Texture> textures;
+    textures.reserve( cmdCount );
+
+    TextureDesc texDesc;
+    texDesc.width  = 64;
+    texDesc.height = 64;
+    texDesc.usage  = TextureUsage::TRANSFER_DST | TextureUsage::SAMPLED;
+
+    // Create textures on the main thread (safe initialization)
+    for( uint32_t i = 0; i < cmdCount; ++i )
+    {
+        textures.emplace_back( m_device->GetAllocator(), m_device->GetHandle(), &m_device->GetAPI() );
+        ASSERT_EQ( m_device->CreateTexture( texDesc, &textures.back() ), Result::SUCCESS );
+    }
+
+    // Atomic counter to track completed jobs
+    std::atomic<int> completedJobs = 0;
+
+    // 3. Dispatch jobs to workers
+    jobSystem.Dispatch( cmdCount, [ & ]( uint32_t index ) {
+        // A. Get/Create ThreadContext for this thread.
+        // Device::CreateThreadContext is now thread-safe (mutex protected).
+        ThreadContextHandle ctxHandle = m_device->CreateThreadContext();
+        ThreadContext*      ctx       = m_device->GetThreadContext( ctxHandle );
+
+        ASSERT_NE( ctx, nullptr );
+
+        // B. Allocate Command Buffer (Thread-local, no mutex needed)
+        CommandBufferHandle cmdHandle = ctx->CreateCommandBuffer( QueueType::GRAPHICS );
+        CommandBuffer*      cmd       = ctx->GetCommandBuffer( cmdHandle );
+
+        // C. Record Commands (Parallel recording)
+        cmd->Begin();
+
+        // Transition Layout Barrier
+        VkImageMemoryBarrier2 barrier = { VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2 };
+        barrier.srcStageMask          = VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT;
+        barrier.srcAccessMask         = 0;
+        barrier.dstStageMask          = VK_PIPELINE_STAGE_2_TRANSFER_BIT;
+        barrier.dstAccessMask         = VK_ACCESS_2_TRANSFER_WRITE_BIT;
+        barrier.oldLayout             = VK_IMAGE_LAYOUT_UNDEFINED;
+        barrier.newLayout             = VK_IMAGE_LAYOUT_GENERAL;
+        barrier.image                 = textures[ index ].GetHandle();
+        barrier.subresourceRange      = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1 };
+
+        cmd->PipelineBarrier( 0, 0, 0, 0, nullptr, 0, nullptr, 1, &barrier );
+
+        // Clear Command (Each thread clears its own texture with a unique color)
+        float             val   = ( float )index / ( float )cmdCount;
+        VkClearColorValue color = { { val, 1.0f - val, 0.0f, 1.0f } };
+        cmd->ClearColorImage( &textures[ index ], VK_IMAGE_LAYOUT_GENERAL, color );
+
+        cmd->End();
+
+        // D. Submit to Queue
+        // Queue::Submit is now thread-safe (mutex protected inside Queue).
+        m_device->GetGraphicsQueue()->Submit( { cmd } );
+
+        completedJobs++;
+    } );
+
+    // 4. Wait for all jobs to finish on CPU
+    jobSystem.Wait();
+
+    EXPECT_EQ( completedJobs, cmdCount );
+
+    // 5. Wait for GPU to finish execution
+    m_device->GetGraphicsQueue()->WaitIdle();
+
+    // Cleanup resources
+    for( auto& tex: textures )
+    {
+        m_device->DestroyTexture( &tex );
+    }
+
+    jobSystem.Shutdown();
 }

@@ -15,7 +15,7 @@ int main()
     // Create the window via Engine API
     auto window = engine.CreateWindow( "Gaudi Editor", 1280, 720 );
 
-    if( !window )
+    if( !window.IsValid() )
     {
         DT_ERROR( "Failed to create main window!" );
         engine.Shutdown();
@@ -23,13 +23,11 @@ int main()
     }
 
     // Main Engine Loop
-    while( !window->IsClosed() )
+    while( !engine.IsWindowColsed(window) )
     {
         // 1. Poll events (input, window resize, etc.)
         engine.OnUpdate();
     }
-
-    window.reset();
 
     DT_INFO( "Editor closing..." );
     engine.Shutdown();

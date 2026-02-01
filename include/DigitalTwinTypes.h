@@ -1,11 +1,15 @@
 #pragma once
 
 #include "core/Core.h"
+#include "core/Handle.h"
 
 namespace DigitalTwin
 {
     class Log;
     class FileSystem;
+    class Window;
+
+    DEFINE_HANDLE( WindowHandle );
 
     enum class GPUType
     {

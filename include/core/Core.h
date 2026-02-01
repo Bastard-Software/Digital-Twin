@@ -27,12 +27,13 @@ namespace DigitalTwin
     // Error codes
     enum class Result : int32_t
     {
-        SUCCESS         = 0,
-        FAIL            = -1,
-        NOT_IMPLEMENTED = -2,
-        INVALID_ARGS    = -3,
-        TIMEOUT         = -4,
-        OUT_OF_MEMORY   = -10
+        SUCCESS            = 0,
+        FAIL               = -1,
+        NOT_IMPLEMENTED    = -2,
+        INVALID_ARGS       = -3,
+        TIMEOUT            = -4,
+        OUT_OF_MEMORY      = -10,
+        RECREATE_SWAPCHAIN = -11,
     };
 
     inline std::string_view toString( Result result )

@@ -12,6 +12,7 @@ namespace DigitalTwin
     {
     public:
         Texture( VmaAllocator allocator, VkDevice device, const VolkDeviceTable* api );
+        Texture( VkDevice device, const VolkDeviceTable* api, VkImage existingImage, VkFormat format, VkExtent3D extent );
         ~Texture();
 
         Result Create( const TextureDesc& desc );
@@ -46,6 +47,8 @@ namespace DigitalTwin
         VkFormat      m_format        = VK_FORMAT_UNDEFINED;
         VkImageLayout m_currentLayout = VK_IMAGE_LAYOUT_UNDEFINED;
         TextureType   m_type          = TextureType::Texture2D;
+
+        bool m_ownsMemory = true;
     };
 
 } // namespace DigitalTwin

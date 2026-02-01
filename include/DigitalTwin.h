@@ -18,7 +18,8 @@ namespace DigitalTwin
         Result Initialize( const DigitalTwinConfig& config );
         void   Shutdown();
 
-        std::unique_ptr<Window> CreateWindow( const std::string& title, uint32_t width, uint32_t height );
+        WindowHandle CreateWindow( const std::string& title, uint32_t width, uint32_t height );
+        bool         IsWindowColsed( WindowHandle handle ) const;
 
         void OnUpdate();
 

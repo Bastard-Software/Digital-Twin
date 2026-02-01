@@ -17,7 +17,7 @@ namespace DigitalTwin
 
         // Creates a new window managed by the platform.
         // Injects the Input system into the window automatically.
-        std::unique_ptr<Window> CreateWindow( const WindowDesc& config );
+        Scope<Window> CreateWindow( const WindowDesc& config );
 
         // Polls system events (keyboard, mouse, window). Call this once per frame.
         void OnUpdate();
@@ -31,8 +31,8 @@ namespace DigitalTwin
         Input* GetInput() { return m_input.get(); }
 
     private:
-        std::vector<Window*>   m_windows;
-        std::unique_ptr<Input> m_input;
-        bool_t                 m_initialized = false;
+        std::vector<Window*> m_windows;
+        Scope<Input>         m_input;
+        bool_t               m_initialized = false;
     };
 } // namespace DigitalTwin

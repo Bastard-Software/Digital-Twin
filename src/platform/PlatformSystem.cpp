@@ -76,7 +76,7 @@ namespace DigitalTwin
         m_initialized = false;
     }
 
-    std::unique_ptr<Window> PlatformSystem::CreateWindow( const WindowDesc& config )
+    Scope<Window> PlatformSystem::CreateWindow( const WindowDesc& config )
     {
         if( !m_initialized )
         {
@@ -93,7 +93,7 @@ namespace DigitalTwin
         m_windows.push_back( rawWindow );
 
         // Return ownership to the user via unique_ptr
-        return std::unique_ptr<Window>( rawWindow );
+        return Scope<Window>( rawWindow );
     }
 
     void PlatformSystem::RemoveWindow( Window* window )

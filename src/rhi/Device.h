@@ -42,6 +42,7 @@ namespace DigitalTwin
         VkDevice         GetHandle() const { return m_device; }
         VkPhysicalDevice GetPhysicalDevice() const { return m_physicalDevice; }
         VmaAllocator     GetAllocator() const { return m_allocator; }
+        VkInstance       GetInstance() const { return m_instance; }
 
         // Returns the function table loaded for this specific device
         const VolkDeviceTable& GetAPI() const { return m_api; }

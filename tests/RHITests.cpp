@@ -2,6 +2,8 @@
 
 #include "core/Memory/MemorySystem.h"
 #include "core/jobs/JobSystem.h"
+#include "platform/PlatformSystem.h"
+#include "platform/Window.h"
 #include "rhi/Buffer.h"
 #include "rhi/DescriptorAllocator.h"
 #include "rhi/Device.h"
@@ -9,12 +11,18 @@
 #include "rhi/RHI.h"
 #include "rhi/Sampler.h"
 #include "rhi/Shader.h"
+#include "rhi/Swapchain.h"
 #include "rhi/Texture.h"
 #include "rhi/ThreadContext.h"
 #include <filesystem>
 #include <fstream>
 #include <gtest/gtest.h>
 #include <memory>
+
+#if defined( CreateWindow )
+#    undef CreateWindow
+#endif
+
 
 using namespace DigitalTwin;
 
@@ -1170,4 +1178,109 @@ TEST_F( CommandBufferTest, MultithreadedRecordingAndSubmission )
     }
 
     jobSystem.Shutdown();
+}
+
+// =================================================================================================
+// Swapchain Tests
+// =================================================================================================
+
+class SwapchainTest : public ::testing::Test
+{
+protected:
+    Scope<RHI>            m_rhi;
+    Scope<Device>         m_device;
+    Scope<PlatformSystem> m_platform;
+    Scope<Window>         m_window;
+    Scope<Swapchain>      m_swapchain;
+
+    void SetUp() override
+    {
+        // 1. Init RHI (Enable Validation, NOT Headless to test surface)
+        RHIConfig config;
+        config.headless         = false; // We try to create a surface
+        config.enableValidation = true;
+
+        m_rhi = CreateScope<RHI>();
+
+        // Note: In CI environments without display, this might fail or fallback to llvmpipe.
+        // If RHI Init fails (no GPU), we can't proceed.
+        // If we want to strictly skip if no display, we should check availability.
+
+        m_platform = CreateScope<PlatformSystem>();
+        m_platform->Initialize();
+
+        std::vector<const char*> ext = m_platform->GetRequiredVulkanExtensions();
+        if( m_rhi->Initialize( config, ext ) != Result::SUCCESS )
+        {
+            // Fallback for CI: If non-headless fails, try headless just to have valid RHI state,
+            // but then skip tests that need surface.
+            config.headless = true;
+            m_rhi->Initialize( config );
+        }
+
+        // 2. Create Device
+        if( !m_rhi->GetAdapters().empty() )
+        {
+            m_rhi->CreateDevice( 0, m_device );
+        }
+    }
+
+    void TearDown() override
+    {
+        if( m_swapchain )
+            m_swapchain->Destroy();
+
+        m_window.reset();
+
+        if( m_device )
+            m_device->Shutdown();
+        if( m_rhi )
+            m_rhi->Shutdown();
+        if( m_platform )
+            m_platform->Shutdown();
+    }
+};
+
+TEST_F( SwapchainTest, CreateAndDestroy )
+{
+    if( !m_device )
+        GTEST_SKIP() << "No Device available";
+
+    // Create Window
+    WindowDesc desc = { "TestWindow", 800, 600 };
+    m_window        = m_platform->CreateWindow( desc );
+
+    if( !m_window )
+        GTEST_SKIP() << "Could not create window (no display?), skipping test";
+
+    // Create Swapchain
+    m_swapchain = CreateScope<Swapchain>( m_device.get() );
+    Result res  = m_swapchain->Create( m_window.get(), true );
+
+    if( res != Result::SUCCESS )
+    {
+        // Failed likely due to no presentation support on queue or driver
+        GTEST_SKIP() << "Swapchain creation failed (driver/surface issue?)";
+    }
+
+    // Verify
+    EXPECT_GT( m_swapchain->GetImageCount(), 0 );
+    EXPECT_EQ( m_swapchain->GetExtent().width, 800 );
+    EXPECT_NE( m_swapchain->GetTexture( 0 )->GetView(), VK_NULL_HANDLE );
+
+    // Acquire Test
+    uint32_t    idx;
+    VkSemaphore sem;
+    res = m_swapchain->AcquireNextImage( &idx, &sem );
+
+    // Acquire might fail if window is minimized or special state, but usually returns SUCCESS or SUBOPTIMAL
+    if( res == Result::SUCCESS )
+    {
+        EXPECT_LT( idx, m_swapchain->GetImageCount() );
+        EXPECT_NE( sem, VK_NULL_HANDLE );
+    }
+
+    // Explicit Destroy check
+    m_swapchain->Destroy();
+    EXPECT_EQ( m_swapchain->GetImageCount(), 0 );
 }

@@ -4,6 +4,7 @@
 #include "core/jobs/JobSystem.h"
 #include "platform/PlatformSystem.h"
 #include "platform/Window.h"
+#include "rhi/BindingGroup.h"
 #include "rhi/Buffer.h"
 #include "rhi/DescriptorAllocator.h"
 #include "rhi/Device.h"
@@ -22,7 +23,6 @@
 #if defined( CreateWindow )
 #    undef CreateWindow
 #endif
-
 
 using namespace DigitalTwin;
 
@@ -1283,4 +1283,159 @@ TEST_F( SwapchainTest, CreateAndDestroy )
     // Explicit Destroy check
     m_swapchain->Destroy();
     EXPECT_EQ( m_swapchain->GetImageCount(), 0 );
+}
+
+// =================================================================================================
+// Binding Group Tests
+// =================================================================================================
+
+class BindingGroupTest : public DeviceResourceTest
+{
+protected:
+    std::unique_ptr<DescriptorAllocator> allocator;
+    VkDescriptorSetLayout                simpleLayout = VK_NULL_HANDLE;
+
+    void SetUp() override
+    {
+        DeviceResourceTest::SetUp();
+        if( m_device )
+        {
+            allocator = std::make_unique<DescriptorAllocator>( m_device->GetHandle(), &m_device->GetAPI() );
+            allocator->Initialize();
+
+            // Create a layout: Set 0, Binding 0 = Uniform Buffer
+            VkDescriptorSetLayoutBinding binding{};
+            binding.binding         = 0;
+            binding.descriptorType  = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+            binding.descriptorCount = 1;
+            binding.stageFlags      = VK_SHADER_STAGE_ALL;
+
+            VkDescriptorSetLayoutCreateInfo info{ VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO };
+            info.bindingCount = 1;
+            info.pBindings    = &binding;
+            m_device->GetAPI().vkCreateDescriptorSetLayout( m_device->GetHandle(), &info, nullptr, &simpleLayout );
+        }
+    }
+
+    void TearDown() override
+    {
+        if( m_device )
+        {
+            if( simpleLayout )
+                m_device->GetAPI().vkDestroyDescriptorSetLayout( m_device->GetHandle(), simpleLayout, nullptr );
+            allocator->Shutdown();
+        }
+        DeviceResourceTest::TearDown();
+    }
+};
+
+// 1. Build and Bind Test
+TEST_F( BindingGroupTest, BuildAndBind )
+{
+    if( !m_device )
+        GTEST_SKIP();
+
+    // 1. Create Binding Group
+    BindingGroup bg( m_device.get(), allocator.get(), simpleLayout, 0 );
+
+    // 2. Create Buffer
+    BufferDesc bufDesc{ 256, BufferType::UNIFORM };
+    Buffer     buffer( m_device->GetAllocator(), m_device->GetHandle(), &m_device->GetAPI() );
+    ASSERT_EQ( buffer.Create( bufDesc ), Result::SUCCESS );
+
+    // 3. Bind Buffer to Group
+    bg.Bind( 0, &buffer );
+
+    // 4. Build (Update Descriptors)
+    ASSERT_EQ( bg.Build(), Result::SUCCESS );
+    EXPECT_NE( bg.GetHandle(), VK_NULL_HANDLE );
+
+    buffer.Destroy();
+}
+
+// 2. Reuse Binding Group Across Pipelines Test
+TEST_F( BindingGroupTest, ReuseAcrossPipelines )
+{
+    if( !m_device )
+        GTEST_SKIP();
+
+    // 1. Define shader source that uses Set 0 Binding 0
+    std::string shaderSrc = R"(
+        #version 450
+        layout(local_size_x = 1) in;
+        layout(set = 0, binding = 0) buffer Data { float v; } u_Data;
+        void main() { u_Data.v = 1.0; }
+    )";
+    std::string pathA     = "reuse_a.comp";
+    std::string pathB     = "reuse_b.comp";
+
+    // Create two identical shaders (different files simulating different passes)
+    {
+        std::ofstream out( pathA );
+        out << shaderSrc;
+        out.close();
+    }
+    {
+        std::ofstream out( pathB );
+        out << shaderSrc;
+        out.close();
+    }
+
+    // 2. Create Pipelines (using ResourceManager wrapper logic partially manually for test)
+    Shader sA( m_device->GetHandle(), &m_device->GetAPI() );
+    sA.Create( pathA );
+    ComputePipelineNativeDesc d1;
+    d1.shader = &sA;
+    ComputePipeline pA( m_device->GetHandle(), &m_device->GetAPI() );
+    pA.Create( d1 );
+
+    Shader sB( m_device->GetHandle(), &m_device->GetAPI() );
+    sB.Create( pathB );
+    ComputePipelineNativeDesc d2;
+    d2.shader = &sB;
+    ComputePipeline pB( m_device->GetHandle(), &m_device->GetAPI() );
+    pB.Create( d2 );
+
+    // 3. Create Binding Group from Pipeline A's layout
+    VkDescriptorSetLayout layoutA = pA.GetDescriptorSetLayout( 0 );
+    ASSERT_NE( layoutA, VK_NULL_HANDLE );
+
+    BindingGroup bg( m_device.get(), allocator.get(), layoutA, 0 );
+
+    BufferDesc bufDesc{ 256, BufferType::STORAGE };
+    Buffer     buffer( m_device->GetAllocator(), m_device->GetHandle(), &m_device->GetAPI() );
+    buffer.Create( bufDesc );
+
+    bg.Bind( 0, &buffer );
+    bg.Build();
+
+    // 4. Record Command Buffer using Pipeline B but Binding Group from A
+    // This tests the "compatibility" feature of Vulkan
+    auto           ctxHandle = m_device->CreateThreadContext();
+    auto           ctx       = m_device->GetThreadContext( ctxHandle );
+    CommandBuffer* cmd       = ctx->GetCommandBuffer( ctx->CreateCommandBuffer( QueueType::GRAPHICS ) );
+
+    cmd->Begin();
+    cmd->SetPipeline( &pB );
+
+    // Bind Binding Group (created via A) to Pipeline B
+    cmd->SetBindingGroup( &bg, pB.GetLayout(), VK_PIPELINE_BIND_POINT_COMPUTE );
+
+    cmd->Dispatch( 1, 1, 1 );
+    cmd->End();
+
+    // Submit to ensure no validation errors
+    ASSERT_EQ( m_device->GetGraphicsQueue()->Submit( { cmd } ), Result::SUCCESS );
+    m_device->GetGraphicsQueue()->WaitIdle();
+
+    // Cleanup
+    buffer.Destroy();
+    pA.Destroy();
+    pB.Destroy();
+    sA.Destroy();
+    sB.Destroy();
+    std::filesystem::remove( pathA );
+    std::filesystem::remove( pathB );
+    std::filesystem::remove( pathA + ".spv" );
+    std::filesystem::remove( pathB + ".spv" );
 }

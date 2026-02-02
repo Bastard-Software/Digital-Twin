@@ -1,7 +1,9 @@
 #include "resources/ResourceManager.h"
 
 // RHI Headers - needed for full type definitions (destructors, create methods)
+#include "rhi/BindingGroup.h"
 #include "rhi/Buffer.h"
+#include "rhi/DescriptorAllocator.h"
 #include "rhi/Device.h"
 #include "rhi/Pipeline.h"
 #include "rhi/Queue.h"
@@ -30,19 +32,25 @@ namespace DigitalTwin
         // 1. Wait for GPU to finish everything
         m_device->WaitIdle();
 
-        // 2. Clear all pools.
+        // 2. Destroy bindings related stuff
+        m_bindingGroups.Clear();
+        if( m_descriptorAllocator )
+        {
+            m_descriptorAllocator->Shutdown();
+            m_descriptorAllocator.reset();
+        }
+
+        // 3. Clear all pools.
         // The unique_ptrs will be destroyed, triggering VMA/API cleanup immediately
         // because we are shutting down and GPU is idle.
         m_buffers.Clear();
         m_textures.Clear();
-        /*
         m_shaders.Clear();
         m_samplers.Clear();
         m_computePipelines.Clear();
         m_graphicsPipelines.Clear();
-        */
 
-        // 3. Clear pending zombies
+        // 4. Clear pending zombies
         m_zombies.clear();
 
         DT_INFO( "[ResourceManager] All resources released." );
@@ -81,6 +89,10 @@ namespace DigitalTwin
     {
         // No special initialization needed yet
         DT_INFO( "[ResourceManager] Initialized." );
+
+        // Initialize the global allocator for BindingGroups
+        m_descriptorAllocator = CreateScope<DescriptorAllocator>( m_device->GetHandle(), &m_device->GetAPI() );
+        m_descriptorAllocator->Initialize();
 
         return Result::SUCCESS;
     }
@@ -486,6 +498,97 @@ namespace DigitalTwin
     {
         auto pipelinePtr = m_graphicsPipelines.Remove( handle );
         EnqueueDeletion( std::move( pipelinePtr ) );
+    }
+
+    BindingGroupHandle ResourceManager::CreateBindingGroup( ComputePipelineHandle handle, uint32_t setIndex )
+    {
+        ComputePipeline* pipeline = GetPipeline( handle );
+        if( !pipeline )
+        {
+            DT_ERROR( "CreateBindingGroup: Invalid pipeline handle" );
+            return BindingGroupHandle::Invalid;
+        }
+
+        // 1. Retrieve the layout from the pipeline
+        VkDescriptorSetLayout layout = pipeline->GetDescriptorSetLayout( setIndex );
+        if( layout == VK_NULL_HANDLE )
+        {
+            DT_ERROR( "CreateBindingGroup: Set index {} not found in pipeline layout", setIndex );
+            return BindingGroupHandle::Invalid;
+        }
+
+        // 2. Allocate Raw Memory (Tracked)
+        IAllocator* alloc = m_memorySystem->GetSystemAllocator();
+        void*       mem   = alloc->Allocate( sizeof( BindingGroup ), __FILE__, __LINE__ );
+
+        // 2. Construct Object (Placement New)
+        BindingGroup* rawBG = new( mem ) BindingGroup( m_device, m_descriptorAllocator.get(), layout, setIndex );
+
+        // 3. Define Deleter
+        // This lambda encapsulates how to destroy the C++ object (destructor + free)
+        auto deleter = [ alloc ]( BindingGroup* ptr ) {
+            if( ptr )
+            {
+                ptr->~BindingGroup();
+                alloc->Free( ptr );
+            }
+        };
+
+        // 4. Wrap in unique_ptr and Insert into Pool
+        std::unique_ptr<BindingGroup, BindingGroupDeleter> managedBG( rawBG, deleter );
+
+        return m_bindingGroups.Insert( std::move( managedBG ) );
+    }
+
+    BindingGroupHandle ResourceManager::CreateBindingGroup( GraphicsPipelineHandle handle, uint32_t setIndex )
+    {
+        GraphicsPipeline* pipeline = GetPipeline( handle );
+        if( !pipeline )
+        {
+            DT_ERROR( "CreateBindingGroup: Invalid pipeline handle" );
+            return BindingGroupHandle::Invalid;
+        }
+
+        // 1. Retrieve the layout from the pipeline
+        VkDescriptorSetLayout layout = pipeline->GetDescriptorSetLayout( setIndex );
+        if( layout == VK_NULL_HANDLE )
+        {
+            DT_ERROR( "CreateBindingGroup: Set index {} not found in pipeline layout", setIndex );
+            return BindingGroupHandle::Invalid;
+        }
+
+        // 2. Allocate Raw Memory (Tracked)
+        IAllocator* alloc = m_memorySystem->GetSystemAllocator();
+        void*       mem   = alloc->Allocate( sizeof( BindingGroup ), __FILE__, __LINE__ );
+
+        // 2. Construct Object (Placement New)
+        BindingGroup* rawBG = new( mem ) BindingGroup( m_device, m_descriptorAllocator.get(), layout, setIndex );
+
+        // 3. Define Deleter
+        // This lambda encapsulates how to destroy the C++ object (destructor + free)
+        auto deleter = [ alloc ]( BindingGroup* ptr ) {
+            if( ptr )
+            {
+                ptr->~BindingGroup();
+                alloc->Free( ptr );
+            }
+        };
+
+        // 4. Wrap in unique_ptr and Insert into Pool
+        std::unique_ptr<BindingGroup, BindingGroupDeleter> managedBG( rawBG, deleter );
+
+        return m_bindingGroups.Insert( std::move( managedBG ) );
+    }
+
+    BindingGroup* ResourceManager::GetBindingGroup( BindingGroupHandle handle )
+    {
+        return m_bindingGroups.Get( handle );
+    }
+
+    void ResourceManager::DestroyBindingGroup( BindingGroupHandle handle )
+    {
+        // Simple handle removal for binding groups
+        m_bindingGroups.Remove( handle );
     }
 
 } // namespace DigitalTwin

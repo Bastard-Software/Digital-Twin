@@ -17,5 +17,6 @@ namespace DigitalTwin
     DEFINE_HANDLE( GraphicsPipelineHandle );
     DEFINE_HANDLE( ThreadContextHandle );
     DEFINE_HANDLE( CommandBufferHandle );
+    DEFINE_HANDLE( BindingGroupHandle );
 
 } // namespace DigitalTwin

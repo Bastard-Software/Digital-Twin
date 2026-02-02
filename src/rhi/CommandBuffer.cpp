@@ -1,7 +1,9 @@
 #include "rhi/CommandBuffer.h"
 
 #include "core/Log.h"
+#include "rhi/BindingGroup.h"
 #include "rhi/Buffer.h"
+#include "rhi/Pipeline.h"
 #include "rhi/Texture.h"
 
 // Macros to strip validation checks in Release builds
@@ -72,6 +74,40 @@ namespace DigitalTwin
         // Usually handled by pool reset, but good for explicit reuse
         m_api->vkResetCommandBuffer( m_handle, 0 );
         DT_CMD_SET_STATE( State::Initial );
+    }
+
+    void CommandBuffer::SetPipeline( ComputePipeline* pipeline )
+    {
+        if( pipeline )
+        {
+            m_api->vkCmdBindPipeline( m_handle, VK_PIPELINE_BIND_POINT_COMPUTE, pipeline->GetHandle() );
+        }
+    }
+
+    void CommandBuffer::SetPipeline( GraphicsPipeline* pipeline )
+    {
+        if( pipeline )
+        {
+            m_api->vkCmdBindPipeline( m_handle, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline->GetHandle() );
+        }
+    }
+
+    void CommandBuffer::SetBindingGroup( BindingGroup* group, VkPipelineLayout layout, VkPipelineBindPoint bindPoint )
+    {
+        VkDescriptorSet set      = group->GetHandle();
+        uint32_t        setIndex = group->GetSetIndex();
+
+#ifdef DT_DEBUG
+        if( set == VK_NULL_HANDLE )
+        {
+            DT_ASSERT( false, "" );
+            DT_ERROR( "CommandBuffer: Attempting to bind unbuilt BindingGroup! Call Build() first." );
+            return;
+        }
+#endif
+
+        // Dynamic offsets not supported yet, passing 0
+        m_api->vkCmdBindDescriptorSets( m_handle, bindPoint, layout, setIndex, 1, &set, 0, nullptr );
     }
 
     void CommandBuffer::BeginRendering( const VkRenderingInfo& renderingInfo )

@@ -2,7 +2,11 @@ set (CMAKE_CXX_STANDARD 17)
 set (CMAKE_CXX_STANDARD_REQUIRED ON)
 
 if(MSVC)
-    add_compile_options(/W4 /permissive-)
+    # /W4 - High warning level
+    # /permissive- - Enforce strict standards conformance
+    # /wd4251 - Disable warning: "class 'type' needs to have dll-interface to be used by clients of class 'type2'"
+    # /wd4275 - Disable warning: "non - DLL-interface class used as base for DLL-interface class"
+    add_compile_options(/W4 /permissive- /wd4251 /wd4275)
 else()
     add_compile_options(-Wall -Wextra -Wpedantic)
 endif()

@@ -111,6 +111,18 @@ namespace DigitalTwin
             std::swap( m_freeIndices, empty );
         }
 
+        template<typename Func>
+        void ForEach( Func func )
+        {
+            for( auto& slot: m_slots )
+            {
+                if( slot.resource )
+                { // Only iterate active resources
+                    func( slot.resource.get() );
+                }
+            }
+        }
+
     private:
         std::vector<Slot>    m_slots;
         std::queue<uint32_t> m_freeIndices;

@@ -28,7 +28,33 @@ namespace DigitalTwin
         : m_allocator( allocator )
         , m_device( device )
         , m_api( api )
+        , m_ownsMemory( true )
     {
+    }
+
+    Texture::Texture( VkDevice device, const VolkDeviceTable* api, VkImage existingImage, VkFormat format, VkExtent3D extent )
+        : m_allocator( VK_NULL_HANDLE )
+        , m_device( device )
+        , m_api( api )
+        , m_image( existingImage )
+        , m_format( format )
+        , m_extent( extent )
+        , m_ownsMemory( false )
+    {
+        VkImageViewCreateInfo viewInfo           = { VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO };
+        viewInfo.image                           = m_image;
+        viewInfo.viewType                        = VK_IMAGE_VIEW_TYPE_2D;
+        viewInfo.format                          = m_format;
+        viewInfo.subresourceRange.aspectMask     = VK_IMAGE_ASPECT_COLOR_BIT;
+        viewInfo.subresourceRange.baseMipLevel   = 0;
+        viewInfo.subresourceRange.levelCount     = 1;
+        viewInfo.subresourceRange.baseArrayLayer = 0;
+        viewInfo.subresourceRange.layerCount     = 1;
+
+        if( m_api->vkCreateImageView( m_device, &viewInfo, nullptr, &m_view ) != VK_SUCCESS )
+        {
+            DT_ERROR( "Failed to create view for swapchain image wrapper!" );
+        }
     }
 
     Texture::Texture( Texture&& other ) noexcept
@@ -82,12 +108,13 @@ namespace DigitalTwin
             m_api->vkDestroyImageView( m_device, m_view, nullptr );
             m_view = VK_NULL_HANDLE;
         }
-        if( m_image != VK_NULL_HANDLE )
+        if( m_ownsMemory && m_image != VK_NULL_HANDLE )
         {
             vmaDestroyImage( m_allocator, m_image, m_allocation );
-            m_image      = VK_NULL_HANDLE;
-            m_allocation = VK_NULL_HANDLE;
         }
+
+        m_image      = VK_NULL_HANDLE;
+        m_allocation = VK_NULL_HANDLE;
     }
 
     Result Texture::Create( const TextureDesc& desc )

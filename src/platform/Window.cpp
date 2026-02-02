@@ -50,11 +50,11 @@ namespace DigitalTwin
         }
 
         // --- Callbacks ---
-
-        glfwSetWindowSizeCallback( m_window, []( GLFWwindow* window, int width, int height ) {
+        glfwSetFramebufferSizeCallback( m_window, []( GLFWwindow* window, int width, int height ) {
             WindowData& data = *( WindowData* )glfwGetWindowUserPointer( window );
             data.width       = width;
             data.height      = height;
+            data.wasResized  = true; // Mark as dirty
         } );
 
         glfwSetScrollCallback( m_window, []( GLFWwindow* window, double xoffset, double yoffset ) {
@@ -75,6 +75,17 @@ namespace DigitalTwin
         }
     }
 
+    VkSurfaceKHR Window::CreateSurface( VkInstance instance )
+    {
+        VkSurfaceKHR surface = VK_NULL_HANDLE;
+        if( glfwCreateWindowSurface( instance, m_window, nullptr, &surface ) != VK_SUCCESS )
+        {
+            DT_ERROR( "Failed to create window surface!" );
+            return VK_NULL_HANDLE;
+        }
+        return surface;
+    }
+
     void Window::Show()
     {
         if( m_window )
@@ -85,4 +96,13 @@ namespace DigitalTwin
     {
         return glfwWindowShouldClose( m_window );
     }
+
+    void Window::GetFramebufferSize( uint32_t& width, uint32_t& height ) const
+    {
+        int w, h;
+        glfwGetFramebufferSize( m_window, &w, &h );
+        width  = static_cast<uint32_t>( w );
+        height = static_cast<uint32_t>( h );
+    }
+
 } // namespace DigitalTwin

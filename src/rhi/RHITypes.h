@@ -1,10 +1,10 @@
 #pragma once
 
 #include "core/Core.h"
+#include "resources/Handle.h"
 #include <string>
 #include <unordered_map>
 #include <volk.h>
-#include "resources/Handle.h"
 
 namespace DigitalTwin
 {

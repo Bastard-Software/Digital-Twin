@@ -35,6 +35,10 @@ namespace DigitalTwin
 
         // --- Commands ---
 
+        void SetPipeline( ComputePipeline* pipeline );
+        void SetPipeline( GraphicsPipeline* pipeline );
+        void SetBindingGroup( BindingGroup* group, VkPipelineLayout layout, VkPipelineBindPoint bindPoint );
+
         void BeginRendering( const VkRenderingInfo& renderingInfo );
         void EndRendering();
 

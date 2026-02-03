@@ -65,6 +65,12 @@ namespace DigitalTwin
         void                   DestroyPipeline( ComputePipelineHandle handle );
         void                   DestroyPipeline( GraphicsPipelineHandle handle );
 
+        // --- Binding Group API ---
+        BindingGroupHandle CreateBindingGroup( ComputePipelineHandle handle, uint32_t setIndex );
+        BindingGroupHandle CreateBindingGroup( GraphicsPipelineHandle handle, uint32_t setIndex );
+        BindingGroup*      GetBindingGroup( BindingGroupHandle handle );
+        void               DestroyBindingGroup( BindingGroupHandle handle );
+
     private:
         struct ZombieResource
         {
@@ -86,6 +92,9 @@ namespace DigitalTwin
         Device*       m_device;
         MemorySystem* m_memorySystem;
 
+        // Descriptor allocator
+
+        Scope<DescriptorAllocator> m_descriptorAllocator;
         //  Pools
         using BufferDeleter = std::function<void( Buffer* )>;
         ResourcePool<Buffer, BufferHandle, BufferDeleter> m_buffers;
@@ -99,6 +108,8 @@ namespace DigitalTwin
         ResourcePool<ComputePipeline, ComputePipelineHandle, ComputePipelineDeleter> m_computePipelines;
         using GraphicsPipelineDeleter = std::function<void( GraphicsPipeline* )>;
         ResourcePool<GraphicsPipeline, GraphicsPipelineHandle, GraphicsPipelineDeleter> m_graphicsPipelines;
+        using BindingGroupDeleter = std::function<void( BindingGroup* )>;
+        ResourcePool<BindingGroup, BindingGroupHandle, BindingGroupDeleter> m_bindingGroups;
 
         // Lazy deletion queue
         std::deque<ZombieResource> m_zombies;

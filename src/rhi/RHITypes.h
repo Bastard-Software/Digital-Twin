@@ -21,6 +21,8 @@ namespace DigitalTwin
     class GraphicsPipeline;
     class CommandBuffer;
     class ThreadContext;
+    class DescriptorAllocator;
+    class BindingGroup;
 
     /**
      * @brief Configuration for RHI initialization.

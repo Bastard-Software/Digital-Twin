@@ -1,5 +1,6 @@
 #include "core/memory/MemorySystem.h"
 #include "resources/ResourceManager.h"
+#include "rhi/BindingGroup.h"
 #include "rhi/Buffer.h"
 #include "rhi/Device.h"
 #include "rhi/RHI.h"
@@ -176,7 +177,9 @@ TEST_F( ResourceManagerTest, CreateAllResourceTypes )
         out.close();
     };
 
-    createShaderFile( compPath, "#version 450\nlayout(local_size_x=1) in; void main(){}" );
+    createShaderFile(
+        compPath,
+        "#version 450\nlayout(local_size_x=1) in; layout(set = 0, binding = 0) buffer Data { float v; } data; void main(){ data.v = 1.0; }" );
     createShaderFile( vertPath, "#version 450\nvoid main(){ gl_Position=vec4(0); }" );
     createShaderFile( fragPath, "#version 450\nlayout(location=0) out vec4 c; void main(){ c=vec4(1); }" );
 
@@ -208,6 +211,20 @@ TEST_F( ResourceManagerTest, CreateAllResourceTypes )
     GraphicsPipelineHandle hGfxPipe = m_rm->CreatePipeline( gfxPipeDesc );
     EXPECT_TRUE( hGfxPipe.IsValid() );
     EXPECT_NE( m_rm->GetPipeline( hGfxPipe ), nullptr ) << "Failed to retrieve Graphics Pipeline";
+
+    // --- 7. Binding Group ---
+    BindingGroupHandle hBG = m_rm->CreateBindingGroup( hCompPipe, 0 );
+    EXPECT_TRUE( hBG.IsValid() ) << "Failed to create Binding Group";
+
+    BindingGroup* bgPtr = m_rm->GetBindingGroup( hBG );
+    EXPECT_NE( bgPtr, nullptr );
+
+    // Bind the buffer created earlier
+    if( bgPtr )
+    {
+        bgPtr->Bind( 0, m_rm->GetBuffer( hBuf ) );
+        EXPECT_EQ( bgPtr->Build(), Result::SUCCESS );
+    }
 
     // Cleanup temporary files
     auto removeFile = []( const std::string& path ) {

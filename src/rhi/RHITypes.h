@@ -9,6 +9,7 @@
 namespace DigitalTwin
 {
 
+    // Forward declarations
     class RHI;
     class Device;
     class Queue;
@@ -23,6 +24,8 @@ namespace DigitalTwin
     class ThreadContext;
     class DescriptorAllocator;
     class BindingGroup;
+
+    struct ShaderReflectionData;
 
     /**
      * @brief Configuration for RHI initialization.
@@ -166,10 +169,16 @@ namespace DigitalTwin
      */
     enum class ShaderResourceType
     {
-        UNIFORM_BUFFER,
-        STORAGE_BUFFER,
+        SAMPLER,
+        COMBINED_IMAGE_SAMPLER,
         SAMPLED_IMAGE,
         STORAGE_IMAGE,
+        UNIFORM_TEXEL_BUFFER,
+        STORAGE_TEXEL_BUFFER,
+        UNIFORM_BUFFER,
+        STORAGE_BUFFER,
+        INPUT_ATTACHMENT,
+        ACCELERATION_STRUCTURE,
         PUSH_CONSTANT,
         UNKNOWN,
         _MAX_ENUM,
@@ -187,10 +196,8 @@ namespace DigitalTwin
         uint32_t           arraySize; // Element count (for descriptor arrays)
         uint32_t           offset;    // Offset (for Push Constants)
         ShaderResourceType type;
+        VkShaderStageFlags stageFlags;
     };
-
-    // Map: Shader Variable Name -> Resource Information
-    using ShaderReflectionData = std::unordered_map<std::string, ShaderResource>;
 
     /**
      * @brief Description for creating a Compute Pipeline.

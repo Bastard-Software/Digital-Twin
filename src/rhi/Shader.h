@@ -2,6 +2,7 @@
 #include "rhi/RHITypes.h"
 
 #include "core/Core.h"
+#include <map>
 #include <string>
 #include <unordered_map>
 #include <vector>
@@ -9,6 +10,55 @@
 
 namespace DigitalTwin
 {
+
+    /**
+     * @brief Consolidated reflection data for a Shader or a Pipeline.
+     * Structured for efficient lookup during binding.
+     */
+    struct ShaderReflectionData
+    {
+        // Organized as: Set Index -> Binding Index -> Resource Data
+        std::map<uint32_t, std::map<uint32_t, ShaderResource>> resources;
+
+        // Push Constants ranges found in the shader(s)
+        std::vector<VkPushConstantRange> pushConstants;
+
+        /**
+         * @brief Finds a resource by set and binding index.
+         * @return Pointer to the resource or nullptr if not found.
+         */
+        const ShaderResource* Find( uint32_t set, uint32_t binding ) const
+        {
+            auto setIt = resources.find( set );
+            if( setIt != resources.end() )
+            {
+                auto bindIt = setIt->second.find( binding );
+                if( bindIt != setIt->second.end() )
+                {
+                    return &bindIt->second;
+                }
+            }
+            return nullptr;
+        }
+
+        /**
+         * @brief Finds a resource by name within a specific set.
+         * Note: This performs a linear search within the set.
+         */
+        const ShaderResource* Find( uint32_t set, const std::string& name ) const
+        {
+            auto setIt = resources.find( set );
+            if( setIt != resources.end() )
+            {
+                for( const auto& [ binding, res ]: setIt->second )
+                {
+                    if( res.name == name )
+                        return &res;
+                }
+            }
+            return nullptr;
+        }
+    };
 
     class Shader
     {
@@ -26,10 +76,9 @@ namespace DigitalTwin
         void   Destroy();
 
         // --- Getters ---
-        VkShaderModule                          GetModule() const { return m_module; }
-        VkShaderStageFlagBits                   GetStage() const { return m_stage; }
-        const ShaderReflectionData&             GetReflectionData() const { return m_reflectionData; }
-        const std::vector<VkPushConstantRange>& GetPushConstantRanges() const { return m_pushConstantRanges; }
+        VkShaderModule              GetModule() const { return m_module; }
+        VkShaderStageFlagBits       GetStage() const { return m_stage; }
+        const ShaderReflectionData& GetReflectionData() const { return m_reflectionData; }
 
         // Debug helper - logs detected resources to the console
         void LogResources() const;
@@ -63,7 +112,6 @@ namespace DigitalTwin
         VkShaderStageFlagBits m_stage  = VK_SHADER_STAGE_FLAG_BITS_MAX_ENUM;
 
         // Reflected metadata
-        ShaderReflectionData             m_reflectionData;
-        std::vector<VkPushConstantRange> m_pushConstantRanges;
+        ShaderReflectionData m_reflectionData;
     };
 } // namespace DigitalTwin

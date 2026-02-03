@@ -522,7 +522,7 @@ namespace DigitalTwin
         void*       mem   = alloc->Allocate( sizeof( BindingGroup ), __FILE__, __LINE__ );
 
         // 2. Construct Object (Placement New)
-        BindingGroup* rawBG = new( mem ) BindingGroup( m_device, m_descriptorAllocator.get(), layout, setIndex );
+        BindingGroup* rawBG = new( mem ) BindingGroup( m_device, m_descriptorAllocator.get(), layout, setIndex, &pipeline->GetReflectionData() );
 
         // 3. Define Deleter
         // This lambda encapsulates how to destroy the C++ object (destructor + free)
@@ -562,7 +562,7 @@ namespace DigitalTwin
         void*       mem   = alloc->Allocate( sizeof( BindingGroup ), __FILE__, __LINE__ );
 
         // 2. Construct Object (Placement New)
-        BindingGroup* rawBG = new( mem ) BindingGroup( m_device, m_descriptorAllocator.get(), layout, setIndex );
+        BindingGroup* rawBG = new( mem ) BindingGroup( m_device, m_descriptorAllocator.get(), layout, setIndex, &pipeline->GetReflectionData() );
 
         // 3. Define Deleter
         // This lambda encapsulates how to destroy the C++ object (destructor + free)

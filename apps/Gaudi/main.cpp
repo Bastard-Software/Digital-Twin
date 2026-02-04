@@ -12,21 +12,16 @@ int main()
     engine.Initialize( config );
     DT_INFO( "Starting Editor..." );
 
-    // Create the window via Engine API
-    auto window = engine.CreateWindow( "Gaudi Editor", 1280, 720 );
-
-    if( !window.IsValid() )
-    {
-        DT_ERROR( "Failed to create main window!" );
-        engine.Shutdown();
-        return -1;
-    }
-
     // Main Engine Loop
-    while( !engine.IsWindowColsed(window) )
+    while( !engine.IsWindowClosed() )
     {
         // 1. Poll events (input, window resize, etc.)
-        engine.OnUpdate();
+        engine.BeginFrame();
+
+        // 2. Editor Logic Here
+
+        // 3. End Frame
+        engine.EndFrame();
     }
 
     DT_INFO( "Editor closing..." );

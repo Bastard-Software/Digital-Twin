@@ -88,12 +88,6 @@ namespace DigitalTwin
         return {}; // Not found
     }
 
-    struct WindowResource
-    {
-        Scope<Window>    window;
-        Scope<Swapchain> swapchain;
-    };
-
     // Impl
     struct DigitalTwin::Impl
     {
@@ -106,8 +100,8 @@ namespace DigitalTwin
         Scope<RHI>             m_rhi;
         Scope<Device>          m_device;
         Scope<ResourceManager> m_resourceManager;
-
-        ResourcePool<WindowResource, WindowHandle> m_windowPool;
+        Scope<Window>          m_window;
+        Scope<Swapchain>       m_swapchain;
 
         Impl()
             : m_initialized( false )
@@ -299,6 +293,55 @@ namespace DigitalTwin
                 return Result::FAIL;
             }
 
+            // 10. Window & Swapchain (if not headless)
+            if( !m_config.headless && m_platformSystem )
+            {
+                m_window = m_platformSystem->CreateWindow( { m_config.windowTitle, m_config.windowWidth, m_config.windowHeight } );
+                if( !m_window )
+                {
+                    m_window.reset();
+                    m_resourceManager->Shutdown();
+                    m_resourceManager.reset();
+                    m_device->Shutdown();
+                    m_device.reset();
+                    m_rhi->Shutdown();
+                    m_rhi.reset();
+                    m_platformSystem->Shutdown();
+                    m_platformSystem.reset();
+                    m_fileSystem->Shutdown();
+                    m_fileSystem.reset();
+                    m_jobSystem->Shutdown();
+                    m_jobSystem.reset();
+                    m_memorySystem->Shutdown();
+                    m_memorySystem.reset();
+                    DT_ERROR( "Failed to create Main Window." );
+                    return Result::FAIL;
+                }
+
+                m_swapchain = CreateScope<Swapchain>( m_device.get() );
+                if( m_swapchain->Create( m_window.get(), true ) != Result::SUCCESS )
+                {
+                    m_swapchain.reset();
+                    m_window.reset();
+                    m_resourceManager->Shutdown();
+                    m_resourceManager.reset();
+                    m_device->Shutdown();
+                    m_device.reset();
+                    m_rhi->Shutdown();
+                    m_rhi.reset();
+                    m_platformSystem->Shutdown();
+                    m_platformSystem.reset();
+                    m_fileSystem->Shutdown();
+                    m_fileSystem.reset();
+                    m_jobSystem->Shutdown();
+                    m_jobSystem.reset();
+                    m_memorySystem->Shutdown();
+                    m_memorySystem.reset();
+                    DT_ERROR( "Failed to create Main Swapchain." );
+                    return Result::FAIL;
+                }
+            }
+
             m_initialized = true;
 
             return Result::SUCCESS;
@@ -311,13 +354,23 @@ namespace DigitalTwin
 
             DT_INFO( "Shutting down..." );
 
+            if( m_swapchain )
+            {
+                m_swapchain->Destroy();
+                m_swapchain.reset();
+            }
+
+            if( m_window )
+            {
+                m_platformSystem->RemoveWindow( m_window.get() );
+                m_window.reset();
+            }
+
             if( m_resourceManager )
             {
                 m_resourceManager->Shutdown();
                 m_resourceManager.reset();
             }
-
-            m_windowPool.Clear();
 
             if( m_device )
             {
@@ -450,40 +503,6 @@ namespace DigitalTwin
             return 0;
         }
 
-        WindowHandle CreateWindow( const std::string& title, uint32_t width, uint32_t height )
-        {
-            if( m_jobSystem )
-            {
-                DT_CORE_ASSERT( m_jobSystem->IsMainThread(), "CreateWindow must be called on the Main Thread!" );
-            }
-
-            // 1. Create Window (Platform)
-            WindowDesc desc   = { title, width, height };
-            auto       window = m_platformSystem->CreateWindow( desc );
-
-            if( !window )
-            {
-                DT_ERROR( "Failed to create OS Window!" );
-                return WindowHandle::Invalid;
-            }
-
-            // 2. Create Swapchain
-            auto swapchain = CreateScope<Swapchain>( m_device.get() );
-            if( swapchain->Create( window.get(), true ) != Result::SUCCESS )
-            {
-                DT_ERROR( "Failed to initialize Swapchain!" );
-                return WindowHandle::Invalid;
-            }
-
-            // 3. Package Window and Swapchain into a resource
-            auto resource       = CreateScope<WindowResource>();
-            resource->window    = std::move( window );
-            resource->swapchain = std::move( swapchain );
-
-            // 4. Insert into the pool and return the safe handle
-            return m_windowPool.Insert( std::move( resource ) );
-        }
-
         void OnUpdate()
         {
             if( m_jobSystem )
@@ -498,29 +517,26 @@ namespace DigitalTwin
             }
 
             // 2. Check for Resize
-            // We iterate all windows managed by the engine
-            m_windowPool.ForEach( [ this ]( WindowResource* res ) {
-                if( res->window && res->window->WasResized() )
+            if( m_window && m_window->WasResized() )
+            {
+                // Check for minimization
+                if( m_window->IsMinimized() )
                 {
-                    // Check for minimization
-                    if( res->window->IsMinimized() )
-                    {
-                        // Optional: Pause logic logic here
-                        return;
-                    }
-
-                    DT_INFO( "Window resized to {0}x{1}. Recreating Swapchain...", res->window->GetWidth(), res->window->GetHeight() );
-
-                    // Recreate Swapchain
-                    if( res->swapchain )
-                    {
-                        res->swapchain->Recreate();
-                    }
-
-                    // Acknowledge the flag so we don't recreate every frame
-                    res->window->ResetResizeFlag();
+                    // Optional: Pause logic logic here
+                    return;
                 }
-            } );
+
+                DT_INFO( "Window resized to {0}x{1}. Recreating Swapchain...", m_window->GetWidth(), m_window->GetHeight() );
+
+                // Recreate Swapchain
+                if( m_swapchain )
+                {
+                    m_swapchain->Recreate();
+                }
+
+                // Acknowledge the flag so we don't recreate every frame
+                m_window->ResetResizeFlag();
+            }
 
             // 3. Process Main Thread Jobs
             if( m_jobSystem )
@@ -549,28 +565,33 @@ namespace DigitalTwin
         m_impl->Shutdown();
     }
 
-    WindowHandle DigitalTwin::CreateWindow( const std::string& title, uint32_t width, uint32_t height )
-    {
-        return m_impl->CreateWindow( title, width, height );
-    }
-
-    bool DigitalTwin::IsWindowColsed( WindowHandle handle ) const
-    {
-        // Access the pool via Impl
-        WindowResource* res = m_impl->m_windowPool.Get( handle );
-
-        // If handle is invalid or resource is gone, consider it closed
-        if( !res || !res->window )
-        {
-            return true;
-        }
-
-        return res->window->IsClosed();
-    }
-
-    void DigitalTwin::OnUpdate()
+    Result DigitalTwin::BeginFrame()
     {
         m_impl->OnUpdate();
+
+        // TODO: More per-frame logic here
+
+        return Result::SUCCESS;
+    }
+
+    void DigitalTwin::EndFrame()
+    {
+        // TODO: Execute frame submission, present, etc.
+    }
+
+    void DigitalTwin::Step()
+    {
+        DT_ASSERT( false, "Not implemented yet!" );
+    }
+
+    bool DigitalTwin::IsWindowClosed()
+    {
+        if( m_impl->m_window )
+        {
+            return m_impl->m_window->IsClosed();
+        }
+
+        return false;
     }
 
     FileSystem* DigitalTwin::GetFileSystem() const

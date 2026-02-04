@@ -1,9 +1,8 @@
 #pragma once
 #include "DigitalTwinTypes.h"
 
-#include "platform/Window.h"
-
 #include "core/Core.h"
+#include "platform/Window.h"
 #include <string>
 
 namespace DigitalTwin
@@ -18,10 +17,12 @@ namespace DigitalTwin
         Result Initialize( const DigitalTwinConfig& config );
         void   Shutdown();
 
-        WindowHandle CreateWindow( const std::string& title, uint32_t width, uint32_t height );
-        bool         IsWindowColsed( WindowHandle handle ) const;
+        Result BeginFrame();
+        void   EndFrame();
 
-        void OnUpdate();
+        void Step(); // TODO: For future use
+
+        bool IsWindowClosed();
 
     public:
         FileSystem* GetFileSystem() const;

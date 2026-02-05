@@ -25,11 +25,17 @@ namespace DigitalTwin
          * @param allocator Pointer to the descriptor allocator (usually the global one from ResourceManager).
          * @param layout The Vulkan descriptor set layout this group must conform to.
          * @param setIndex The index of this set in the shader (e.g., set = 0).
+         * @param reflection Reflection data for name lookups and validation.
          */
-        BindingGroup( Device* device, DescriptorAllocator* allocator, VkDescriptorSetLayout layout, uint32_t setIndex );
+        BindingGroup( Device* device, DescriptorAllocator* allocator, VkDescriptorSetLayout layout, uint32_t setIndex,
+                      const ShaderReflectionData* reflection );
         ~BindingGroup();
 
         // --- Binding API ---
+
+        void Bind( const std::string& name, Buffer* buffer, VkDeviceSize offset = 0, VkDeviceSize range = VK_WHOLE_SIZE );
+        void Bind( const std::string& name, Texture* texture, VkImageLayout layout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL );
+        void Bind( const std::string& name, Texture* texture, Sampler* sampler, VkImageLayout layout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL );
 
         /**
          * @brief Binds a buffer to a specific binding point.
@@ -67,6 +73,9 @@ namespace DigitalTwin
         uint32_t              GetSetIndex() const { return m_setIndex; }
 
     private:
+        bool  GetBindingIndex( const std::string& name, uint32_t& outBinding ) const;
+        bool ValidateBinding( uint32_t binding, VkDescriptorType type ) const;
+
         struct BindingInfo
         {
             uint32_t         binding;
@@ -84,6 +93,8 @@ namespace DigitalTwin
         VkDescriptorSetLayout m_layout;
         VkDescriptorSet       m_set = VK_NULL_HANDLE;
         uint32_t              m_setIndex;
+
+        const ShaderReflectionData* m_reflection;
 
         // Pending writes to be flushed on Build()
         // Map ensures bindings are unique and sorted

@@ -12,10 +12,13 @@ namespace DigitalTwin
 
     namespace PipelineUtils
     {
+
         struct PipelineLayoutResult
         {
             VkPipelineLayout                          pipelineLayout = VK_NULL_HANDLE;
             std::map<uint32_t, VkDescriptorSetLayout> descriptorSetLayouts;
+
+            ShaderReflectionData reflectionData;
         };
 
         // Analyzes shaders via reflection, merges resources, and creates Vulkan layouts
@@ -24,8 +27,6 @@ namespace DigitalTwin
         // Destroys pipeline layout and all descriptor set layouts
         void DestroyPipelineLayout( VkDevice device, const VolkDeviceTable* api, const PipelineLayoutResult& resources );
 
-        // Helper to merge reflection data from multiple shaders into one map
-        ShaderReflectionData MergeReflectionData( const std::vector<Shader*>& shaders );
     } // namespace PipelineUtils
 
     class ComputePipeline
@@ -39,7 +40,7 @@ namespace DigitalTwin
 
         VkPipeline                  GetHandle() const { return m_pipeline; }
         VkPipelineLayout            GetLayout() const { return m_resources.pipelineLayout; }
-        const ShaderReflectionData& GetReflectionData() const { return m_reflectionData; }
+        const ShaderReflectionData& GetReflectionData() const { return m_resources.reflectionData; }
         VkDescriptorSetLayout       GetDescriptorSetLayout( uint32_t set ) const;
 
     public:
@@ -53,7 +54,6 @@ namespace DigitalTwin
         VkDevice                            m_device;
         const VolkDeviceTable*              m_api;
         VkPipeline                          m_pipeline = VK_NULL_HANDLE;
-        ShaderReflectionData                m_reflectionData;
         PipelineUtils::PipelineLayoutResult m_resources;
     };
 
@@ -68,7 +68,7 @@ namespace DigitalTwin
 
         VkPipeline                  GetHandle() const { return m_pipeline; }
         VkPipelineLayout            GetLayout() const { return m_resources.pipelineLayout; }
-        const ShaderReflectionData& GetReflectionData() const { return m_reflectionData; }
+        const ShaderReflectionData& GetReflectionData() const { return m_resources.reflectionData; }
         VkDescriptorSetLayout       GetDescriptorSetLayout( uint32_t set ) const;
 
     public:
@@ -82,7 +82,6 @@ namespace DigitalTwin
         VkDevice                            m_device;
         const VolkDeviceTable*              m_api;
         VkPipeline                          m_pipeline = VK_NULL_HANDLE;
-        ShaderReflectionData                m_reflectionData;
         PipelineUtils::PipelineLayoutResult m_resources;
     };
 

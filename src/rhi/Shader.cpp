@@ -8,6 +8,36 @@
 
 namespace DigitalTwin
 {
+
+    static ShaderResourceType ConvertSpirvType( SpvReflectDescriptorType type )
+    {
+        switch( type )
+        {
+            case SPV_REFLECT_DESCRIPTOR_TYPE_SAMPLER:
+                return ShaderResourceType::SAMPLER;
+            case SPV_REFLECT_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER:
+                return ShaderResourceType::COMBINED_IMAGE_SAMPLER;
+            case SPV_REFLECT_DESCRIPTOR_TYPE_SAMPLED_IMAGE:
+                return ShaderResourceType::SAMPLED_IMAGE;
+            case SPV_REFLECT_DESCRIPTOR_TYPE_STORAGE_IMAGE:
+                return ShaderResourceType::STORAGE_IMAGE;
+            case SPV_REFLECT_DESCRIPTOR_TYPE_UNIFORM_TEXEL_BUFFER:
+                return ShaderResourceType::UNIFORM_TEXEL_BUFFER;
+            case SPV_REFLECT_DESCRIPTOR_TYPE_STORAGE_TEXEL_BUFFER:
+                return ShaderResourceType::STORAGE_TEXEL_BUFFER;
+            case SPV_REFLECT_DESCRIPTOR_TYPE_UNIFORM_BUFFER:
+                return ShaderResourceType::UNIFORM_BUFFER;
+            case SPV_REFLECT_DESCRIPTOR_TYPE_STORAGE_BUFFER:
+                return ShaderResourceType::STORAGE_BUFFER;
+            case SPV_REFLECT_DESCRIPTOR_TYPE_INPUT_ATTACHMENT:
+                return ShaderResourceType::INPUT_ATTACHMENT;
+            case SPV_REFLECT_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR:
+                return ShaderResourceType::ACCELERATION_STRUCTURE;
+            default:
+                return ShaderResourceType::UNKNOWN;
+        }
+    }
+
     Shader::Shader( VkDevice device, const VolkDeviceTable* api )
         : m_deviceHandle( device )
         , m_api( api )
@@ -65,7 +95,6 @@ namespace DigitalTwin
         , m_module( other.m_module )
         , m_stage( other.m_stage )
         , m_reflectionData( std::move( other.m_reflectionData ) )
-        , m_pushConstantRanges( std::move( other.m_pushConstantRanges ) )
     {
         other.m_module = VK_NULL_HANDLE;
     }
@@ -81,12 +110,11 @@ namespace DigitalTwin
             }
 
             // Move data
-            m_deviceHandle       = other.m_deviceHandle;
-            m_api                = other.m_api;
-            m_module             = other.m_module;
-            m_stage              = other.m_stage;
-            m_reflectionData     = std::move( other.m_reflectionData );
-            m_pushConstantRanges = std::move( other.m_pushConstantRanges );
+            m_deviceHandle   = other.m_deviceHandle;
+            m_api            = other.m_api;
+            m_module         = other.m_module;
+            m_stage          = other.m_stage;
+            m_reflectionData = std::move( other.m_reflectionData );
 
             other.m_module = VK_NULL_HANDLE;
         }
@@ -230,74 +258,43 @@ namespace DigitalTwin
         {
             for( uint32_t i = 0; i < set->binding_count; ++i )
             {
-                auto* binding = set->bindings[ i ];
+                const SpvReflectDescriptorBinding* binding = set->bindings[ i ];
 
-                ShaderResource resource{};
-                resource.set       = binding->set;
-                resource.binding   = binding->binding;
-                resource.arraySize = binding->count;
-                resource.type      = ShaderResourceType::UNKNOWN;
+                ShaderResource res{};
+                res.name       = binding->name ? binding->name : "";
+                res.set        = binding->set;
+                res.binding    = binding->binding;
+                res.type       = ConvertSpirvType( binding->descriptor_type );
+                res.arraySize  = binding->count;
+                res.stageFlags = ( VkShaderStageFlags )m_stage; // Only current stage known here
 
-                // --- CRITICAL FIX: Handle NULL or empty names safely ---
-                // Even with DebugInfo, sometimes names might be missing or mangled.
-                if( binding->name && strlen( binding->name ) > 0 )
+                // For UBO/SSBO, calculate size
+                res.size = 0;
+                if( binding->descriptor_type == SPV_REFLECT_DESCRIPTOR_TYPE_UNIFORM_BUFFER ||
+                    binding->descriptor_type == SPV_REFLECT_DESCRIPTOR_TYPE_STORAGE_BUFFER )
                 {
-                    resource.name = binding->name;
-                }
-                else if( binding->type_description && binding->type_description->type_name && strlen( binding->type_description->type_name ) > 0 )
-                {
-                    // Fallback to type name (e.g. for blocks)
-                    resource.name = binding->type_description->type_name;
-                }
-                else
-                {
-                    // Synthesize a name if absolutely nothing is found to prevent crash in std::string constructor
-                    resource.name = "Unknown_S" + std::to_string( binding->set ) + "_B" + std::to_string( binding->binding );
+                    res.size = binding->block.size;
                 }
 
-                // Map SPIRV-Reflect types to internal enum
-                switch( binding->descriptor_type )
-                {
-                    case SPV_REFLECT_DESCRIPTOR_TYPE_UNIFORM_BUFFER:
-                        resource.type = ShaderResourceType::UNIFORM_BUFFER;
-                        break;
-                    case SPV_REFLECT_DESCRIPTOR_TYPE_STORAGE_BUFFER:
-                        resource.type = ShaderResourceType::STORAGE_BUFFER;
-                        break;
-                    case SPV_REFLECT_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER:
-                        resource.type = ShaderResourceType::SAMPLED_IMAGE;
-                        break;
-                    case SPV_REFLECT_DESCRIPTOR_TYPE_STORAGE_IMAGE:
-                        resource.type = ShaderResourceType::STORAGE_IMAGE;
-                        break;
-                    default:
-                        DT_WARN( "Unknown or unsupported resource type in shader: {}", resource.name );
-                        break;
-                }
-
-                // Get block size for buffers (UBO/SSBO)
-                if( resource.type == ShaderResourceType::UNIFORM_BUFFER || resource.type == ShaderResourceType::STORAGE_BUFFER )
-                {
-                    resource.size = binding->block.padded_size;
-                }
-
-                m_reflectionData[ resource.name ] = resource;
+                // Insert into map
+                m_reflectionData.resources[ res.set ][ res.binding ] = res;
             }
         }
 
         // 2. Enumerate Push Constants
-        uint32_t pcCount = 0;
-        spvReflectEnumeratePushConstantBlocks( &module, &pcCount, nullptr );
-        std::vector<SpvReflectBlockVariable*> pcs( pcCount );
-        spvReflectEnumeratePushConstantBlocks( &module, &pcCount, pcs.data() );
+        count = 0;
+        spvReflectEnumeratePushConstantBlocks( &module, &count, nullptr );
+        std::vector<SpvReflectBlockVariable*> pushConstants( count );
+        spvReflectEnumeratePushConstantBlocks( &module, &count, pushConstants.data() );
 
-        for( auto* pc: pcs )
+        m_reflectionData.pushConstants.clear();
+        for( const auto* pc: pushConstants )
         {
             VkPushConstantRange range{};
             range.offset     = pc->offset;
             range.size       = pc->size;
-            range.stageFlags = m_stage;
-            m_pushConstantRanges.push_back( range );
+            range.stageFlags = ( VkShaderStageFlags )m_stage;
+            m_reflectionData.pushConstants.push_back( range );
         }
 
         spvReflectDestroyShaderModule( &module );
@@ -335,32 +332,13 @@ namespace DigitalTwin
 
     void Shader::LogResources() const
     {
-        DT_INFO( "--- Shader Reflection: ---" );
-        for( const auto& [ name, res ]: m_reflectionData )
+        DT_INFO( "--- Shader Reflection ({}) ---", ( int )m_stage );
+        for( const auto& [ setIdx, bindings ]: m_reflectionData.resources )
         {
-            std::string typeStr;
-            switch( res.type )
+            for( const auto& [ bindingIdx, res ]: bindings )
             {
-                case ShaderResourceType::STORAGE_BUFFER:
-                    typeStr = "StorageBuffer";
-                    break;
-                case ShaderResourceType::UNIFORM_BUFFER:
-                    typeStr = "UniformBuffer";
-                    break;
-                case ShaderResourceType::STORAGE_IMAGE:
-                    typeStr = "StorageImage";
-                    break;
-                case ShaderResourceType::SAMPLED_IMAGE:
-                    typeStr = "SampledImage";
-                    break;
-                default:
-                    typeStr = "Unknown";
+                DT_INFO( "  Set {} Binding {} : '{}' (Type: {}) Size: {}", setIdx, bindingIdx, res.name, ( int )res.type, res.size );
             }
-            DT_INFO( "  Name: {}, Set: {}, Binding: {}, Type: {}, Size: {}", name, res.set, res.binding, typeStr, res.size );
-        }
-        if( !m_pushConstantRanges.empty() )
-        {
-            DT_INFO( "  PushConstants: Size {}", m_pushConstantRanges[ 0 ].size );
         }
     }
 } // namespace DigitalTwin

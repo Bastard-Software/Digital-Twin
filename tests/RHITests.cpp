@@ -563,6 +563,7 @@ protected:
     std::string computeShaderPath  = "test_compute.comp";
     std::string vertexShaderPath   = "test_vertex.vert";
     std::string fragmentShaderPath = "test_fragment.frag";
+    std::string gapShader          = "gap_compute.comp";
 
     void SetUp() override
     {
@@ -574,10 +575,11 @@ protected:
             out << "#version 450\n";
             out << "layout(local_size_x = 1) in;\n";
             out << "struct Data { float value; };\n";
-            out << "layout(set = 0, binding = 0) buffer InBuffer { Data inData[]; };\n";
-            out << "layout(set = 0, binding = 1) buffer OutBuffer { Data outData[]; };\n";
+            out << "layout(set = 0, binding = 0) buffer InBuffer { Data inData[]; } inBuffer;\n";
+            out << "layout(set = 0, binding = 1) buffer OutBuffer { Data outData[]; } outBuffer;\n";
             out << "layout(push_constant) uniform Constants { float time; } pushConstants;\n";
-            out << "void main() { outData[gl_GlobalInvocationID.x].value = inData[gl_GlobalInvocationID.x].value * pushConstants.time; }\n";
+            out << "void main() { outBuffer.outData[gl_GlobalInvocationID.x].value = inBuffer.inData[gl_GlobalInvocationID.x].value * "
+                   "pushConstants.time; }\n";
             out.close();
         }
 
@@ -586,8 +588,8 @@ protected:
             std::ofstream out( vertexShaderPath );
             out << "#version 450\n";
             out << "layout(location = 0) in vec3 inPosition;\n";
-            out << "layout(set = 0, binding = 0) uniform Camera { mat4 viewProj; };\n";
-            out << "void main() { gl_Position = viewProj * vec4(inPosition, 1.0); }\n";
+            out << "layout(set = 0, binding = 0) uniform Camera { mat4 viewProj; } camera;\n";
+            out << "void main() { gl_Position = camera.viewProj * vec4(inPosition, 1.0); }\n";
             out.close();
         }
 
@@ -598,6 +600,20 @@ protected:
             out << "layout(location = 0) out vec4 outColor;\n";
             out << "layout(set = 0, binding = 1) uniform sampler2D texSampler;\n"; // Note binding 1
             out << "void main() { outColor = texture(texSampler, vec2(0.5)); }\n";
+            out.close();
+        }
+
+        // 4. Set gap shader
+        {
+            std::ofstream out( gapShader );
+            out << "#version 450\n";
+            out << "layout(local_size_x = 1) in;\n";
+            out << "struct Data { float value; };\n";
+            out << "layout(set = 0, binding = 0) buffer InBuffer { Data inData[]; } inBuffer;\n";
+            out << "layout(set = 2, binding = 0) buffer OutBuffer { Data outData[]; } outBuffer;\n";
+            out << "layout(push_constant) uniform Constants { float time; } pushConstants;\n";
+            out << "void main() { outBuffer.outData[gl_GlobalInvocationID.x].value = inBuffer.inData[gl_GlobalInvocationID.x].value * "
+                   "pushConstants.time; }\n";
             out.close();
         }
     }
@@ -622,6 +638,7 @@ protected:
         cleanup( computeShaderPath );
         cleanup( vertexShaderPath );
         cleanup( fragmentShaderPath );
+        cleanup( gapShader );
     }
 };
 
@@ -654,22 +671,24 @@ TEST_F( ShaderCompilationTest, ReflectionComputeCheck )
     auto   res = m_device->CreateShader( computeShaderPath, &shader );
     ASSERT_EQ( res, Result::SUCCESS );
 
-    const auto& reflection = shader.GetReflectionData();
+    const auto& reflectionData = shader.GetReflectionData();
 
-    // Check InBuffer
-    ASSERT_TRUE( reflection.find( "InBuffer" ) != reflection.end() ) << "InBuffer not found. Did optimization strip names?";
-    EXPECT_EQ( reflection.at( "InBuffer" ).set, 0 );
-    EXPECT_EQ( reflection.at( "InBuffer" ).binding, 0 );
-    EXPECT_EQ( reflection.at( "InBuffer" ).type, ShaderResourceType::STORAGE_BUFFER );
+    // Check InBuffer (Set 0, Binding 0)
+    const ShaderResource* inBuffer = reflectionData.Find( 0, "inBuffer" );
+    ASSERT_TRUE( inBuffer != nullptr ) << "inBuffer not found";
+    EXPECT_EQ( inBuffer->set, 0 );
+    EXPECT_EQ( inBuffer->binding, 0 );
+    EXPECT_EQ( inBuffer->type, ShaderResourceType::STORAGE_BUFFER );
 
-    // Check OutBuffer
-    ASSERT_TRUE( reflection.find( "OutBuffer" ) != reflection.end() ) << "OutBuffer not found";
-    EXPECT_EQ( reflection.at( "OutBuffer" ).set, 0 );
-    EXPECT_EQ( reflection.at( "OutBuffer" ).binding, 1 );
-    EXPECT_EQ( reflection.at( "OutBuffer" ).type, ShaderResourceType::STORAGE_BUFFER );
+    // Check OutBuffer (Set 0, Binding 1)
+    const ShaderResource* outBuffer = reflectionData.Find( 0, "outBuffer" );
+    ASSERT_TRUE( outBuffer != nullptr ) << "outBuffer not found";
+    EXPECT_EQ( outBuffer->set, 0 );
+    EXPECT_EQ( outBuffer->binding, 1 );
+    EXPECT_EQ( outBuffer->type, ShaderResourceType::STORAGE_BUFFER );
 
     // Check Push Constants
-    const auto& pcs = shader.GetPushConstantRanges();
+    const auto& pcs = reflectionData.pushConstants;
     ASSERT_FALSE( pcs.empty() ) << "Push constants not detected";
     EXPECT_GE( pcs[ 0 ].size, sizeof( float ) );
 
@@ -702,13 +721,14 @@ TEST_F( ShaderCompilationTest, ReflectionVertexCheck )
     auto   res = m_device->CreateShader( vertexShaderPath, &shader );
     ASSERT_EQ( res, Result::SUCCESS );
 
-    const auto& reflection = shader.GetReflectionData();
+    const auto& reflectionData = shader.GetReflectionData();
 
-    // Check Camera UBO
-    ASSERT_TRUE( reflection.find( "Camera" ) != reflection.end() ) << "Camera UBO not found";
-    EXPECT_EQ( reflection.at( "Camera" ).type, ShaderResourceType::UNIFORM_BUFFER );
-    EXPECT_EQ( reflection.at( "Camera" ).binding, 0 );
-    EXPECT_GE( reflection.at( "Camera" ).size, 64 ); // mat4
+    // Check Camera UBO (Set 0, "Camera")
+    const ShaderResource* camera = reflectionData.Find( 0, "camera" );
+    ASSERT_TRUE( camera != nullptr ) << "Camera UBO not found in reflection data";
+    EXPECT_EQ( camera->type, ShaderResourceType::UNIFORM_BUFFER );
+    EXPECT_EQ( camera->binding, 0 );
+    EXPECT_GE( camera->size, 64 ); // mat4 is 64 bytes
 
     m_device->DestroyShader( &shader );
 }
@@ -739,12 +759,51 @@ TEST_F( ShaderCompilationTest, ReflectionFragmentCheck )
     auto   res = m_device->CreateShader( fragmentShaderPath, &shader );
     ASSERT_EQ( res, Result::SUCCESS );
 
-    const auto& reflection = shader.GetReflectionData();
+    const auto& reflectionData = shader.GetReflectionData();
 
-    // Check Sampler
-    ASSERT_TRUE( reflection.find( "texSampler" ) != reflection.end() ) << "Sampler not found";
-    EXPECT_EQ( reflection.at( "texSampler" ).type, ShaderResourceType::SAMPLED_IMAGE );
-    EXPECT_EQ( reflection.at( "texSampler" ).binding, 1 );
+    // Check Sampler (Set 0, "texSampler")
+    const ShaderResource* sampler = reflectionData.Find( 0, "texSampler" );
+    ASSERT_TRUE( sampler != nullptr ) << "Sampler not found in reflection data";
+    EXPECT_EQ( sampler->type, ShaderResourceType::COMBINED_IMAGE_SAMPLER );
+    EXPECT_EQ( sampler->binding, 1 );
+
+    m_device->DestroyShader( &shader );
+}
+
+// 7. Set gaps Verification Test
+TEST_F( ShaderCompilationTest, SetGapVerification )
+{
+    if( !m_device )
+        GTEST_SKIP() << "No GPU found, skipping test";
+
+    Shader shader( m_device->GetHandle(), &m_device->GetAPI() );
+    auto   res = m_device->CreateShader( gapShader, &shader );
+    ASSERT_EQ( res, Result::SUCCESS );
+
+    const auto& reflectionData = shader.GetReflectionData();
+
+    // Check InBuffer (Set 0, Binding 0)
+    const ShaderResource* inBuffer = reflectionData.Find( 0, "inBuffer" );
+    ASSERT_TRUE( inBuffer != nullptr ) << "inBuffer not found";
+    EXPECT_EQ( inBuffer->set, 0 );
+    EXPECT_EQ( inBuffer->binding, 0 );
+    EXPECT_EQ( inBuffer->type, ShaderResourceType::STORAGE_BUFFER );
+
+    // Check Missing Buffer (Set 1, Binding 0)
+    const ShaderResource* missingBuffer = reflectionData.Find( 1, 0 );
+    ASSERT_TRUE( missingBuffer == nullptr );
+
+    // Check OutBuffer (Set 2, Binding 0)
+    const ShaderResource* outBuffer = reflectionData.Find( 2, "outBuffer" );
+    ASSERT_TRUE( outBuffer != nullptr ) << "outBuffer not found";
+    EXPECT_EQ( outBuffer->set, 2 );
+    EXPECT_EQ( outBuffer->binding, 0 );
+    EXPECT_EQ( outBuffer->type, ShaderResourceType::STORAGE_BUFFER );
+
+    // Check Push Constants
+    const auto& pcs = reflectionData.pushConstants;
+    ASSERT_FALSE( pcs.empty() ) << "Push constants not detected";
+    EXPECT_GE( pcs[ 0 ].size, sizeof( float ) );
 
     m_device->DestroyShader( &shader );
 }
@@ -1336,7 +1395,7 @@ TEST_F( BindingGroupTest, BuildAndBind )
         GTEST_SKIP();
 
     // 1. Create Binding Group
-    BindingGroup bg( m_device.get(), allocator.get(), simpleLayout, 0 );
+    BindingGroup bg( m_device.get(), allocator.get(), simpleLayout, 0, nullptr );
 
     // 2. Create Buffer
     BufferDesc bufDesc{ 256, BufferType::UNIFORM };
@@ -1400,7 +1459,7 @@ TEST_F( BindingGroupTest, ReuseAcrossPipelines )
     VkDescriptorSetLayout layoutA = pA.GetDescriptorSetLayout( 0 );
     ASSERT_NE( layoutA, VK_NULL_HANDLE );
 
-    BindingGroup bg( m_device.get(), allocator.get(), layoutA, 0 );
+    BindingGroup bg( m_device.get(), allocator.get(), layoutA, 0, nullptr );
 
     BufferDesc bufDesc{ 256, BufferType::STORAGE };
     Buffer     buffer( m_device->GetAllocator(), m_device->GetHandle(), &m_device->GetAPI() );

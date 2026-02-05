@@ -31,133 +31,117 @@ namespace DigitalTwin
         {
             PipelineLayoutResult result;
 
-            // 1. Merge resources from all shaders
-            // Map: Set -> Binding -> ResourceInfo
-            std::map<uint32_t, std::map<uint32_t, ShaderResource>> mergedResources;
-            std::vector<VkPushConstantRange>                       pushConstants;
-
+            // 1. Merge Resources & Push Constants
             for( const auto& shader: shaders )
             {
                 if( !shader )
                     continue;
+                const auto& shaderData = shader->GetReflectionData();
 
-                // Merge Descriptor Sets
-                for( const auto& [ name, res ]: shader->GetReflectionData() )
+                // Merge Resources
+                for( const auto& [ setIdx, bindings ]: shaderData.resources )
                 {
-                    if( res.type == ShaderResourceType::PUSH_CONSTANT || res.type == ShaderResourceType::UNKNOWN )
-                        continue;
-
-                    // Check collision (simplified logic: last one wins, assumes shaders are consistent)
-                    mergedResources[ res.set ][ res.binding ] = res;
-                }
-
-                // Merge Push Constants
-                const auto& pcs = shader->GetPushConstantRanges();
-                pushConstants.insert( pushConstants.end(), pcs.begin(), pcs.end() );
-            }
-
-            // 2a. Create Descriptor Set Layouts for active resources
-            for( const auto& [ setIndex, bindingsMap ]: mergedResources )
-            {
-                std::vector<VkDescriptorSetLayoutBinding> vkBindings;
-                for( const auto& [ bindingIndex, res ]: bindingsMap )
-                {
-                    VkDescriptorSetLayoutBinding b{};
-                    b.binding            = bindingIndex;
-                    b.descriptorType     = MapResourceTypeToVulkan( res.type );
-                    b.descriptorCount    = res.arraySize;
-                    b.stageFlags         = VK_SHADER_STAGE_ALL; // Simplify visibility for now
-                    b.pImmutableSamplers = nullptr;
-                    vkBindings.push_back( b );
-                }
-
-                VkDescriptorSetLayoutCreateInfo layoutInfo = { VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO };
-                layoutInfo.bindingCount                    = static_cast<uint32_t>( vkBindings.size() );
-                layoutInfo.pBindings                       = vkBindings.data();
-
-                VkDescriptorSetLayout layout = VK_NULL_HANDLE;
-                if( api->vkCreateDescriptorSetLayout( device, &layoutInfo, nullptr, &layout ) != VK_SUCCESS )
-                {
-                    DT_CRITICAL( "Failed to create descriptor set layout for set {}", setIndex );
-                    continue;
-                }
-                result.descriptorSetLayouts[ setIndex ] = layout;
-            }
-
-            // 2b. FILL GAPS: Ensure no null handles in the contiguous range [0, maxSet]
-            // If Set 0 is optimized out by shader compiler, but Set 1 exists, we must provide an empty layout for Set 0.
-            if( !result.descriptorSetLayouts.empty() )
-            {
-                uint32_t maxSet = result.descriptorSetLayouts.rbegin()->first;
-                for( uint32_t i = 0; i < maxSet; ++i )
-                {
-                    if( result.descriptorSetLayouts.find( i ) == result.descriptorSetLayouts.end() )
+                    for( const auto& [ bindingIdx, res ]: bindings )
                     {
-                        // Gap detected at index 'i'.
-                        VkDescriptorSetLayoutCreateInfo           layoutInfo = { VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO };
-                        std::vector<VkDescriptorSetLayoutBinding> forcedBindings;
-
-                        // --- CRITICAL FIX: Enforce GlobalData Layout for Set 0 ---
-                        // If Set 0 is missing (optimized out by shader), we must recreate it
-                        // so that vkUpdateDescriptorSets in the engine doesn't crash when binding the Global UBO.
-                        if( i == 0 )
+                        // Check if exists
+                        if( result.reflectionData.Find( setIdx, bindingIdx ) )
                         {
-                            DT_WARN( "PipelineUtils: Shader optimized out Set 0 (GlobalData). Enforcing layout compatibility." );
-
-                            VkDescriptorSetLayoutBinding globalBinding{};
-                            globalBinding.binding            = 0; // GlobalData is always at Binding 0
-                            globalBinding.descriptorType     = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
-                            globalBinding.descriptorCount    = 1;
-                            globalBinding.stageFlags         = VK_SHADER_STAGE_ALL;
-                            globalBinding.pImmutableSamplers = nullptr;
-
-                            forcedBindings.push_back( globalBinding );
-
-                            layoutInfo.bindingCount = static_cast<uint32_t>( forcedBindings.size() );
-                            layoutInfo.pBindings    = forcedBindings.data();
+                            // Already exists: Merge stage flags
+                            result.reflectionData.resources[ setIdx ][ bindingIdx ].stageFlags |= res.stageFlags;
                         }
                         else
                         {
-                            // For other gaps (e.g. Set 1 missing but Set 2 present), create an empty dummy layout.
-                            // This allows Pipeline Layout creation but prevents writing descriptors to this set.
-                            layoutInfo.bindingCount = 0;
-                            layoutInfo.pBindings    = nullptr;
+                            // New: Insert
+                            result.reflectionData.resources[ setIdx ][ bindingIdx ] = res;
                         }
+                    }
+                }
 
-                        VkDescriptorSetLayout layout = VK_NULL_HANDLE;
-                        if( api->vkCreateDescriptorSetLayout( device, &layoutInfo, nullptr, &layout ) == VK_SUCCESS )
-                        {
-                            result.descriptorSetLayouts[ i ] = layout;
-                        }
-                        else
-                        {
-                            DT_CRITICAL( "PipelineUtils: Failed to create gap-filling layout for Set {}", i );
-                        }
+                // Merge Push Constants (Simplified: Just accumulate all ranges)
+                // Note: Proper merging would check for overlapping ranges.
+                for( const auto& pc: shaderData.pushConstants )
+                {
+                    result.reflectionData.pushConstants.push_back( pc );
+                }
+            }
+
+            // 2. Create Descriptor Set Layouts (using merged data)
+            std::vector<VkDescriptorSetLayout> setLayoutsVector;
+
+            // Need to iterate in order of set index to create pipeline layout correctly (though gaps are allowed in vulkan, usually contiguous)
+            // Finding max set index
+            uint32_t maxSet = 0;
+            for( const auto& [ set, _ ]: result.reflectionData.resources )
+                maxSet = std::max( maxSet, set );
+
+            for( uint32_t set = 0; set <= maxSet; ++set )
+            {
+                // If set exists in resources
+                if( result.reflectionData.resources.count( set ) )
+                {
+                    std::vector<VkDescriptorSetLayoutBinding> bindings;
+                    const auto&                               setBindings = result.reflectionData.resources[ set ];
+
+                    for( const auto& [ bindingIdx, res ]: setBindings )
+                    {
+                        VkDescriptorSetLayoutBinding b{};
+                        b.binding            = bindingIdx;
+                        b.descriptorType     = MapResourceTypeToVulkan( res.type );
+                        b.descriptorCount    = res.arraySize;
+                        b.stageFlags         = res.stageFlags;
+                        b.pImmutableSamplers = nullptr;
+                        bindings.push_back( b );
+                    }
+
+                    VkDescriptorSetLayoutCreateInfo layoutInfo = { VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO };
+                    layoutInfo.bindingCount                    = ( uint32_t )bindings.size();
+                    layoutInfo.pBindings                       = bindings.data();
+
+                    VkDescriptorSetLayout layout;
+                    if( api->vkCreateDescriptorSetLayout( device, &layoutInfo, nullptr, &layout ) != VK_SUCCESS )
+                    {
+                        DT_ASSERT( false, "Failed to create descriptor set layout for set {}", set );
+                        DT_ERROR( "Failed to create descriptor set layout for set {}", set );
+                    }
+
+                    result.descriptorSetLayouts[ set ] = layout;
+                    setLayoutsVector.push_back( layout );
+                }
+                else
+                {
+                    VkDescriptorSetLayoutCreateInfo layoutInfo = { VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO };
+                    layoutInfo.bindingCount                    = 0;
+                    layoutInfo.pBindings                       = nullptr;
+
+                    VkDescriptorSetLayout layout;
+                    if( api->vkCreateDescriptorSetLayout( device, &layoutInfo, nullptr, &layout ) != VK_SUCCESS )
+                    {
+                        DT_ASSERT( false, "Failed to create empty descriptor set layout for gap at set {}", set );
+                        DT_ERROR( "Failed to create empty descriptor set layout for gap at set {}", set );
+                    }
+                    else
+                    {
+                        // We store it so we can destroy it later, but we don't add it to reflection resources
+                        // since there are no resources to bind there.
+                        result.descriptorSetLayouts[ set ] = layout;
+                        setLayoutsVector.push_back( layout );
                     }
                 }
             }
 
             // 3. Create Pipeline Layout
-            std::vector<VkDescriptorSetLayout> contiguousLayouts;
-            if( !result.descriptorSetLayouts.empty() )
-            {
-                uint32_t maxSet = result.descriptorSetLayouts.rbegin()->first;
-                contiguousLayouts.resize( maxSet + 1, VK_NULL_HANDLE );
-                for( const auto& [ set, layout ]: result.descriptorSetLayouts )
-                {
-                    contiguousLayouts[ set ] = layout;
-                }
-            }
+            VkPipelineLayoutCreateInfo pipelineInfo = { VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO };
+            pipelineInfo.setLayoutCount             = ( uint32_t )setLayoutsVector.size();
+            pipelineInfo.pSetLayouts                = setLayoutsVector.data();
 
-            VkPipelineLayoutCreateInfo pipelineLayoutInfo = { VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO };
-            pipelineLayoutInfo.setLayoutCount             = static_cast<uint32_t>( contiguousLayouts.size() );
-            pipelineLayoutInfo.pSetLayouts                = contiguousLayouts.data();
-            pipelineLayoutInfo.pushConstantRangeCount     = static_cast<uint32_t>( pushConstants.size() );
-            pipelineLayoutInfo.pPushConstantRanges        = pushConstants.data();
+            // Push Constants
+            pipelineInfo.pushConstantRangeCount = ( uint32_t )result.reflectionData.pushConstants.size();
+            pipelineInfo.pPushConstantRanges    = result.reflectionData.pushConstants.data();
 
-            if( api->vkCreatePipelineLayout( device, &pipelineLayoutInfo, nullptr, &result.pipelineLayout ) != VK_SUCCESS )
+            if( api->vkCreatePipelineLayout( device, &pipelineInfo, nullptr, &result.pipelineLayout ) != VK_SUCCESS )
             {
-                DT_CRITICAL( "Failed to create pipeline layout!" );
+                DT_ASSERT( false, "Failed to create pipeline layout!" );
+                DT_ERROR( "Failed to create pipeline layout!" );
             }
 
             return result;
@@ -173,30 +157,6 @@ namespace DigitalTwin
             {
                 api->vkDestroyDescriptorSetLayout( device, layout, nullptr );
             }
-        }
-
-        ShaderReflectionData MergeReflectionData( const std::vector<Shader*>& shaders )
-        {
-            ShaderReflectionData merged;
-
-            for( const auto& shader: shaders )
-            {
-                if( !shader )
-                    continue;
-
-                const auto& stageResources = shader->GetReflectionData();
-                for( const auto& [ name, resource ]: stageResources )
-                {
-                    // Insert if not exists.
-                    // If the same resource name exists (e.g., "GlobalUniforms" in Vert and Frag),
-                    // we assume it maps to the same binding/set configuration.
-                    if( merged.find( name ) == merged.end() )
-                    {
-                        merged[ name ] = resource;
-                    }
-                }
-            }
-            return merged;
         }
     } // namespace PipelineUtils
 
@@ -215,8 +175,7 @@ namespace DigitalTwin
         DT_CORE_ASSERT( desc.shader, "ComputePipeline requires a shader!" );
 
         // 1. Create Layouts (Layouts are owned by this pipeline instance)
-        m_resources      = PipelineUtils::CreatePipelineLayout( m_device, m_api, { desc.shader } );
-        m_reflectionData = desc.shader->GetReflectionData();
+        m_resources = PipelineUtils::CreatePipelineLayout( m_device, m_api, { desc.shader } );
 
         // 2. Create Pipeline
         VkComputePipelineCreateInfo pipelineInfo = { VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO };
@@ -252,7 +211,6 @@ namespace DigitalTwin
         : m_device( other.m_device )
         , m_api( other.m_api )
         , m_pipeline( other.m_pipeline )
-        , m_reflectionData( std::move( other.m_reflectionData ) )
         , m_resources( std::move( other.m_resources ) )
     {
         other.m_pipeline                 = VK_NULL_HANDLE;
@@ -265,11 +223,10 @@ namespace DigitalTwin
         if( this != &other )
         {
             Destroy();
-            m_device         = other.m_device;
-            m_api            = other.m_api;
-            m_pipeline       = other.m_pipeline;
-            m_reflectionData = std::move( other.m_reflectionData );
-            m_resources      = std::move( other.m_resources );
+            m_device    = other.m_device;
+            m_api       = other.m_api;
+            m_pipeline  = other.m_pipeline;
+            m_resources = std::move( other.m_resources );
 
             other.m_pipeline                 = VK_NULL_HANDLE;
             other.m_resources.pipelineLayout = VK_NULL_HANDLE;
@@ -297,8 +254,7 @@ namespace DigitalTwin
         if( desc.fragmentShader )
             shaders.push_back( desc.fragmentShader );
 
-        m_resources      = PipelineUtils::CreatePipelineLayout( m_device, m_api, shaders );
-        m_reflectionData = PipelineUtils::MergeReflectionData( shaders );
+        m_resources = PipelineUtils::CreatePipelineLayout( m_device, m_api, shaders );
 
         // 2. Shader Stages
         std::vector<VkPipelineShaderStageCreateInfo> shaderStages;
@@ -432,7 +388,6 @@ namespace DigitalTwin
         : m_device( other.m_device )
         , m_api( other.m_api )
         , m_pipeline( other.m_pipeline )
-        , m_reflectionData( std::move( other.m_reflectionData ) )
         , m_resources( std::move( other.m_resources ) )
     {
         other.m_pipeline                 = VK_NULL_HANDLE;
@@ -446,11 +401,10 @@ namespace DigitalTwin
         {
             Destroy();
 
-            m_device         = other.m_device;
-            m_api            = other.m_api;
-            m_pipeline       = other.m_pipeline;
-            m_reflectionData = std::move( other.m_reflectionData );
-            m_resources      = std::move( other.m_resources );
+            m_device    = other.m_device;
+            m_api       = other.m_api;
+            m_pipeline  = other.m_pipeline;
+            m_resources = std::move( other.m_resources );
 
             other.m_pipeline                 = VK_NULL_HANDLE;
             other.m_resources.pipelineLayout = VK_NULL_HANDLE;

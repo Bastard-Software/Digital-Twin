@@ -347,12 +347,47 @@ namespace DigitalTwin
         }
     }
 
-    ThreadContextHandle Device::CreateThreadContext()
+    Result Device::WaitForSemaphores( const std::vector<VkSemaphore>& semaphores, const std::vector<uint64_t>& values )
     {
-        uint32_t familyIndex = m_graphicsQueue->GetFamilyIndex();
+        if( semaphores.empty() || semaphores.size() != values.size() )
+        {
+            return Result::FAIL;
+        }
 
+        VkSemaphoreWaitInfo waitInfo = { VK_STRUCTURE_TYPE_SEMAPHORE_WAIT_INFO };
+        waitInfo.flags               = 0;
+        waitInfo.semaphoreCount      = ( uint32_t )semaphores.size();
+        waitInfo.pSemaphores         = semaphores.data();
+        waitInfo.pValues             = values.data();
+        VkResult res                 = m_api.vkWaitSemaphores( m_device, &waitInfo, UINT64_MAX );
+
+        if( res != VK_SUCCESS )
+        {
+            DT_ERROR( "WaitForSemaphores failed!" );
+            return Result::FAIL;
+        }
+
+        return Result::SUCCESS;
+    }
+
+    ThreadContextHandle Device::CreateThreadContext( QueueType type )
+    {
         auto ctx = CreateScope<ThreadContext>();
-        if( ctx->Initialize( m_device, &m_api, familyIndex ) != Result::SUCCESS )
+
+        uint32_t familyIndex = 0;
+        if( type == QueueType::GRAPHICS )
+            familyIndex = m_graphicsQueue->GetFamilyIndex();
+        else if( type == QueueType::COMPUTE )
+            familyIndex = m_computeQueue->GetFamilyIndex();
+        else if( type == QueueType::TRANSFER )
+            familyIndex = m_transferQueue->GetFamilyIndex();
+        else
+        {
+            DT_ERROR( "Invalid QueueType specified for ThreadContext creation!" );
+            return ThreadContextHandle::Invalid;
+        }
+
+        if( ctx->Initialize( m_device, &m_api, type, familyIndex ) != Result::SUCCESS )
         {
             return ThreadContextHandle::Invalid;
         }

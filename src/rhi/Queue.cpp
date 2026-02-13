@@ -45,6 +45,14 @@ namespace DigitalTwin
                           const std::vector<uint64_t>& waitValues, const std::vector<VkSemaphore>& signalSemaphores,
                           const std::vector<uint64_t>& signalValues )
     {
+        // 1. Prepare Signals: Include internal Timeline Semaphore
+        std::vector<VkSemaphore> finalSignalSemas = signalSemaphores;
+        std::vector<uint64_t>    finalSignalVals  = signalValues;
+
+        finalSignalSemas.push_back( m_timelineSemaphore );
+        finalSignalVals.push_back( 666666 ); // Invalid - will be replaced in critical section with the correct value (m_nextValue)
+
+        // 2. Prepare Command Buffers
         std::vector<VkCommandBuffer> vkCmds;
         vkCmds.reserve( cmdBuffers.size() );
         for( auto* cmd: cmdBuffers )
@@ -59,40 +67,42 @@ namespace DigitalTwin
             vkCmds.push_back( cmd->GetHandle() );
         }
 
+        // 3. Timeline Info
         VkTimelineSemaphoreSubmitInfo timelineInfo = { VK_STRUCTURE_TYPE_TIMELINE_SEMAPHORE_SUBMIT_INFO };
         timelineInfo.waitSemaphoreValueCount       = ( uint32_t )waitValues.size();
         timelineInfo.pWaitSemaphoreValues          = waitValues.data();
-        timelineInfo.signalSemaphoreValueCount     = ( uint32_t )signalValues.size();
-        timelineInfo.pSignalSemaphoreValues        = signalValues.data();
+        timelineInfo.signalSemaphoreValueCount     = ( uint32_t )finalSignalVals.size();
+        timelineInfo.pSignalSemaphoreValues        = finalSignalVals.data();
 
+        // 4. Submit Info
         VkSubmitInfo submitInfo = { VK_STRUCTURE_TYPE_SUBMIT_INFO };
         submitInfo.pNext        = &timelineInfo;
 
         submitInfo.commandBufferCount = ( uint32_t )vkCmds.size();
         submitInfo.pCommandBuffers    = vkCmds.data();
 
-        // Default wait stage: Wait for commands to finish before executing commands in this batch
-        std::vector<VkPipelineStageFlags> waitStages( waitSemaphores.size(), VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT );
+        // Waits
+        std::vector<VkPipelineStageFlags> waitStages( waitSemaphores.size(), VK_PIPELINE_STAGE_ALL_COMMANDS_BIT ); // Wait at top or all commands
         submitInfo.waitSemaphoreCount = ( uint32_t )waitSemaphores.size();
         submitInfo.pWaitSemaphores    = waitSemaphores.data();
         submitInfo.pWaitDstStageMask  = waitStages.data();
 
-        submitInfo.signalSemaphoreCount = ( uint32_t )signalSemaphores.size();
-        submitInfo.pSignalSemaphores    = signalSemaphores.data();
+        // Signals
+        submitInfo.signalSemaphoreCount = ( uint32_t )finalSignalSemas.size();
+        submitInfo.pSignalSemaphores    = finalSignalSemas.data();
 
         {
-            // Thread-safe submission
             std::lock_guard<std::mutex> lock( m_submitMutex );
-
+            finalSignalVals.back() = m_nextValue; // Update the timeline signal value to the current internal tracker
             if( m_api.vkQueueSubmit( m_queue, 1, &submitInfo, VK_NULL_HANDLE ) != VK_SUCCESS )
             {
                 DT_ERROR( "Queue Submit Failed!" );
                 return Result::FAIL;
             }
-        }
 
-        // Advance internal CPU tracker if needed (timeline logic)
-        m_nextValue++;
+            // Advance internal CPU tracker
+            m_nextValue++;
+        }
 
         return Result::SUCCESS;
     }

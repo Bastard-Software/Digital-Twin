@@ -1,6 +1,6 @@
 #pragma once
 #include "core/Log.h"
-#include "resources/Handle.h"
+#include <DigitalTwinTypes.h>
 #include <functional>
 #include <memory>
 #include <queue>

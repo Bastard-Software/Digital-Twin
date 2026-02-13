@@ -34,13 +34,17 @@ namespace DigitalTwin
          */
         Result Recreate();
 
-        Result AcquireNextImage( uint32_t* outImageIndex, VkSemaphore* outSignalSemaphore );
+        Result AcquireNextImage( uint32_t* outImageIndex, VkSemaphore signalSemaphore );
         Result Present( uint32_t imageIndex, VkSemaphore waitSemaphore );
 
         Texture*   GetTexture( uint32_t index ) { return &m_textures[ index ]; }
         uint32_t   GetImageCount() const { return ( uint32_t )m_textures.size(); }
         VkFormat   GetFormat() const { return m_format.format; }
         VkExtent2D GetExtent() const { return m_extent; }
+        Window*    GetWindow() const { return m_window; }
+
+        VkSemaphore GetImageAvailableSemaphore( uint32_t index ) const { return m_imageAvailableSemaphores[ index ]; }
+        VkSemaphore GetRenderFinishedSemaphore( uint32_t index ) const { return m_renderFinishedSemaphores[ index ]; }
 
     private:
         Result CreateInternal( uint32_t width, uint32_t height, bool vsync );
@@ -60,8 +64,8 @@ namespace DigitalTwin
 
         std::vector<Texture>     m_textures;
         std::vector<VkSemaphore> m_imageAvailableSemaphores;
+        std::vector<VkSemaphore> m_renderFinishedSemaphores;
 
-        uint32_t  m_currentFrame       = 0;
-        const int MAX_FRAMES_IN_FLIGHT = 2;
+        uint32_t MAX_FRAMES_IN_FLIGHT = 2;
     };
 } // namespace DigitalTwin

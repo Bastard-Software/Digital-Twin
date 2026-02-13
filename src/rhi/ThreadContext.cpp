@@ -9,14 +9,15 @@ namespace DigitalTwin
         Shutdown();
     }
 
-    Result ThreadContext::Initialize( VkDevice device, const VolkDeviceTable* api, uint32_t queueFamilyIndex )
+    Result ThreadContext::Initialize( VkDevice device, const VolkDeviceTable* api, QueueType type, uint32_t qfNdx )
     {
         m_device = device;
         m_api    = api;
+        m_type   = type;
 
         VkCommandPoolCreateInfo poolInfo = { VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO };
         poolInfo.flags                   = VK_COMMAND_POOL_CREATE_TRANSIENT_BIT;
-        poolInfo.queueFamilyIndex        = queueFamilyIndex;
+        poolInfo.queueFamilyIndex        = qfNdx;
 
         if( m_api->vkCreateCommandPool( m_device, &poolInfo, nullptr, &m_commandPool ) != VK_SUCCESS )
         {
@@ -61,7 +62,7 @@ namespace DigitalTwin
         m_activeCmdBufferCount = 0;
     }
 
-    CommandBufferHandle ThreadContext::CreateCommandBuffer( QueueType type )
+    CommandBufferHandle ThreadContext::CreateCommandBuffer()
     {
         // 1. Check if we can reuse an existing wrapper
         if( m_activeCmdBufferCount < m_commandBuffers.size() )
@@ -71,7 +72,7 @@ namespace DigitalTwin
             // Re-initialize logic. Note: The VkCommandBuffer handle from the pool remains valid
             // and is in the 'Initial' state because we called vkResetCommandPool.
             // We just need to update the wrapper's metadata.
-            buf.Initialize( buf.GetHandle(), type, m_device, m_api );
+            buf.Initialize( buf.GetHandle(), m_type, m_device, m_api );
 
             uint32_t index = m_activeCmdBufferCount++;
             return CommandBufferHandle( index, 1 );
@@ -91,7 +92,7 @@ namespace DigitalTwin
         }
 
         CommandBuffer newBuf;
-        newBuf.Initialize( vkCmd, type, m_device, m_api );
+        newBuf.Initialize( vkCmd, m_type, m_device, m_api );
 
         m_commandBuffers.push_back( newBuf );
 

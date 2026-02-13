@@ -19,14 +19,14 @@ namespace DigitalTwin
         ThreadContext() = default;
         ~ThreadContext();
 
-        Result Initialize( VkDevice device, const VolkDeviceTable* api, uint32_t queueFamilyIndex );
+        Result Initialize( VkDevice device, const VolkDeviceTable* api, QueueType type, uint32_t qfNdx );
         void   Shutdown();
 
         // Resets pools (called at frame start for main thread, or internally for recycling)
         void Reset();
 
         // Returns Handle to Command Buffer (valid until Reset)
-        CommandBufferHandle CreateCommandBuffer( QueueType type = QueueType::GRAPHICS );
+        CommandBufferHandle CreateCommandBuffer();
 
         // Retrieve wrapper from handle
         CommandBuffer* GetCommandBuffer( CommandBufferHandle handle );
@@ -36,9 +36,10 @@ namespace DigitalTwin
     private:
         VkDevice               m_device = VK_NULL_HANDLE;
         const VolkDeviceTable* m_api    = nullptr;
+        QueueType              m_type;
 
-        VkCommandPool                        m_commandPool = VK_NULL_HANDLE;
-        std::unique_ptr<DescriptorAllocator> m_descriptorAllocator;
+        VkCommandPool              m_commandPool = VK_NULL_HANDLE;
+        Scope<DescriptorAllocator> m_descriptorAllocator;
 
         // Pool of CommandBuffer wrappers. Resetting the pool allows reuse.
         std::vector<CommandBuffer> m_commandBuffers;

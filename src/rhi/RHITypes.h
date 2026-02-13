@@ -1,7 +1,7 @@
 #pragma once
 
 #include "core/Core.h"
-#include "resources/Handle.h"
+#include <DigitalTwinTypes.h>
 #include <string>
 #include <unordered_map>
 #include <volk.h>
@@ -23,6 +23,7 @@ namespace DigitalTwin
     class ThreadContext;
     class DescriptorAllocator;
     class BindingGroup;
+    class Swapchain;
 
     /**
      * @brief Configuration for RHI initialization.

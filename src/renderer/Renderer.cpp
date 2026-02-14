@@ -3,12 +3,13 @@
 #include "core/Log.h"
 #include "platform/Window.h"
 #include "resources/ResourceManager.h"
+#include "resources/StreamingManager.h"
 #include "rhi/CommandBuffer.h"
 #include "rhi/Device.h"
 #include "rhi/Sampler.h"
 #include "rhi/Swapchain.h"
 #include "rhi/Texture.h"
-#include <Volk/volk.h>
+#include <volk.h>
 
 // ImGui
 #include <GLFW/glfw3.h>
@@ -19,10 +20,11 @@
 namespace DigitalTwin
 {
 
-    Renderer::Renderer( Device* device, Swapchain* swapchain, ResourceManager* rm )
+    Renderer::Renderer( Device* device, Swapchain* swapchain, ResourceManager* rm, StreamingManager* sm )
         : m_device( device )
         , m_swapchain( swapchain )
         , m_resourceManager( rm )
+        , m_streamingManager( sm )
     {
     }
 

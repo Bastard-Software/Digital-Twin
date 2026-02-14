@@ -36,7 +36,7 @@ namespace DigitalTwin
         Result CreateGraphicsPipeline( const GraphicsPipelineNativeDesc& desc, GraphicsPipeline* pipeline );
         void   DestroyGraphicsPipeline( GraphicsPipeline* pipeline );
 
-        ThreadContextHandle CreateThreadContext();
+        ThreadContextHandle CreateThreadContext(QueueType type);
         ThreadContext*      GetThreadContext( ThreadContextHandle handle );
 
         VkDevice         GetHandle() const { return m_device; }
@@ -51,7 +51,8 @@ namespace DigitalTwin
         Queue* GetComputeQueue() const { return m_computeQueue; }
         Queue* GetTransferQueue() const { return m_transferQueue; }
 
-        void WaitIdle();
+        void   WaitIdle();
+        Result WaitForSemaphores( const std::vector<VkSemaphore>& semaphores, const std::vector<uint64_t>& values );
 
     private:
         struct QueueFamilyIndices;

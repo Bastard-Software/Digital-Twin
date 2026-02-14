@@ -1054,13 +1054,13 @@ TEST_F( CommandBufferTest, CreateAndLifecycle )
         GTEST_SKIP();
 
     // 1. Create Context Handle
-    ThreadContextHandle ctxHandle = m_device->CreateThreadContext();
+    ThreadContextHandle ctxHandle = m_device->CreateThreadContext( QueueType::GRAPHICS );
     ASSERT_TRUE( ctxHandle.IsValid() );
     ThreadContext* ctx = m_device->GetThreadContext( ctxHandle );
     ASSERT_NE( ctx, nullptr );
 
     // 2. Allocate Buffer Handle
-    CommandBufferHandle cmdHandle = ctx->CreateCommandBuffer( QueueType::GRAPHICS );
+    CommandBufferHandle cmdHandle = ctx->CreateCommandBuffer();
     ASSERT_TRUE( cmdHandle.IsValid() );
 
     // 3. Get Pointer
@@ -1085,10 +1085,10 @@ TEST_F( CommandBufferTest, SubmitClearColor )
     if( !m_device )
         GTEST_SKIP();
 
-    auto ctxHandle = m_device->CreateThreadContext();
+    auto ctxHandle = m_device->CreateThreadContext( QueueType::GRAPHICS );
     auto ctx       = m_device->GetThreadContext( ctxHandle );
 
-    auto cmdHandle = ctx->CreateCommandBuffer( QueueType::GRAPHICS );
+    auto cmdHandle = ctx->CreateCommandBuffer();
     auto cmd       = ctx->GetCommandBuffer( cmdHandle );
 
     // Create a Texture to clear
@@ -1122,15 +1122,15 @@ TEST_F( CommandBufferTest, SubmitClearColor )
     cmd->End();
 
     // Submit with Timeline
-    auto        queue       = m_device->GetGraphicsQueue();
-    VkSemaphore timeline    = queue->GetTimelineSemaphore();
-    uint64_t    signalValue = queue->GetLastSubmittedValue() + 1;
+    auto     queue       = m_device->GetGraphicsQueue();
+    uint64_t signalValue = queue->GetLastSubmittedValue() + 1;
 
-    // Submit: Wait {}, Signal {timeline: signalValue}
-    Result res = queue->Submit( { cmd }, {}, {}, { timeline }, { signalValue } );
+    // Submit: Wait {}, Signal {}
+    Result res = queue->Submit( { cmd } );
     ASSERT_EQ( res, Result::SUCCESS );
 
     // Wait on Host
+    VkSemaphore         timeline = queue->GetTimelineSemaphore();
     VkSemaphoreWaitInfo waitInfo = { VK_STRUCTURE_TYPE_SEMAPHORE_WAIT_INFO };
     waitInfo.semaphoreCount      = 1;
     waitInfo.pSemaphores         = &timeline;
@@ -1183,13 +1183,13 @@ TEST_F( CommandBufferTest, MultithreadedRecordingAndSubmission )
     jobSystem.Dispatch( cmdCount, [ & ]( uint32_t index ) {
         // A. Get/Create ThreadContext for this thread.
         // Device::CreateThreadContext is now thread-safe (mutex protected).
-        ThreadContextHandle ctxHandle = m_device->CreateThreadContext();
+        ThreadContextHandle ctxHandle = m_device->CreateThreadContext( QueueType::GRAPHICS );
         ThreadContext*      ctx       = m_device->GetThreadContext( ctxHandle );
 
         ASSERT_NE( ctx, nullptr );
 
         // B. Allocate Command Buffer (Thread-local, no mutex needed)
-        CommandBufferHandle cmdHandle = ctx->CreateCommandBuffer( QueueType::GRAPHICS );
+        CommandBufferHandle cmdHandle = ctx->CreateCommandBuffer();
         CommandBuffer*      cmd       = ctx->GetCommandBuffer( cmdHandle );
 
         // C. Record Commands (Parallel recording)
@@ -1329,8 +1329,8 @@ TEST_F( SwapchainTest, CreateAndDestroy )
 
     // Acquire Test
     uint32_t    idx;
-    VkSemaphore sem;
-    res = m_swapchain->AcquireNextImage( &idx, &sem );
+    VkSemaphore sem = m_swapchain->GetImageAvailableSemaphore( 0 );
+    res             = m_swapchain->AcquireNextImage( &idx, sem );
 
     // Acquire might fail if window is minimized or special state, but usually returns SUCCESS or SUBOPTIMAL
     if( res == Result::SUCCESS )
@@ -1470,9 +1470,9 @@ TEST_F( BindingGroupTest, ReuseAcrossPipelines )
 
     // 4. Record Command Buffer using Pipeline B but Binding Group from A
     // This tests the "compatibility" feature of Vulkan
-    auto           ctxHandle = m_device->CreateThreadContext();
+    auto           ctxHandle = m_device->CreateThreadContext( QueueType::GRAPHICS );
     auto           ctx       = m_device->GetThreadContext( ctxHandle );
-    CommandBuffer* cmd       = ctx->GetCommandBuffer( ctx->CreateCommandBuffer( QueueType::GRAPHICS ) );
+    CommandBuffer* cmd       = ctx->GetCommandBuffer( ctx->CreateCommandBuffer() );
 
     cmd->Begin();
     cmd->SetPipeline( &pB );

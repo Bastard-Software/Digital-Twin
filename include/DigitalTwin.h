@@ -17,12 +17,15 @@ namespace DigitalTwin
         Result Initialize( const DigitalTwinConfig& config );
         void   Shutdown();
 
-        Result BeginFrame();
-        void   EndFrame();
-
-        void Step(); // TODO: For future use
+        const FrameContext& BeginFrame();
+        void                EndFrame();
+        void                Step(); // TODO: For future use
 
         bool IsWindowClosed();
+
+        void  RenderUI( std::function<void()> uiCallback );
+        void* GetImGuiTextureID( TextureHandle handle );
+        void* GetImGuiContext();
 
     public:
         FileSystem* GetFileSystem() const;

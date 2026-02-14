@@ -5,10 +5,12 @@
 #include "core/jobs/JobSystem.h"
 #include "core/memory/MemorySystem.h"
 #include "platform/PlatformSystem.h"
+#include "renderer/Renderer.h"
 #include "resources/ResourceManager.h"
 #include "rhi/Device.h"
 #include "rhi/RHI.h"
 #include "rhi/Swapchain.h"
+#include "rhi/ThreadContext.h"
 #include <iostream>
 
 #if defined( CreateWindow )
@@ -88,6 +90,18 @@ namespace DigitalTwin
         return {}; // Not found
     }
 
+    struct FrameData
+    {
+        ThreadContextHandle graphicsContext;
+        ThreadContextHandle computeContext;
+
+        BufferHandle  agentBuffer;
+        TextureHandle sceneTexture;
+
+        uint64_t computeFinishedValue  = 0;
+        uint64_t graphicsFinishedValue = 0;
+    };
+
     // Impl
     struct DigitalTwin::Impl
     {
@@ -102,6 +116,14 @@ namespace DigitalTwin
         Scope<ResourceManager> m_resourceManager;
         Scope<Window>          m_window;
         Scope<Swapchain>       m_swapchain;
+        Scope<Renderer>        m_renderer;
+
+        // Frame Data
+        static const uint32_t FRAMES_IN_FLIGHT = 2;
+        FrameData             m_frames[ FRAMES_IN_FLIGHT ];
+        uint32_t              m_flightIndex       = 0; // Flight Index: Controls CPU resources and Sync Semaphores (0 -> 1 -> 0)
+        uint32_t              m_currentImageIndex = 0; // Image Index: Controls which Swapchain Image we render to (obtained from Acquire)
+        FrameContext          m_currentContext;
 
         Impl()
             : m_initialized( false )
@@ -293,7 +315,7 @@ namespace DigitalTwin
                 return Result::FAIL;
             }
 
-            // 10. Window & Swapchain (if not headless)
+            // 10. Window, Swapchain & Renderer (if not headless)
             if( !m_config.headless && m_platformSystem )
             {
                 m_window = m_platformSystem->CreateWindow( { m_config.windowTitle, m_config.windowWidth, m_config.windowHeight } );
@@ -340,6 +362,46 @@ namespace DigitalTwin
                     DT_ERROR( "Failed to create Main Swapchain." );
                     return Result::FAIL;
                 }
+
+                m_renderer = CreateScope<Renderer>( m_device.get(), m_swapchain.get(), m_resourceManager.get() );
+                if( m_renderer->Create() != Result::SUCCESS )
+                {
+                    m_renderer.reset();
+                    m_swapchain->Destroy();
+                    m_swapchain.reset();
+                    m_window.reset();
+                    m_resourceManager->Shutdown();
+                    m_resourceManager.reset();
+                    m_device->Shutdown();
+                    m_device.reset();
+                    m_rhi->Shutdown();
+                    m_rhi.reset();
+                    m_platformSystem->Shutdown();
+                    m_platformSystem.reset();
+                    m_fileSystem->Shutdown();
+                    m_fileSystem.reset();
+                    m_jobSystem->Shutdown();
+                    m_jobSystem.reset();
+                    m_memorySystem->Shutdown();
+                    m_memorySystem.reset();
+                    DT_ERROR( "Failed to initialize Renderer." );
+                    return Result::FAIL;
+                }
+
+                // Create render resources
+                for( uint32_t ndx = 0; ndx < FRAMES_IN_FLIGHT; ++ndx )
+                {
+                    FrameData& currFrame      = m_frames[ ndx ];
+                    currFrame.graphicsContext = m_device->CreateThreadContext( QueueType::GRAPHICS );
+                    currFrame.computeContext  = m_device->CreateThreadContext( QueueType::COMPUTE );
+
+                    TextureDesc rtDesc;
+                    rtDesc.width           = m_swapchain->GetExtent().width;
+                    rtDesc.height          = m_swapchain->GetExtent().height;
+                    rtDesc.format          = m_swapchain->GetFormat();
+                    rtDesc.usage           = TextureUsage::RENDER_TARGET | TextureUsage::SAMPLED;
+                    currFrame.sceneTexture = m_resourceManager->CreateTexture( rtDesc );
+                }
             }
 
             m_initialized = true;
@@ -353,6 +415,12 @@ namespace DigitalTwin
                 return;
 
             DT_INFO( "Shutting down..." );
+
+            if( m_renderer )
+            {
+                m_renderer->Destroy();
+                m_renderer.reset();
+            }
 
             if( m_swapchain )
             {
@@ -544,6 +612,162 @@ namespace DigitalTwin
                 m_jobSystem->ProcessMainThread();
             }
         }
+
+        const FrameContext& BeginFrame()
+        {
+            // 1. Advance Flight Index
+            m_flightIndex        = ( m_flightIndex + 1 ) % FRAMES_IN_FLIGHT;
+            FrameData& currFrame = m_frames[ m_flightIndex ];
+
+            // 2. CPU-GPU Synchronization
+            // We must wait for BOTH queues to finish with this slot's resources.
+            // Graphics might be done, but Compute (running in parallel) might still be busy.
+            std::vector<VkSemaphore> waitSemas;
+            std::vector<uint64_t>    waitValues;
+
+            // Wait for Graphics (Windowed mode)
+            if( !m_config.headless && currFrame.graphicsFinishedValue > 0 )
+            {
+                waitSemas.push_back( m_device->GetGraphicsQueue()->GetTimelineSemaphore() );
+                waitValues.push_back( currFrame.graphicsFinishedValue );
+            }
+
+            // Wait for Compute (Always)
+            // Even in windowed mode, Compute N runs independently of Graphics N (which renders N-1).
+            // So checking Graphics completion is NOT enough to ensure Compute N is done.
+            if( currFrame.computeFinishedValue > 0 )
+            {
+                waitSemas.push_back( m_device->GetComputeQueue()->GetTimelineSemaphore() );
+                waitValues.push_back( currFrame.computeFinishedValue );
+            }
+
+            // Execute Wait
+            if( !waitSemas.empty() )
+            {
+                m_device->WaitForSemaphores( waitSemas, waitValues );
+            }
+
+            // 3. Acquire Image (Windowed Only)
+            if( !m_config.headless )
+            {
+                VkSemaphore sem = m_swapchain->GetImageAvailableSemaphore( m_flightIndex );
+                m_swapchain->AcquireNextImage( &m_currentImageIndex, sem );
+            }
+            else
+            {
+                m_currentImageIndex = m_flightIndex;
+            }
+
+            // 4. Reset Command Pools
+            // Now safe because we waited for both queues!
+            ThreadContext* gfxCtx = m_device->GetThreadContext( currFrame.graphicsContext );
+            ThreadContext* cmpCtx = m_device->GetThreadContext( currFrame.computeContext );
+            gfxCtx->Reset();
+            cmpCtx->Reset();
+
+            // 5. Allocate Command Buffers
+            m_currentContext.graphicsCmd = gfxCtx->CreateCommandBuffer();
+            m_currentContext.computeCmd  = cmpCtx->CreateCommandBuffer();
+
+            // 6. Begin Recording
+            CommandBuffer* gfx = gfxCtx->GetCommandBuffer( m_currentContext.graphicsCmd );
+            gfx->Begin();
+            CommandBuffer* comp = cmpCtx->GetCommandBuffer( m_currentContext.computeCmd );
+            comp->Begin();
+
+            // 7. Setup Context
+            m_currentContext.frameIndex   = m_flightIndex;
+            m_currentContext.sceneTexture = currFrame.sceneTexture;
+
+            // TODO: ping pong logic here
+
+            // 8. Start UI
+            if( !m_config.headless && m_renderer )
+                m_renderer->BeginUI();
+
+            return m_currentContext;
+        }
+
+        void EndFrame()
+        {
+            if( m_renderer && !m_config.headless )
+                m_renderer->EndUI();
+
+            FrameData& currFrame = m_frames[ m_flightIndex ];
+
+            ThreadContext* gfxCtx  = m_device->GetThreadContext( currFrame.graphicsContext );
+            ThreadContext* cmpCtx  = m_device->GetThreadContext( currFrame.computeContext );
+            CommandBuffer* gfxCmd  = gfxCtx->GetCommandBuffer( m_currentContext.graphicsCmd );
+            CommandBuffer* compCmd = cmpCtx->GetCommandBuffer( m_currentContext.computeCmd );
+
+            // 1. Record UI Pass
+            if( !m_config.headless && m_renderer )
+            {
+                Texture* backbuffer = m_swapchain->GetTexture( m_currentImageIndex );
+                m_renderer->RecordUIPass( gfxCmd, backbuffer );
+            }
+
+            gfxCmd->End();
+            compCmd->End();
+
+            Queue* computeQueue  = m_device->GetComputeQueue();
+            Queue* graphicsQueue = m_device->GetGraphicsQueue();
+
+            // 2. SUBMIT COMPUTE
+            {
+                std::vector<CommandBuffer*> cmdBuffers = { compCmd };
+                computeQueue->Submit( cmdBuffers );
+
+                // Track compute completion for this slot
+                currFrame.computeFinishedValue = computeQueue->GetLastSubmittedValue();
+            }
+
+            // 3. SUBMIT GRAPHICS
+            if( !m_config.headless )
+            {
+                std::vector<CommandBuffer*> cmdBuffers = { gfxCmd };
+
+                std::vector<VkSemaphore> waitSemas;
+                std::vector<uint64_t>    waitValues;
+                std::vector<VkSemaphore> signalSemas;
+                std::vector<uint64_t>    signalValues;
+
+                // Wait 1: Swapchain Image
+                waitSemas.push_back( m_swapchain->GetImageAvailableSemaphore( m_flightIndex ) );
+                waitValues.push_back( 0 );
+
+                // Wait 2: Previous Compute Frame (Pipelining)
+                uint32_t   prevFlightIndex = m_flightIndex ^ 1;
+                FrameData& prevFrame       = m_frames[ prevFlightIndex ];
+                if( prevFrame.computeFinishedValue > 0 )
+                {
+                    waitSemas.push_back( computeQueue->GetTimelineSemaphore() );
+                    waitValues.push_back( prevFrame.computeFinishedValue );
+                }
+
+                // Signal: Render Finished
+                VkSemaphore renderFinishedSem = m_swapchain->GetRenderFinishedSemaphore( m_flightIndex );
+                signalSemas.push_back( renderFinishedSem );
+                signalValues.push_back( 0 );
+
+                graphicsQueue->Submit( cmdBuffers, waitSemas, waitValues, signalSemas, signalValues );
+
+                // Track graphics completion for this slot
+                currFrame.graphicsFinishedValue = graphicsQueue->GetLastSubmittedValue();
+            }
+            else
+            {
+                // In headless, graphics isn't used, so reset this tracker to avoid waiting on old values
+                currFrame.graphicsFinishedValue = 0;
+            }
+
+            // 4. PRESENT
+            if( !m_config.headless )
+            {
+                VkSemaphore renderFinishedSem = m_swapchain->GetRenderFinishedSemaphore( m_flightIndex );
+                m_swapchain->Present( m_currentImageIndex, renderFinishedSem );
+            }
+        }
     };
 
     DigitalTwin::DigitalTwin()
@@ -565,18 +789,17 @@ namespace DigitalTwin
         m_impl->Shutdown();
     }
 
-    Result DigitalTwin::BeginFrame()
+    const FrameContext& DigitalTwin::BeginFrame()
     {
         m_impl->OnUpdate();
+        m_impl->m_resourceManager->BeginFrame();
 
-        // TODO: More per-frame logic here
-
-        return Result::SUCCESS;
+        return m_impl->BeginFrame();
     }
 
     void DigitalTwin::EndFrame()
     {
-        // TODO: Execute frame submission, present, etc.
+        m_impl->EndFrame();
     }
 
     void DigitalTwin::Step()
@@ -592,6 +815,28 @@ namespace DigitalTwin
         }
 
         return false;
+    }
+
+    void DigitalTwin::RenderUI( std::function<void()> uiCallback )
+    {
+        if( m_impl->m_renderer )
+        {
+            m_impl->m_renderer->RenderUI( uiCallback );
+        }
+    }
+
+    void* DigitalTwin::GetImGuiTextureID( TextureHandle handle )
+    {
+        return nullptr;
+    }
+
+    void* DigitalTwin::GetImGuiContext()
+    {
+        if( m_impl->m_renderer )
+        {
+            return m_impl->m_renderer->GetImGuiContext();
+        }
+        return nullptr;
     }
 
     FileSystem* DigitalTwin::GetFileSystem() const

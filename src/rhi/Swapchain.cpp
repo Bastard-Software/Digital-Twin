@@ -46,6 +46,11 @@ namespace DigitalTwin
             m_device->GetAPI().vkDestroySemaphore( m_device->GetHandle(), sem, nullptr );
         }
         m_imageAvailableSemaphores.clear();
+        for( auto sem: m_renderFinishedSemaphores )
+        {
+            m_device->GetAPI().vkDestroySemaphore( m_device->GetHandle(), sem, nullptr );
+        }
+        m_renderFinishedSemaphores.clear();
 
         // Destroy Surface
         if( m_surface != VK_NULL_HANDLE )
@@ -151,15 +156,10 @@ namespace DigitalTwin
             m_extent.height = std::clamp( m_extent.height, caps.minImageExtent.height, caps.maxImageExtent.height );
         }
 
-        // --- Image Count ---
-        uint32_t imageCount = caps.minImageCount + 1;
-        if( caps.maxImageCount > 0 && imageCount > caps.maxImageCount )
-            imageCount = caps.maxImageCount;
-
         // --- Creation ---
         VkSwapchainCreateInfoKHR createInfo = { VK_STRUCTURE_TYPE_SWAPCHAIN_CREATE_INFO_KHR };
         createInfo.surface                  = m_surface;
-        createInfo.minImageCount            = imageCount;
+        createInfo.minImageCount            = MAX_FRAMES_IN_FLIGHT;
         createInfo.imageFormat              = m_format.format;
         createInfo.imageColorSpace          = m_format.colorSpace;
         createInfo.imageExtent              = m_extent;
@@ -178,11 +178,11 @@ namespace DigitalTwin
         }
 
         // --- Retrieve Images ---
-        api.vkGetSwapchainImagesKHR( device, m_swapchain, &imageCount, nullptr );
-        std::vector<VkImage> images( imageCount );
-        api.vkGetSwapchainImagesKHR( device, m_swapchain, &imageCount, images.data() );
+        api.vkGetSwapchainImagesKHR( device, m_swapchain, &MAX_FRAMES_IN_FLIGHT, nullptr );
+        std::vector<VkImage> images( MAX_FRAMES_IN_FLIGHT );
+        api.vkGetSwapchainImagesKHR( device, m_swapchain, &MAX_FRAMES_IN_FLIGHT, images.data() );
 
-        m_textures.reserve( imageCount );
+        m_textures.reserve( MAX_FRAMES_IN_FLIGHT );
         VkExtent3D ext3D = { m_extent.width, m_extent.height, 1 };
         for( auto img: images )
         {
@@ -197,23 +197,27 @@ namespace DigitalTwin
             for( int i = 0; i < MAX_FRAMES_IN_FLIGHT; ++i )
                 api.vkCreateSemaphore( device, &semInfo, nullptr, &m_imageAvailableSemaphores[ i ] );
         }
+        if( m_renderFinishedSemaphores.empty() )
+        {
+            m_renderFinishedSemaphores.resize( MAX_FRAMES_IN_FLIGHT );
+            VkSemaphoreCreateInfo semInfo = { VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO };
+            for( int i = 0; i < MAX_FRAMES_IN_FLIGHT; ++i )
+                api.vkCreateSemaphore( device, &semInfo, nullptr, &m_renderFinishedSemaphores[ i ] );
+        }
 
         DT_INFO( "Swapchain (Re)Created. Size: {}x{}", m_extent.width, m_extent.height );
         return Result::SUCCESS;
     }
 
-    Result Swapchain::AcquireNextImage( uint32_t* outImageIndex, VkSemaphore* outSignalSemaphore )
+    Result Swapchain::AcquireNextImage( uint32_t* outImageIndex, VkSemaphore signalSemaphore )
     {
-        VkSemaphore sem = m_imageAvailableSemaphores[ m_currentFrame ];
-        VkResult res = m_device->GetAPI().vkAcquireNextImageKHR( m_device->GetHandle(), m_swapchain, 2000000000, sem, VK_NULL_HANDLE, outImageIndex );
+        VkResult res = m_device->GetAPI().vkAcquireNextImageKHR( m_device->GetHandle(), m_swapchain, 2000000000, signalSemaphore, VK_NULL_HANDLE, outImageIndex );
 
         if( res == VK_ERROR_OUT_OF_DATE_KHR )
             return Result::RECREATE_SWAPCHAIN;
         if( res != VK_SUCCESS && res != VK_SUBOPTIMAL_KHR )
             return Result::FAIL;
 
-        *outSignalSemaphore = sem;
-        m_currentFrame      = ( m_currentFrame + 1 ) % MAX_FRAMES_IN_FLIGHT;
         return Result::SUCCESS;
     }
 

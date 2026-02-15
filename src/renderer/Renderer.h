@@ -9,11 +9,12 @@
 namespace DigitalTwin
 {
     class ResourceManager;
+    class StreamingManager;
 
     class Renderer
     {
     public:
-        Renderer( Device* device, Swapchain* swapchain, ResourceManager* resourceManager );
+        Renderer( Device* device, Swapchain* swapchain, ResourceManager* resourceManager, StreamingManager* streamingManager );
         ~Renderer();
 
         Result Create();
@@ -32,9 +33,10 @@ namespace DigitalTwin
         SamplerHandle GetDefaultSampler() const { return m_defaultSampler; }
 
     private:
-        Device*          m_device;
-        Swapchain*       m_swapchain;
-        ResourceManager* m_resourceManager;
+        Device*           m_device;
+        Swapchain*        m_swapchain;
+        ResourceManager*  m_resourceManager;
+        StreamingManager* m_streamingManager;
 
         // Default resources
         SamplerHandle m_defaultSampler;

@@ -128,6 +128,7 @@ namespace DigitalTwin
     {
         if( m_queue )
         {
+            std::lock_guard<std::mutex> lock( m_submitMutex );
             m_api.vkQueueWaitIdle( m_queue );
         }
     }

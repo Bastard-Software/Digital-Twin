@@ -12,6 +12,7 @@ namespace DigitalTwin
     /**
      * @brief Generic pool for managing resources with generational handles.
      * Owns the memory via std::unique_ptr.
+     * Thread safe.
      */
     template<typename T, typename HandleType, typename Deleter = std::default_delete<T>>
     class ResourcePool
@@ -30,6 +31,8 @@ namespace DigitalTwin
          */
         HandleType Insert( std::unique_ptr<T, Deleter> resource )
         {
+            std::lock_guard<std::mutex> lock( m_mutex );
+
             uint32_t index;
             if( !m_freeIndices.empty() )
             {
@@ -58,6 +61,8 @@ namespace DigitalTwin
             if( !handle.IsValid() )
                 return nullptr;
 
+            std::lock_guard<std::mutex> lock( m_mutex );
+
             uint32_t index = handle.GetIndex();
             if( index >= m_slots.size() )
                 return nullptr;
@@ -80,6 +85,8 @@ namespace DigitalTwin
         {
             if( !handle.IsValid() )
                 return nullptr;
+
+            std::lock_guard<std::mutex> lock( m_mutex );
 
             uint32_t index = handle.GetIndex();
             if( index >= m_slots.size() )
@@ -106,6 +113,7 @@ namespace DigitalTwin
 
         void Clear()
         {
+            std::lock_guard<std::mutex> lock( m_mutex );
             m_slots.clear();
             std::queue<uint32_t> empty;
             std::swap( m_freeIndices, empty );
@@ -114,6 +122,7 @@ namespace DigitalTwin
         template<typename Func>
         void ForEach( Func func )
         {
+            std::lock_guard<std::mutex> lock( m_mutex );
             for( auto& slot: m_slots )
             {
                 if( slot.resource )
@@ -126,5 +135,6 @@ namespace DigitalTwin
     private:
         std::vector<Slot>    m_slots;
         std::queue<uint32_t> m_freeIndices;
+        mutable std::mutex   m_mutex; // Protects access to slots and freeIndices
     };
 } // namespace DigitalTwin

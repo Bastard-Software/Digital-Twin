@@ -7,6 +7,7 @@
 #include "platform/PlatformSystem.h"
 #include "renderer/Renderer.h"
 #include "resources/ResourceManager.h"
+#include "resources/StreamingManager.h"
 #include "rhi/Device.h"
 #include "rhi/RHI.h"
 #include "rhi/Swapchain.h"
@@ -105,18 +106,19 @@ namespace DigitalTwin
     // Impl
     struct DigitalTwin::Impl
     {
-        DigitalTwinConfig      m_config;
-        bool                   m_initialized;
-        Scope<MemorySystem>    m_memorySystem;
-        Scope<JobSystem>       m_jobSystem;
-        Scope<FileSystem>      m_fileSystem;
-        Scope<PlatformSystem>  m_platformSystem;
-        Scope<RHI>             m_rhi;
-        Scope<Device>          m_device;
-        Scope<ResourceManager> m_resourceManager;
-        Scope<Window>          m_window;
-        Scope<Swapchain>       m_swapchain;
-        Scope<Renderer>        m_renderer;
+        DigitalTwinConfig       m_config;
+        bool                    m_initialized;
+        Scope<MemorySystem>     m_memorySystem;
+        Scope<JobSystem>        m_jobSystem;
+        Scope<FileSystem>       m_fileSystem;
+        Scope<PlatformSystem>   m_platformSystem;
+        Scope<RHI>              m_rhi;
+        Scope<Device>           m_device;
+        Scope<ResourceManager>  m_resourceManager;
+        Scope<StreamingManager> m_streamingManager;
+        Scope<Window>           m_window;
+        Scope<Swapchain>        m_swapchain;
+        Scope<Renderer>         m_renderer;
 
         // Frame Data
         static const uint32_t FRAMES_IN_FLIGHT = 2;
@@ -294,7 +296,7 @@ namespace DigitalTwin
                 return Result::FAIL;
             }
 
-            // 9. Resource Manager
+            // 9. Resource Manager & Streaming Manager
             m_resourceManager = CreateScope<ResourceManager>( m_device.get(), m_memorySystem.get() );
             if( m_resourceManager->Initialize() != Result::SUCCESS )
             {
@@ -315,6 +317,28 @@ namespace DigitalTwin
                 return Result::FAIL;
             }
 
+            m_streamingManager = CreateScope<StreamingManager>( m_device.get(), m_resourceManager.get() );
+            if( m_streamingManager->Initialize() != Result::SUCCESS )
+            {
+                m_streamingManager.reset();
+                m_resourceManager->Shutdown();
+                m_resourceManager.reset();
+                m_device->Shutdown();
+                m_device.reset();
+                m_rhi->Shutdown();
+                m_rhi.reset();
+                m_platformSystem->Shutdown();
+                m_platformSystem.reset();
+                m_fileSystem->Shutdown();
+                m_fileSystem.reset();
+                m_jobSystem->Shutdown();
+                m_jobSystem.reset();
+                m_memorySystem->Shutdown();
+                m_memorySystem.reset();
+                DT_ERROR( "Failed to initialize Streaming Manager." );
+                return Result::FAIL;
+            }
+
             // 10. Window, Swapchain & Renderer (if not headless)
             if( !m_config.headless && m_platformSystem )
             {
@@ -322,6 +346,8 @@ namespace DigitalTwin
                 if( !m_window )
                 {
                     m_window.reset();
+                    m_streamingManager->Shutdown();
+                    m_streamingManager.reset();
                     m_resourceManager->Shutdown();
                     m_resourceManager.reset();
                     m_device->Shutdown();
@@ -345,6 +371,8 @@ namespace DigitalTwin
                 {
                     m_swapchain.reset();
                     m_window.reset();
+                    m_streamingManager->Shutdown();
+                    m_streamingManager.reset();
                     m_resourceManager->Shutdown();
                     m_resourceManager.reset();
                     m_device->Shutdown();
@@ -363,13 +391,15 @@ namespace DigitalTwin
                     return Result::FAIL;
                 }
 
-                m_renderer = CreateScope<Renderer>( m_device.get(), m_swapchain.get(), m_resourceManager.get() );
+                m_renderer = CreateScope<Renderer>( m_device.get(), m_swapchain.get(), m_resourceManager.get(), m_streamingManager.get() );
                 if( m_renderer->Create() != Result::SUCCESS )
                 {
                     m_renderer.reset();
                     m_swapchain->Destroy();
                     m_swapchain.reset();
                     m_window.reset();
+                    m_streamingManager->Shutdown();
+                    m_streamingManager.reset();
                     m_resourceManager->Shutdown();
                     m_resourceManager.reset();
                     m_device->Shutdown();
@@ -432,6 +462,12 @@ namespace DigitalTwin
             {
                 m_platformSystem->RemoveWindow( m_window.get() );
                 m_window.reset();
+            }
+
+            if( m_streamingManager )
+            {
+                m_streamingManager->Shutdown();
+                m_streamingManager.reset();
             }
 
             if( m_resourceManager )
@@ -615,6 +651,9 @@ namespace DigitalTwin
 
         const FrameContext& BeginFrame()
         {
+            m_resourceManager->BeginFrame();
+            m_streamingManager->BeginFrame();
+
             // 1. Advance Flight Index
             m_flightIndex        = ( m_flightIndex + 1 ) % FRAMES_IN_FLIGHT;
             FrameData& currFrame = m_frames[ m_flightIndex ];
@@ -713,16 +752,29 @@ namespace DigitalTwin
             Queue* computeQueue  = m_device->GetComputeQueue();
             Queue* graphicsQueue = m_device->GetGraphicsQueue();
 
-            // 2. SUBMIT COMPUTE
+            // 2. SUBMIT TRANSFER
+            uint64_t transferSyncValue = m_streamingManager->EndFrame();
+
+            // 3. SUBMIT COMPUTE
             {
                 std::vector<CommandBuffer*> cmdBuffers = { compCmd };
-                computeQueue->Submit( cmdBuffers );
+                std::vector<VkSemaphore>    waitSemas;
+                std::vector<uint64_t>       waitVals;
+
+                // Wait for transfers if any occured
+                if( transferSyncValue > 0 )
+                {
+                    waitSemas.push_back( m_device->GetTransferQueue()->GetTimelineSemaphore() );
+                    waitVals.push_back( transferSyncValue );
+                }
+
+                computeQueue->Submit( cmdBuffers, waitSemas, waitVals );
 
                 // Track compute completion for this slot
                 currFrame.computeFinishedValue = computeQueue->GetLastSubmittedValue();
             }
 
-            // 3. SUBMIT GRAPHICS
+            // 4. SUBMIT GRAPHICS
             if( !m_config.headless )
             {
                 std::vector<CommandBuffer*> cmdBuffers = { gfxCmd };
@@ -732,7 +784,14 @@ namespace DigitalTwin
                 std::vector<VkSemaphore> signalSemas;
                 std::vector<uint64_t>    signalValues;
 
-                // Wait 1: Swapchain Image
+                // Wait 1: Transfer if resources were uploaded
+                if( transferSyncValue > 0 )
+                {
+                    waitSemas.push_back( m_device->GetTransferQueue()->GetTimelineSemaphore() );
+                    waitValues.push_back( transferSyncValue );
+                }
+
+                // Wait 2: Swapchain Image
                 waitSemas.push_back( m_swapchain->GetImageAvailableSemaphore( m_flightIndex ) );
                 waitValues.push_back( 0 );
 
@@ -757,11 +816,12 @@ namespace DigitalTwin
             }
             else
             {
+                // TODO: Not true, fix that
                 // In headless, graphics isn't used, so reset this tracker to avoid waiting on old values
                 currFrame.graphicsFinishedValue = 0;
             }
 
-            // 4. PRESENT
+            // 5. PRESENT
             if( !m_config.headless )
             {
                 VkSemaphore renderFinishedSem = m_swapchain->GetRenderFinishedSemaphore( m_flightIndex );
@@ -792,7 +852,6 @@ namespace DigitalTwin
     const FrameContext& DigitalTwin::BeginFrame()
     {
         m_impl->OnUpdate();
-        m_impl->m_resourceManager->BeginFrame();
 
         return m_impl->BeginFrame();
     }

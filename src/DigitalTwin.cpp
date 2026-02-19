@@ -2,6 +2,7 @@
 
 #include "core/FileSystem.h"
 #include "core/Log.h"
+#include "core/Timer.h"
 #include "core/jobs/JobSystem.h"
 #include "core/memory/MemorySystem.h"
 #include "platform/PlatformSystem.h"
@@ -109,6 +110,7 @@ namespace DigitalTwin
         DigitalTwinConfig       m_config;
         bool                    m_initialized;
         Scope<MemorySystem>     m_memorySystem;
+        Scope<Timer>            m_timer;
         Scope<JobSystem>        m_jobSystem;
         Scope<FileSystem>       m_fileSystem;
         Scope<PlatformSystem>   m_platformSystem;
@@ -148,16 +150,22 @@ namespace DigitalTwin
             m_memorySystem = CreateScope<MemorySystem>();
             m_memorySystem->Initialize();
 
-            // 4. Job System
+            // 4. Timer
+            m_timer = CreateScope<Timer>();
+
+            // 5. Job System
             m_jobSystem = CreateScope<JobSystem>();
             JobSystem::Config jobConfig;
             jobConfig.forceSingleThreaded = true; // Start in single-threaded mode for debugging
             if( m_jobSystem->Initialize( jobConfig ) != Result::SUCCESS )
             {
                 m_jobSystem.reset();
+                m_timer.reset();
+                m_memorySystem->Shutdown();
+                m_memorySystem.reset();
             }
 
-            // 5. FileSystem
+            // 6. FileSystem
             m_fileSystem = CreateScope<FileSystem>( m_memorySystem.get() );
             // Resolve Project Root (Priority 1 - User/App files)
             std::filesystem::path projectRoot;
@@ -200,6 +208,7 @@ namespace DigitalTwin
                     m_fileSystem.reset();
                     m_jobSystem->Shutdown();
                     m_jobSystem.reset();
+                    m_timer.reset();
                     m_memorySystem->Shutdown();
                     m_memorySystem.reset();
 
@@ -208,7 +217,7 @@ namespace DigitalTwin
                 }
             }
 
-            // 6. Platform System
+            // 7. Platform System
             if( !m_config.headless )
             {
                 m_platformSystem = CreateScope<PlatformSystem>();
@@ -221,6 +230,7 @@ namespace DigitalTwin
                     m_fileSystem.reset();
                     m_jobSystem->Shutdown();
                     m_jobSystem.reset();
+                    m_timer.reset();
                     m_memorySystem->Shutdown();
                     m_memorySystem.reset();
 
@@ -233,7 +243,7 @@ namespace DigitalTwin
                 DT_INFO( "Running in Headless mode. Platform System skipped." );
             }
 
-            // 7. RHI
+            // 8. RHI
             m_rhi = CreateScope<RHI>();
 
             RHIConfig rhiConfig;
@@ -253,6 +263,7 @@ namespace DigitalTwin
                 m_fileSystem.reset();
                 m_jobSystem->Shutdown();
                 m_jobSystem.reset();
+                m_timer.reset();
                 m_memorySystem->Shutdown();
                 m_memorySystem.reset();
 
@@ -260,7 +271,7 @@ namespace DigitalTwin
                 return Result::FAIL;
             }
 
-            // 8. Device
+            // 9. Device
             const auto& adapters = m_rhi->GetAdapters();
             if( adapters.empty() )
             {
@@ -272,6 +283,7 @@ namespace DigitalTwin
                 m_fileSystem.reset();
                 m_jobSystem->Shutdown();
                 m_jobSystem.reset();
+                m_timer.reset();
                 m_memorySystem->Shutdown();
                 m_memorySystem.reset();
                 DT_ERROR( "No GPU Adapters found!" );
@@ -290,13 +302,14 @@ namespace DigitalTwin
                 m_fileSystem.reset();
                 m_jobSystem->Shutdown();
                 m_jobSystem.reset();
+                m_timer.reset();
                 m_memorySystem->Shutdown();
                 m_memorySystem.reset();
                 DT_ERROR( "Failed to create Logical Device." );
                 return Result::FAIL;
             }
 
-            // 9. Resource Manager & Streaming Manager
+            // 10. Resource Manager & Streaming Manager
             m_resourceManager = CreateScope<ResourceManager>( m_device.get(), m_memorySystem.get() );
             if( m_resourceManager->Initialize() != Result::SUCCESS )
             {
@@ -311,6 +324,7 @@ namespace DigitalTwin
                 m_fileSystem.reset();
                 m_jobSystem->Shutdown();
                 m_jobSystem.reset();
+                m_timer.reset();
                 m_memorySystem->Shutdown();
                 m_memorySystem.reset();
                 DT_ERROR( "Failed to initialize Resource Manager." );
@@ -333,13 +347,14 @@ namespace DigitalTwin
                 m_fileSystem.reset();
                 m_jobSystem->Shutdown();
                 m_jobSystem.reset();
+                m_timer.reset();
                 m_memorySystem->Shutdown();
                 m_memorySystem.reset();
                 DT_ERROR( "Failed to initialize Streaming Manager." );
                 return Result::FAIL;
             }
 
-            // 10. Window, Swapchain & Renderer (if not headless)
+            // 11. Window, Swapchain & Renderer (if not headless)
             if( !m_config.headless && m_platformSystem )
             {
                 m_window = m_platformSystem->CreateWindow( { m_config.windowTitle, m_config.windowWidth, m_config.windowHeight } );
@@ -360,6 +375,7 @@ namespace DigitalTwin
                     m_fileSystem.reset();
                     m_jobSystem->Shutdown();
                     m_jobSystem.reset();
+                    m_timer.reset();
                     m_memorySystem->Shutdown();
                     m_memorySystem.reset();
                     DT_ERROR( "Failed to create Main Window." );
@@ -385,6 +401,7 @@ namespace DigitalTwin
                     m_fileSystem.reset();
                     m_jobSystem->Shutdown();
                     m_jobSystem.reset();
+                    m_timer.reset();
                     m_memorySystem->Shutdown();
                     m_memorySystem.reset();
                     DT_ERROR( "Failed to create Main Swapchain." );
@@ -412,6 +429,7 @@ namespace DigitalTwin
                     m_fileSystem.reset();
                     m_jobSystem->Shutdown();
                     m_jobSystem.reset();
+                    m_timer.reset();
                     m_memorySystem->Shutdown();
                     m_memorySystem.reset();
                     DT_ERROR( "Failed to initialize Renderer." );
@@ -504,6 +522,11 @@ namespace DigitalTwin
             {
                 m_jobSystem->Shutdown();
                 m_jobSystem.reset();
+            }
+
+            if( m_timer )
+            {
+                m_timer.reset();
             }
 
             if( m_memorySystem )

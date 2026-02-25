@@ -13,12 +13,14 @@
 
 namespace DigitalTwin
 {
-    ResourceManager::ResourceManager( Device* device, MemorySystem* memSystem )
+    ResourceManager::ResourceManager( Device* device, MemorySystem* memSystem, FileSystem* fileSystem )
         : m_device( device )
         , m_memorySystem( memSystem )
+        , m_fileSystem( fileSystem )
     {
         DT_CORE_ASSERT( m_device, "ResourceManager received null Device!" );
         DT_CORE_ASSERT( m_memorySystem, "ResourceManager received null MemorySystem!" );
+        DT_CORE_ASSERT( m_fileSystem, "ResourceManager received null FileSystem!" );
     }
 
     ResourceManager::~ResourceManager()
@@ -333,8 +335,16 @@ namespace DigitalTwin
             }
         };
 
+        std::filesystem::path resolvedPath = m_fileSystem->ResolvePath( filepath );
+        std::string           absolutePath = resolvedPath.generic_string();
+        if( !std::filesystem::exists( resolvedPath ) )
+        {
+            DT_ERROR( "[ResourceManager] Shader file not found in VFS: {}", absolutePath );
+            return ShaderHandle::Invalid;
+        }
+
         // 4. Initialize Vulkan Resource via Device
-        if( m_device->CreateShader( filepath, rawShader ) != Result::SUCCESS )
+        if( m_device->CreateShader( absolutePath, rawShader ) != Result::SUCCESS )
         {
             DT_ERROR( "Failed to initialize Vulkan Shader!" );
             deleter( rawShader ); // Cleanup if init fails

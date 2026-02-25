@@ -1,11 +1,12 @@
+#include "core/FileSystem.h"
 #include "core/jobs/JobSystem.h"
 #include "core/memory/MemorySystem.h"
 #include "resources/ResourceManager.h"
 #include "resources/StreamingManager.h"
+#include "rhi/Buffer.h"
 #include "rhi/Device.h"
 #include "rhi/Queue.h"
 #include "rhi/RHI.h"
-#include "rhi/Buffer.h"
 #include "rhi/Texture.h"
 #include <gtest/gtest.h>
 #include <numeric>
@@ -19,6 +20,7 @@ protected:
     Scope<RHI>              m_rhi;
     Scope<Device>           m_device;
     Scope<MemorySystem>     m_memory;
+    Scope<FileSystem>       m_fileSystem;
     Scope<ResourceManager>  m_rm;
     Scope<StreamingManager> m_stream;
 
@@ -26,6 +28,9 @@ protected:
     {
         m_memory = CreateScope<MemorySystem>();
         m_memory->Initialize();
+
+        m_fileSystem = CreateScope<FileSystem>( m_memory.get() );
+        m_fileSystem->Initialize( "", "" );
 
         m_rhi = CreateScope<RHI>();
         RHIConfig config;
@@ -36,7 +41,7 @@ protected:
         if( !m_rhi->GetAdapters().empty() )
         {
             m_rhi->CreateDevice( 0, m_device );
-            m_rm = CreateScope<ResourceManager>( m_device.get(), m_memory.get() );
+            m_rm = CreateScope<ResourceManager>( m_device.get(), m_memory.get(), m_fileSystem.get() );
             m_rm->Initialize();
             m_stream = CreateScope<StreamingManager>( m_device.get(), m_rm.get() );
             m_stream->Initialize();

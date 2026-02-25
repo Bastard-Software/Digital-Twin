@@ -1,6 +1,7 @@
 #pragma once
 #include "rhi/RHITypes.h"
 
+#include "core/FileSystem.h"
 #include "core/Memory/MemorySystem.h"
 #include "resources/ResourcePool.h"
 #include <deque>
@@ -20,7 +21,7 @@ namespace DigitalTwin
          * @brief Constructor.
          * @param device Pointer to the RHI Device (Resource Manager does NOT own the device).
          */
-        ResourceManager( Device* device, MemorySystem* memSystem );
+        ResourceManager( Device* device, MemorySystem* memSystem, FileSystem* fileSystem );
         ~ResourceManager();
 
         // --- Frame Lifecycle ---
@@ -91,6 +92,7 @@ namespace DigitalTwin
     private:
         Device*       m_device;
         MemorySystem* m_memorySystem;
+        FileSystem*   m_fileSystem;
 
         // Descriptor allocator
 

@@ -110,6 +110,12 @@ namespace DigitalTwin
         m_api->vkCmdBindDescriptorSets( m_handle, bindPoint, layout, setIndex, 1, &set, 0, nullptr );
     }
 
+    void CommandBuffer::SetIndexBuffer( Buffer* buffer, VkDeviceSize offset, VkIndexType indexType )
+    {
+        DT_CMD_CHECK_TYPE( QueueType::GRAPHICS, "SetIndexBuffer" );
+        m_api->vkCmdBindIndexBuffer( m_handle, buffer->GetHandle(), offset, indexType );
+    }
+
     void CommandBuffer::BeginRendering( const VkRenderingInfo& renderingInfo )
     {
         DT_CMD_CHECK_TYPE( QueueType::GRAPHICS, "BeginRendering" );
@@ -140,6 +146,20 @@ namespace DigitalTwin
     {
         DT_CMD_CHECK_TYPE( QueueType::GRAPHICS, "Draw" );
         m_api->vkCmdDraw( m_handle, vertexCount, instanceCount, firstVertex, firstInstance );
+    }
+
+    void CommandBuffer::DrawIndexedIndirect( Buffer* indirectBuffer, VkDeviceSize offset, uint32_t drawCount, uint32_t stride )
+    {
+        DT_CMD_CHECK_TYPE( QueueType::GRAPHICS, "DrawIndexedIndirect" );
+        m_api->vkCmdDrawIndexedIndirect( m_handle, indirectBuffer->GetHandle(), offset, drawCount, stride );
+    }
+
+    void CommandBuffer::DrawIndexedIndirectCount( Buffer* indirectBuffer, VkDeviceSize offset, Buffer* countBuffer, VkDeviceSize countBufferOffset,
+                                                  uint32_t maxDrawCount, uint32_t stride )
+    {
+        DT_CMD_CHECK_TYPE( QueueType::GRAPHICS, "DrawIndexedIndirectCount" );
+        m_api->vkCmdDrawIndexedIndirectCount( m_handle, indirectBuffer->GetHandle(), offset, countBuffer->GetHandle(), countBufferOffset,
+                                              maxDrawCount, stride );
     }
 
     void CommandBuffer::Dispatch( uint32_t groupCountX, uint32_t groupCountY, uint32_t groupCountZ )

@@ -6,13 +6,16 @@
 #include "core/jobs/JobSystem.h"
 #include "core/memory/MemorySystem.h"
 #include "platform/PlatformSystem.h"
+#include "renderer/Camera.h"
 #include "renderer/Renderer.h"
+#include "renderer/Scene.h"
 #include "resources/ResourceManager.h"
 #include "resources/StreamingManager.h"
 #include "rhi/Device.h"
 #include "rhi/RHI.h"
 #include "rhi/Swapchain.h"
 #include "rhi/ThreadContext.h"
+#include <imgui.h>
 #include <iostream>
 
 #if defined( CreateWindow )
@@ -121,6 +124,8 @@ namespace DigitalTwin
         Scope<Window>           m_window;
         Scope<Swapchain>        m_swapchain;
         Scope<Renderer>         m_renderer;
+        Scope<Camera>           m_camera;
+        Scope<Scene>            m_scene;
 
         // Frame Data
         static const uint32_t FRAMES_IN_FLIGHT = 2;
@@ -128,6 +133,11 @@ namespace DigitalTwin
         uint32_t              m_flightIndex       = 0; // Flight Index: Controls CPU resources and Sync Semaphores (0 -> 1 -> 0)
         uint32_t              m_currentImageIndex = 0; // Image Index: Controls which Swapchain Image we render to (obtained from Acquire)
         FrameContext          m_currentContext;
+
+        // FPS tracking
+        float    m_fpsTimer   = 0.0f;
+        uint32_t m_fpsFrames  = 0;
+        float    m_currentFps = 0.0f;
 
         Impl()
             : m_initialized( false )
@@ -310,7 +320,7 @@ namespace DigitalTwin
             }
 
             // 10. Resource Manager & Streaming Manager
-            m_resourceManager = CreateScope<ResourceManager>( m_device.get(), m_memorySystem.get() );
+            m_resourceManager = CreateScope<ResourceManager>( m_device.get(), m_memorySystem.get(), m_fileSystem.get() );
             if( m_resourceManager->Initialize() != Result::SUCCESS )
             {
                 m_resourceManager.reset();
@@ -354,7 +364,7 @@ namespace DigitalTwin
                 return Result::FAIL;
             }
 
-            // 11. Window, Swapchain & Renderer (if not headless)
+            // 11. Window, Swapchain, Renderer & Camera (if not headless)
             if( !m_config.headless && m_platformSystem )
             {
                 m_window = m_platformSystem->CreateWindow( { m_config.windowTitle, m_config.windowWidth, m_config.windowHeight } );
@@ -383,7 +393,7 @@ namespace DigitalTwin
                 }
 
                 m_swapchain = CreateScope<Swapchain>( m_device.get() );
-                if( m_swapchain->Create( m_window.get(), true ) != Result::SUCCESS )
+                if( m_swapchain->Create( m_window.get(), false ) != Result::SUCCESS )
                 {
                     m_swapchain.reset();
                     m_window.reset();
@@ -435,6 +445,101 @@ namespace DigitalTwin
                     DT_ERROR( "Failed to initialize Renderer." );
                     return Result::FAIL;
                 }
+
+                // Temp code - set up a basic camera for testing. This will be replaced with a more robust system later.
+                m_camera = CreateScope<Camera>( 45.0f, 800.0f / 600.0f, 0.1f, 1000.0f );
+                m_camera->SetFocalPoint( { 20.0f, 20.0f, 20.0f } );
+                m_camera->SetDistance( 80.0f );
+
+                m_scene = CreateScope<Scene>();
+
+                struct Vertex
+                {
+                    glm::vec4 pos;
+                    glm::vec4 normal;
+                };
+
+                std::vector<Vertex> cubeVerts = {
+                    // Front (Z = 0.5) - Normal (0, 0, 1)
+                    { { -0.5f, -0.5f, 0.5f, 1.0f }, { 0.0f, 0.0f, 1.0f, 0.0f } },
+                    { { 0.5f, -0.5f, 0.5f, 1.0f }, { 0.0f, 0.0f, 1.0f, 0.0f } },
+                    { { 0.5f, 0.5f, 0.5f, 1.0f }, { 0.0f, 0.0f, 1.0f, 0.0f } },
+                    { { -0.5f, 0.5f, 0.5f, 1.0f }, { 0.0f, 0.0f, 1.0f, 0.0f } },
+
+                    // Back (Z = -0.5) - Normal (0, 0, -1)
+                    { { 0.5f, -0.5f, -0.5f, 1.0f }, { 0.0f, 0.0f, -1.0f, 0.0f } },
+                    { { -0.5f, -0.5f, -0.5f, 1.0f }, { 0.0f, 0.0f, -1.0f, 0.0f } },
+                    { { -0.5f, 0.5f, -0.5f, 1.0f }, { 0.0f, 0.0f, -1.0f, 0.0f } },
+                    { { 0.5f, 0.5f, -0.5f, 1.0f }, { 0.0f, 0.0f, -1.0f, 0.0f } },
+
+                    // Left (X = -0.5) - Normal (-1, 0, 0)
+                    { { -0.5f, -0.5f, -0.5f, 1.0f }, { -1.0f, 0.0f, 0.0f, 0.0f } },
+                    { { -0.5f, -0.5f, 0.5f, 1.0f }, { -1.0f, 0.0f, 0.0f, 0.0f } },
+                    { { -0.5f, 0.5f, 0.5f, 1.0f }, { -1.0f, 0.0f, 0.0f, 0.0f } },
+                    { { -0.5f, 0.5f, -0.5f, 1.0f }, { -1.0f, 0.0f, 0.0f, 0.0f } },
+
+                    // Right (X = 0.5) - Normal (1, 0, 0)
+                    { { 0.5f, -0.5f, 0.5f, 1.0f }, { 1.0f, 0.0f, 0.0f, 0.0f } },
+                    { { 0.5f, -0.5f, -0.5f, 1.0f }, { 1.0f, 0.0f, 0.0f, 0.0f } },
+                    { { 0.5f, 0.5f, -0.5f, 1.0f }, { 1.0f, 0.0f, 0.0f, 0.0f } },
+                    { { 0.5f, 0.5f, 0.5f, 1.0f }, { 1.0f, 0.0f, 0.0f, 0.0f } },
+
+                    // Top (Y = 0.5) - Normal (0, 1, 0)
+                    { { -0.5f, 0.5f, 0.5f, 1.0f }, { 0.0f, 1.0f, 0.0f, 0.0f } },
+                    { { 0.5f, 0.5f, 0.5f, 1.0f }, { 0.0f, 1.0f, 0.0f, 0.0f } },
+                    { { 0.5f, 0.5f, -0.5f, 1.0f }, { 0.0f, 1.0f, 0.0f, 0.0f } },
+                    { { -0.5f, 0.5f, -0.5f, 1.0f }, { 0.0f, 1.0f, 0.0f, 0.0f } },
+
+                    // Bottom (Y = -0.5) - Normal (0, -1, 0)
+                    { { -0.5f, -0.5f, -0.5f, 1.0f }, { 0.0f, -1.0f, 0.0f, 0.0f } },
+                    { { 0.5f, -0.5f, -0.5f, 1.0f }, { 0.0f, -1.0f, 0.0f, 0.0f } },
+                    { { 0.5f, -0.5f, 0.5f, 1.0f }, { 0.0f, -1.0f, 0.0f, 0.0f } },
+                    { { -0.5f, -0.5f, 0.5f, 1.0f }, { 0.0f, -1.0f, 0.0f, 0.0f } },
+                };
+
+                std::vector<uint32_t> cubeInds = {
+                    0,  1,  2,  2,  3,  0,  // Front
+                    4,  5,  6,  6,  7,  4,  // Back
+                    8,  9,  10, 10, 11, 8,  // Left
+                    12, 13, 14, 14, 15, 12, // Right
+                    16, 17, 18, 18, 19, 16, // Top
+                    20, 21, 22, 22, 23, 20  // Bottom
+                };
+
+                m_scene->vertexBuffer = m_resourceManager->CreateBuffer( { cubeVerts.size() * sizeof( Vertex ), BufferType::STORAGE } );
+                m_scene->indexBuffer  = m_resourceManager->CreateBuffer( { cubeInds.size() * sizeof( uint32_t ), BufferType::MESH } );
+
+                m_streamingManager->UploadBufferImmediate( m_scene->vertexBuffer, cubeVerts.data(), cubeVerts.size() * sizeof( Vertex ) );
+                m_streamingManager->UploadBufferImmediate( m_scene->indexBuffer, cubeInds.data(), cubeInds.size() * sizeof( uint32_t ) );
+
+                std::vector<glm::vec4> agents;
+                agents.reserve( 8000 );
+                for( int x = 0; x < 20; ++x )
+                {
+                    for( int y = 0; y < 20; ++y )
+                    {
+                        for( int z = 0; z < 20; ++z )
+                        {
+                            agents.push_back( { x * 2.0f, y * 2.0f, z * 2.0f, 1.0f } );
+                        }
+                    }
+                }
+
+                m_scene->agentBuffers[ 0 ] = m_resourceManager->CreateBuffer( { agents.size() * sizeof( glm::vec4 ), BufferType::STORAGE } );
+                m_scene->agentBuffers[ 1 ] = m_resourceManager->CreateBuffer( { agents.size() * sizeof( glm::vec4 ), BufferType::STORAGE } );
+
+                m_streamingManager->UploadBufferImmediate( m_scene->agentBuffers[ 0 ], agents.data(), agents.size() * sizeof( glm::vec4 ) );
+                m_streamingManager->UploadBufferImmediate( m_scene->agentBuffers[ 1 ], agents.data(), agents.size() * sizeof( glm::vec4 ) );
+
+                VkDrawIndexedIndirectCommand drawCmd{};
+                drawCmd.indexCount    = 36;
+                drawCmd.instanceCount = 8000;
+                drawCmd.firstIndex    = 0;
+                drawCmd.vertexOffset  = 0;
+                drawCmd.firstInstance = 0;
+
+                m_scene->indirectCmdBuffer = m_resourceManager->CreateBuffer( { sizeof( VkDrawIndexedIndirectCommand ), BufferType::INDIRECT } );
+                m_streamingManager->UploadBufferImmediate( m_scene->indirectCmdBuffer, &drawCmd, sizeof( drawCmd ) );
 
                 // Create render resources
                 for( uint32_t ndx = 0; ndx < FRAMES_IN_FLIGHT; ++ndx )
@@ -643,6 +748,23 @@ namespace DigitalTwin
                 m_platformSystem->OnUpdate();
             }
 
+            m_timer->Tick();
+            float dt = m_timer->GetDeltaTime();
+
+            m_fpsFrames++;
+            m_fpsTimer += dt;
+            if( m_fpsTimer >= 1.0f )
+            {
+                m_currentFps = m_fpsFrames / m_fpsTimer;
+                m_fpsFrames  = 0;
+                m_fpsTimer -= 1.0f;
+            }
+
+            if( m_camera )
+            {
+                m_camera->OnUpdate( dt, m_platformSystem->GetInput() );
+            }
+
             // 2. Check for Resize
             if( m_window && m_window->WasResized() )
             {
@@ -762,7 +884,13 @@ namespace DigitalTwin
             CommandBuffer* gfxCmd  = gfxCtx->GetCommandBuffer( m_currentContext.graphicsCmd );
             CommandBuffer* compCmd = cmpCtx->GetCommandBuffer( m_currentContext.computeCmd );
 
-            // 1. Record UI Pass
+            // 1. Record scene pass
+            if( !m_config.headless && m_renderer )
+            {
+                m_renderer->RecordScenePass( gfxCmd, m_scene.get(), m_camera.get(), m_flightIndex );
+            }
+
+            // 2. Record UI Pass
             if( !m_config.headless && m_renderer )
             {
                 Texture* backbuffer = m_swapchain->GetTexture( m_currentImageIndex );
@@ -775,10 +903,10 @@ namespace DigitalTwin
             Queue* computeQueue  = m_device->GetComputeQueue();
             Queue* graphicsQueue = m_device->GetGraphicsQueue();
 
-            // 2. SUBMIT TRANSFER
+            // 3. SUBMIT TRANSFER
             uint64_t transferSyncValue = m_streamingManager->EndFrame();
 
-            // 3. SUBMIT COMPUTE
+            // 4. SUBMIT COMPUTE
             {
                 std::vector<CommandBuffer*> cmdBuffers = { compCmd };
                 std::vector<VkSemaphore>    waitSemas;
@@ -797,7 +925,7 @@ namespace DigitalTwin
                 currFrame.computeFinishedValue = computeQueue->GetLastSubmittedValue();
             }
 
-            // 4. SUBMIT GRAPHICS
+            // 5. SUBMIT GRAPHICS
             if( !m_config.headless )
             {
                 std::vector<CommandBuffer*> cmdBuffers = { gfxCmd };
@@ -844,7 +972,7 @@ namespace DigitalTwin
                 currFrame.graphicsFinishedValue = 0;
             }
 
-            // 5. PRESENT
+            // 6. PRESENT
             if( !m_config.headless )
             {
                 VkSemaphore renderFinishedSem = m_swapchain->GetRenderFinishedSemaphore( m_flightIndex );
@@ -903,7 +1031,56 @@ namespace DigitalTwin
     {
         if( m_impl->m_renderer )
         {
-            m_impl->m_renderer->RenderUI( uiCallback );
+            m_impl->m_renderer->RenderUI( [ & ]() {
+                ImGuiIO&    io               = ImGui::GetIO();
+                const float PAD              = 30.0f;
+                ImVec2      window_pos       = ImVec2( io.DisplaySize.x - PAD, PAD );
+                ImVec2      window_pos_pivot = ImVec2( 1.0f, 0.0f );
+
+                ImGui::SetNextWindowPos( window_pos, ImGuiCond_Always, window_pos_pivot );
+                ImGui::SetNextWindowBgAlpha( 0.3f );
+                if( ImGui::Begin( "Engine Stats", nullptr,
+                                  ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoSavedSettings |
+                                      ImGuiWindowFlags_NoFocusOnAppearing | ImGuiWindowFlags_NoNav | ImGuiWindowFlags_NoMove ) )
+                {
+                    ImGui::Text( "FPS: %.1f", m_impl->m_currentFps );
+                    ImGui::Text( "Frame Time: %.2f ms", 1000.0f / ( m_impl->m_currentFps > 0.01f ? m_impl->m_currentFps : 1.0f ) );
+                }
+                ImGui::End();
+
+                ImGui::PushStyleVar( ImGuiStyleVar_WindowPadding, ImVec2( 0.0f, 0.0f ) );
+                if( ImGui::Begin( "Scene Viewport" ) )
+                {
+                    ImVec2 size = ImGui::GetContentRegionAvail();
+
+                    uint32_t newWidth  = max( 1u, ( uint32_t )size.x );
+                    uint32_t newHeight = max( 1u, ( uint32_t )size.y );
+
+                    uint32_t currentWidth, currentHeight;
+                    m_impl->m_renderer->GetViewportSize( currentWidth, currentHeight );
+
+                    if( newWidth != currentWidth || newHeight != currentHeight )
+                    {
+                        m_impl->m_renderer->SetViewportSize( newWidth, newHeight );
+
+                        if( m_impl->m_camera )
+                        {
+                            m_impl->m_camera->OnResize( newWidth, newHeight );
+                        }
+                    }
+
+                    void* texID = m_impl->m_renderer->GetSceneTextureID( m_impl->m_flightIndex );
+                    if( texID )
+                    {
+                        ImGui::Image( texID, size );
+                    }
+                }
+                ImGui::End();
+                ImGui::PopStyleVar();
+
+                if( uiCallback )
+                    uiCallback();
+            } );
         }
     }
 

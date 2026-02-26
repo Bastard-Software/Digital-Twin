@@ -21,6 +21,7 @@ protected:
     Scope<Device>          m_device;
     RHIConfig              m_config;
     MemorySystem           m_mem;
+    Scope<FileSystem>      m_fileSystem;
     Scope<ResourceManager> m_rm;
 
     void SetUp() override
@@ -30,9 +31,11 @@ protected:
         m_config.enableValidation = true;
 
         m_mem.Initialize();
+        m_fileSystem = CreateScope<FileSystem>( &m_mem );
+        m_fileSystem->Initialize( "", "" );
         ASSERT_EQ( m_rhi->Initialize( m_config ), Result::SUCCESS );
         ASSERT_EQ( m_rhi->CreateDevice( 0, m_device ), Result::SUCCESS );
-        m_rm = CreateScope<ResourceManager>( m_device.get(), &m_mem );
+        m_rm = CreateScope<ResourceManager>( m_device.get(), &m_mem, m_fileSystem.get() );
         ASSERT_EQ( m_rm->Initialize(), Result::SUCCESS );
     }
 

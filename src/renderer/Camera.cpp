@@ -119,7 +119,7 @@ namespace DigitalTwin
                 // Rotate around the focal point.
 
                 float rotationSpeed = 2.0f;
-                m_yaw -= delta.x * rotationSpeed;
+                m_yaw += delta.x * rotationSpeed;
                 m_pitch += delta.y * rotationSpeed;
 
                 // Clamp pitch to avoid gimbal lock (camera flipping over at the poles)

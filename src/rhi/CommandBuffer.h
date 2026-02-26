@@ -38,6 +38,7 @@ namespace DigitalTwin
         void SetPipeline( ComputePipeline* pipeline );
         void SetPipeline( GraphicsPipeline* pipeline );
         void SetBindingGroup( BindingGroup* group, VkPipelineLayout layout, VkPipelineBindPoint bindPoint );
+        void SetIndexBuffer( Buffer* buffer, VkDeviceSize offset = 0, VkIndexType indexType = VK_INDEX_TYPE_UINT32 );
 
         void BeginRendering( const VkRenderingInfo& renderingInfo );
         void EndRendering();
@@ -46,6 +47,10 @@ namespace DigitalTwin
         void SetScissor( int32_t x, int32_t y, uint32_t width, uint32_t height );
 
         void Draw( uint32_t vertexCount, uint32_t instanceCount, uint32_t firstVertex, uint32_t firstInstance );
+        void DrawIndexedIndirect( Buffer* indirectBuffer, VkDeviceSize offset, uint32_t drawCount, uint32_t stride );
+        void DrawIndexedIndirectCount( Buffer* indirectBuffer, VkDeviceSize offset, Buffer* countBuffer, VkDeviceSize countBufferOffset,
+                                       uint32_t maxDrawCount, uint32_t stride );
+
         void Dispatch( uint32_t groupCountX, uint32_t groupCountY, uint32_t groupCountZ );
 
         void CopyBuffer( Buffer* src, Buffer* dst, VkDeviceSize size, VkDeviceSize srcOffset = 0, VkDeviceSize dstOffset = 0 );

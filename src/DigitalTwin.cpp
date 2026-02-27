@@ -12,6 +12,7 @@
 #include "resources/ResourceManager.h"
 #include "resources/StreamingManager.h"
 #include "rhi/Device.h"
+#include "rhi/GPUProfiler.h"
 #include "rhi/RHI.h"
 #include "rhi/Swapchain.h"
 #include "rhi/ThreadContext.h"
@@ -448,8 +449,8 @@ namespace DigitalTwin
 
                 // Temp code - set up a basic camera for testing. This will be replaced with a more robust system later.
                 m_camera = CreateScope<Camera>( 45.0f, 800.0f / 600.0f, 0.1f, 1000.0f );
-                m_camera->SetFocalPoint( { 20.0f, 20.0f, 20.0f } );
-                m_camera->SetDistance( 80.0f );
+                m_camera->SetFocalPoint( { 0.0f, 0.0f, 0.0f } );
+                m_camera->SetDistance( 120.0f );
 
                 m_scene = CreateScope<Scene>();
 
@@ -512,15 +513,25 @@ namespace DigitalTwin
                 m_streamingManager->UploadBufferImmediate( m_scene->vertexBuffer, cubeVerts.data(), cubeVerts.size() * sizeof( Vertex ) );
                 m_streamingManager->UploadBufferImmediate( m_scene->indexBuffer, cubeInds.data(), cubeInds.size() * sizeof( uint32_t ) );
 
+                const int   GRID_SIZE    = 100;
+                const float SPACING      = 0.5f;
+                const int   TOTAL_AGENTS = GRID_SIZE * GRID_SIZE * GRID_SIZE;
+
                 std::vector<glm::vec4> agents;
-                agents.reserve( 8000 );
-                for( int x = 0; x < 20; ++x )
+                agents.reserve( TOTAL_AGENTS );
+
+                float offset = ( GRID_SIZE * SPACING ) / 2.0f; // Center the giant cube
+
+                for( int x = 0; x < GRID_SIZE; ++x )
                 {
-                    for( int y = 0; y < 20; ++y )
+                    for( int y = 0; y < GRID_SIZE; ++y )
                     {
-                        for( int z = 0; z < 20; ++z )
+                        for( int z = 0; z < GRID_SIZE; ++z )
                         {
-                            agents.push_back( { x * 2.0f, y * 2.0f, z * 2.0f, 1.0f } );
+                            agents.push_back( {
+                                ( x * SPACING ) - offset, ( y * SPACING ) - offset, ( z * SPACING ) - offset,
+                                1.0f // w=1 -> active
+                            } );
                         }
                     }
                 }
@@ -533,7 +544,7 @@ namespace DigitalTwin
 
                 VkDrawIndexedIndirectCommand drawCmd{};
                 drawCmd.indexCount    = 36;
-                drawCmd.instanceCount = 8000;
+                drawCmd.instanceCount = TOTAL_AGENTS;
                 drawCmd.firstIndex    = 0;
                 drawCmd.vertexOffset  = 0;
                 drawCmd.firstInstance = 0;
@@ -1045,6 +1056,58 @@ namespace DigitalTwin
                 {
                     ImGui::Text( "FPS: %.1f", m_impl->m_currentFps );
                     ImGui::Text( "Frame Time: %.2f ms", 1000.0f / ( m_impl->m_currentFps > 0.01f ? m_impl->m_currentFps : 1.0f ) );
+
+                    if( GPUProfiler* profiler = m_impl->m_device->GetProfiler() )
+                    {
+                        {
+                            // Memory usage
+                            ImGui::Separator();
+                            ImGui::TextColored( ImVec4( 1.0f, 0.8f, 0.2f, 1.0f ), "GPU Memory" );
+                            const auto memStats = profiler->GetMemoryStats();
+                            double     usedMB   = static_cast<double>( memStats.currentUsage ) / ( 1024.0 * 1024.0 );
+                            double     totalMB  = static_cast<double>( memStats.totalBudget ) / ( 1024.0 * 1024.0 );
+                            ImGui::TextColored( ImVec4( 0.4f, 0.8f, 1.0f, 1.0f ), "VRAM: %.1f MB / %.1f MB", usedMB, totalMB );
+                            float fraction = ( memStats.totalBudget > 0 )
+                                                 ? static_cast<float>( memStats.currentUsage ) / static_cast<float>( memStats.totalBudget )
+                                                 : 0.0f;
+
+                            if( fraction > 0.85f )
+                            {
+                                ImGui::PushStyleColor( ImGuiCol_PlotHistogram, ImVec4( 0.8f, 0.2f, 0.2f, 1.0f ) );
+                            }
+                            else if( fraction > 0.65f )
+                            {
+                                ImGui::PushStyleColor( ImGuiCol_PlotHistogram, ImVec4( 0.8f, 0.8f, 0.2f, 1.0f ) );
+                            }
+                            else
+                            {
+                                ImGui::PushStyleColor( ImGuiCol_PlotHistogram, ImVec4( 0.2f, 0.8f, 0.2f, 1.0f ) );
+                            }
+
+                            ImGui::ProgressBar( fraction, ImVec2( -FLT_MIN, 0.0f ) );
+                            ImGui::PopStyleColor();
+                        }
+
+                        {
+                            // Pipeline stats
+                            ImGui::Separator();
+                            ImGui::TextColored( ImVec4( 1.0f, 0.8f, 0.2f, 1.0f ), "GPU Stats" );
+                            const auto& results = profiler->GetResults();
+                            for( const auto& [ zoneName, data ]: results )
+                            {
+                                ImGui::Text( "- [%s] -", zoneName.c_str() );
+                                ImGui::Text( "  Time: %.3f ms", data.timeMs );
+
+                                // Output in Millions (M) for readability
+                                ImGui::TextColored( ImVec4( 0.5f, 1.0f, 0.5f, 1.0f ), "  Verts: %.3f M",
+                                                    ( float )data.vertexShaderInvocations / 1000000.0f );
+                                ImGui::TextColored( ImVec4( 1.0f, 0.5f, 0.5f, 1.0f ), "  Frags: %.3f M",
+                                                    ( float )data.fragmentShaderInvocations / 1000000.0f );
+                                ImGui::TextColored( ImVec4( 0.8f, 0.8f, 0.8f, 1.0f ), "  Clip : %.3f M",
+                                                    ( float )data.clippingInvocations / 1000000.0f );
+                            }
+                        }
+                    }
                 }
                 ImGui::End();
 

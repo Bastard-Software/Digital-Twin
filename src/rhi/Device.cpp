@@ -2,6 +2,7 @@
 
 #include "core/Log.h"
 #include "rhi/Buffer.h"
+#include "rhi/GPUProfiler.h"
 #include "rhi/Pipeline.h"
 #include "rhi/Queue.h"
 #include "rhi/Sampler.h"
@@ -61,10 +62,12 @@ namespace DigitalTwin
         }
 
         // 3. Create Logical Device
-        VkPhysicalDeviceFeatures         deviceFeatures = {};
-        VkPhysicalDeviceVulkan12Features features12     = { VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES };
-        features12.timelineSemaphore                    = VK_TRUE;
-        features12.bufferDeviceAddress                  = VK_TRUE;
+        VkPhysicalDeviceFeatures deviceFeatures = {};
+        deviceFeatures.pipelineStatisticsQuery  = VK_TRUE;
+
+        VkPhysicalDeviceVulkan12Features features12 = { VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES };
+        features12.timelineSemaphore                = VK_TRUE;
+        features12.bufferDeviceAddress              = VK_TRUE;
 
         VkPhysicalDeviceVulkan13Features features13 = { VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_FEATURES };
         features13.pNext                            = &features12;
@@ -82,6 +85,7 @@ namespace DigitalTwin
         if( !m_desc.headless )
         {
             deviceExtensions.push_back( VK_KHR_SWAPCHAIN_EXTENSION_NAME );
+            deviceExtensions.push_back( VK_EXT_MEMORY_BUDGET_EXTENSION_NAME );
         }
 #ifdef __APPLE__
         deviceExtensions.push_back( "VK_KHR_portability_subset" );
@@ -189,7 +193,14 @@ namespace DigitalTwin
             return Result::FAIL;
         }
 
+        m_profiler = CreateScope<GPUProfiler>( this, 16 ); // Maximum 16 profiled zones
+        if( m_profiler->Initialize() != Result::SUCCESS )
+        {
+            DT_ERROR( "Failed to initialize GPU Profiler" );
+        }
+
         DT_INFO( "Device Initialized. Queues: G:{0} C:{1} T:{2}", indices.graphics, indices.compute, indices.transfer );
+
         return Result::SUCCESS;
     }
 
@@ -199,26 +210,33 @@ namespace DigitalTwin
         {
             WaitIdle();
 
-            // 1. Destroy VMA Allocator
+            // 1. Destroy GPU Profiler
+            if( m_profiler )
+            {
+                m_profiler->Shutdown();
+                m_profiler.reset();
+            }
+
+            // 2. Destroy VMA Allocator
             if( m_allocator != VK_NULL_HANDLE )
             {
                 vmaDestroyAllocator( m_allocator );
                 m_allocator = VK_NULL_HANDLE;
             }
 
-            // 2. Destroy Thread Contexts
+            // 3. Destroy Thread Contexts
             m_threadContexts.clear();
 
-            // 3. Destroy all queues immediately.
+            // 4. Destroy all queues immediately.
             // Queue destructors call vkDestroySemaphore, so VkDevice must still be valid here.
             m_ownedQueues.clear();
 
-            // 4. Clear raw pointers to prevent dangling usage (safety)
+            // 5. Clear raw pointers to prevent dangling usage (safety)
             m_graphicsQueue = nullptr;
             m_computeQueue  = nullptr;
             m_transferQueue = nullptr;
 
-            // 5. Destroy Device
+            // 6. Destroy Device
             m_api.vkDestroyDevice( m_device, nullptr );
             m_device = VK_NULL_HANDLE;
             DT_INFO( "Device Shutdown." );

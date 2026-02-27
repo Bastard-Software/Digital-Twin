@@ -25,6 +25,7 @@ namespace DigitalTwin
     class DescriptorAllocator;
     class BindingGroup;
     class Swapchain;
+    class GPUProfiler;
 
     struct ShaderReflectionData;
 
@@ -70,6 +71,27 @@ namespace DigitalTwin
     {
         uint32_t adapterIndex = 0;
         bool_t   headless     = false;
+    };
+
+    /**
+     * @brief Holds hardware profiling data collected directly from the GPU.
+     */
+    struct GPUProfileData
+    {
+        float    timeMs                    = 0.0f;
+        uint64_t vertexShaderInvocations   = 0;
+        uint64_t clippingInvocations       = 0;
+        uint64_t fragmentShaderInvocations = 0;
+        uint64_t computeShaderInvocations  = 0;
+    };
+
+    /**
+     * @brief Holds information about the GPU VRAM usage.
+     */
+    struct GPUMemoryStats
+    {
+        uint64_t totalBudget  = 0;
+        uint64_t currentUsage = 0;
     };
 
     /**

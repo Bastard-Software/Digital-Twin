@@ -37,6 +37,7 @@ namespace DigitalTwin
 
         glfwWindowHint( GLFW_CLIENT_API, GLFW_NO_API );
         glfwWindowHint( GLFW_RESIZABLE, GLFW_TRUE );
+        glfwWindowHint( GLFW_MAXIMIZED, GLFW_TRUE ); // TODO: Refactor to have nice wondow system
 
         m_window = glfwCreateWindow( ( int )m_data.width, ( int )m_data.height, m_data.title.c_str(), nullptr, nullptr );
         DT_CORE_ASSERT( m_window, "Could not create GLFW window!" );

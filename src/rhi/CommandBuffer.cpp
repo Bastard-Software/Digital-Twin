@@ -219,6 +219,26 @@ namespace DigitalTwin
         m_api->vkCmdClearColorImage( m_handle, texture->GetHandle(), layout, &color, 1, &range );
     }
 
+    void CommandBuffer::ResetQueryPool( VkQueryPool queryPool, uint32_t firstQuery, uint32_t queryCount )
+    {
+        m_api->vkCmdResetQueryPool( m_handle, queryPool, firstQuery, queryCount );
+    }
+
+    void CommandBuffer::WriteTimestamp( VkPipelineStageFlagBits stage, VkQueryPool queryPool, uint32_t query )
+    {
+        m_api->vkCmdWriteTimestamp( m_handle, stage, queryPool, query );
+    }
+
+    void CommandBuffer::BeginQuery( VkQueryPool queryPool, uint32_t query, VkQueryControlFlags flags )
+    {
+        m_api->vkCmdBeginQuery( m_handle, queryPool, query, flags );
+    }
+
+    void CommandBuffer::EndQuery( VkQueryPool queryPool, uint32_t query )
+    {
+        m_api->vkCmdEndQuery( m_handle, queryPool, query );
+    }
+
     bool CommandBuffer::ValidateType( QueueType requiredType, const char* operationName ) const
     {
         if( m_type != requiredType )

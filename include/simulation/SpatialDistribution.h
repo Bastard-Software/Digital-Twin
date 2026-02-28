@@ -1,4 +1,5 @@
 #pragma once
+#include "core/Core.h"
 #include <glm/glm.hpp>
 #include <vector>
 
@@ -7,7 +8,7 @@ namespace DigitalTwin
     /**
      * @brief Mathematical strategies for spatial distribution (seeding) of agents in the simulation volume.
      */
-    class SpatialDistribution
+    class DT_API SpatialDistribution
     {
     public:
         /**

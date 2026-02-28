@@ -74,6 +74,7 @@ namespace DigitalTwin
         bg->Bind( 0, m_resourceManager->GetBuffer( cameraUBO ) );
         bg->Bind( 1, m_resourceManager->GetBuffer( scene->vertexBuffer ) );
         bg->Bind( 2, m_resourceManager->GetBuffer( scene->GetAgentReadBuffer( flightIndex ) ) );
+        bg->Bind( 3, m_resourceManager->GetBuffer( scene->groupDataBuffer ) );
         bg->Build();
 
         GraphicsPipeline* pipeline = m_resourceManager->GetPipeline( m_pipeline );
@@ -84,6 +85,6 @@ namespace DigitalTwin
 
         // Rysowanie z bufora Indirect
         Buffer* indirect = m_resourceManager->GetBuffer( scene->indirectCmdBuffer );
-        cmd->DrawIndexedIndirect( indirect, 0, 1, sizeof( VkDrawIndexedIndirectCommand ) );
+        cmd->DrawIndexedIndirect( indirect, 0, scene->drawCount, sizeof( VkDrawIndexedIndirectCommand ) );
     }
 } // namespace DigitalTwin

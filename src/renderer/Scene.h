@@ -12,21 +12,17 @@ namespace DigitalTwin
     public:
         BufferHandle vertexBuffer;
         BufferHandle indexBuffer;
-
         BufferHandle indirectCmdBuffer;
-
+        BufferHandle groupDataBuffer;
         BufferHandle agentBuffers[ 2 ];
+        uint32_t     drawCount = 0;
 
         /**
          * @brief Helper to get the correct agent buffer for reading in the current frame.
          * @param flightIndex The current frame-in-flight index (0 or 1).
          * @return Handle to the buffer that should be read by the vertex shader.
          */
-        BufferHandle GetAgentReadBuffer( uint32_t flightIndex ) const
-        {
-            // Simple ping-pong logic based on flight index
-            return agentBuffers[ flightIndex % 2 ];
-        }
+        BufferHandle GetAgentReadBuffer( uint32_t flightIndex ) const { return agentBuffers[ flightIndex ]; }
     };
 
 } // namespace DigitalTwin

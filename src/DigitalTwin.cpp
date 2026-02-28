@@ -18,6 +18,8 @@
 #include "rhi/Swapchain.h"
 #include "rhi/ThreadContext.h"
 #include "simulation/MorphologyGenerator.h"
+#include "simulation/SimulationBuilder.h"
+#include "simulation/SimulationState.h"
 #include "simulation/SpatialDistribution.h"
 #include <imgui.h>
 #include <iostream>
@@ -58,7 +60,7 @@ namespace DigitalTwin
         Scope<Swapchain>        m_swapchain;
         Scope<Renderer>         m_renderer;
         Scope<Camera>           m_camera;
-        Scope<Scene>            m_scene;
+        SimulationState         m_simulationState;
 
         // Frame Data
         static const uint32_t FRAMES_IN_FLIGHT = 2;
@@ -384,38 +386,6 @@ namespace DigitalTwin
                 m_camera->SetFocalPoint( { 0.0f, 0.0f, 0.0f } );
                 m_camera->SetDistance( 250.0f );
 
-                m_scene = CreateScope<Scene>();
-
-                // MorphologyData cubeData = MorphologyGenerator::CreateCube( 1.0f );
-                MorphologyData cellData = MorphologyGenerator::CreateSphere( 1.5f, 16, 16 );
-                const auto     vertices = cellData.vertices;
-                const auto     indices  = cellData.indices;
-
-                m_scene->vertexBuffer = m_resourceManager->CreateBuffer( { vertices.size() * sizeof( Vertex ), BufferType::VERTEX } );
-                m_scene->indexBuffer  = m_resourceManager->CreateBuffer( { indices.size() * sizeof( uint32_t ), BufferType::INDEX } );
-
-                m_streamingManager->UploadBufferImmediate( m_scene->vertexBuffer, vertices.data(), vertices.size() * sizeof( Vertex ) );
-                m_streamingManager->UploadBufferImmediate( m_scene->indexBuffer, indices.data(), indices.size() * sizeof( uint32_t ) );
-
-                const int              TOTAL_AGENTS = 1000;
-                std::vector<glm::vec4> agents       = SpatialDistribution::UniformInSphere( TOTAL_AGENTS, 100.0f, glm::vec3( 0.0f ) );
-
-                m_scene->agentBuffers[ 0 ] = m_resourceManager->CreateBuffer( { agents.size() * sizeof( glm::vec4 ), BufferType::STORAGE } );
-                m_scene->agentBuffers[ 1 ] = m_resourceManager->CreateBuffer( { agents.size() * sizeof( glm::vec4 ), BufferType::STORAGE } );
-
-                m_streamingManager->UploadBufferImmediate( m_scene->agentBuffers[ 0 ], agents.data(), agents.size() * sizeof( glm::vec4 ) );
-                m_streamingManager->UploadBufferImmediate( m_scene->agentBuffers[ 1 ], agents.data(), agents.size() * sizeof( glm::vec4 ) );
-
-                VkDrawIndexedIndirectCommand drawCmd{};
-                drawCmd.indexCount    = static_cast<uint32_t>( indices.size() );
-                drawCmd.instanceCount = TOTAL_AGENTS;
-                drawCmd.firstIndex    = 0;
-                drawCmd.vertexOffset  = 0;
-                drawCmd.firstInstance = 0;
-
-                m_scene->indirectCmdBuffer = m_resourceManager->CreateBuffer( { sizeof( VkDrawIndexedIndirectCommand ), BufferType::INDIRECT } );
-                m_streamingManager->UploadBufferImmediate( m_scene->indirectCmdBuffer, &drawCmd, sizeof( drawCmd ) );
-
                 // Create render resources
                 for( uint32_t ndx = 0; ndx < FRAMES_IN_FLIGHT; ++ndx )
                 {
@@ -667,9 +637,9 @@ namespace DigitalTwin
             CommandBuffer* compCmd = cmpCtx->GetCommandBuffer( m_currentContext.computeCmd );
 
             // 1. Record scene pass
-            if( !m_config.headless && m_renderer )
+            if( !m_config.headless && m_renderer && m_simulationState.IsValid() )
             {
-                m_renderer->RecordScenePass( gfxCmd, m_scene.get(), m_camera.get(), m_flightIndex );
+                m_renderer->RenderSimulation( gfxCmd, &m_simulationState, m_camera.get(), m_flightIndex );
             }
 
             // 2. Record UI Pass
@@ -780,6 +750,20 @@ namespace DigitalTwin
     void DigitalTwin::Shutdown()
     {
         m_impl->Shutdown();
+    }
+
+    void DigitalTwin::LoadSimulation( const SimulationBlueprint& blueprint )
+    {
+        if( m_impl->m_device )
+            m_impl->m_device->WaitIdle();
+
+        if( m_impl->m_simulationState.IsValid() )
+        {
+            m_impl->m_simulationState.Destroy( m_impl->m_resourceManager.get() );
+        }
+
+        SimulationBuilder builder( m_impl->m_resourceManager.get(), m_impl->m_streamingManager.get() );
+        m_impl->m_simulationState = builder.Build( blueprint );
     }
 
     const FrameContext& DigitalTwin::BeginFrame()

@@ -3,19 +3,35 @@
 #include <imgui.h>
 #include <iostream>
 #include <platform/Input.h>
+#include <simulation/MorphologyGenerator.h>
+#include <simulation/SpatialDistribution.h>
 
 int main()
 {
-
     DigitalTwin::DigitalTwin       engine;
     DigitalTwin::DigitalTwinConfig config;
     config.headless        = false;
     config.windowDesc.mode = DigitalTwin::WindowMode::FULLSCREEN_WINDOWED;
     engine.Initialize( config );
-    DT_INFO( "Starting Editor..." );
-    ImGui::SetCurrentContext( ( ImGuiContext* )engine.GetImGuiContext() );
+
+    // Setting up simulation
+    DigitalTwin::SimulationBlueprint blueprint;
+    blueprint.AddAgentGroup( "CancerCells" )
+        .SetCount( 500 )
+        .SetMorphology( DigitalTwin::MorphologyGenerator::CreateCube( 4.0f ) )
+        .SetDistribution( DigitalTwin::SpatialDistribution::UniformInBox( 50, glm::vec3( 20.0f ) ) )
+        .SetColor( glm::vec4( 0.9f, 0.1f, 0.1f, 1.0f ) ); // RED
+    blueprint.AddAgentGroup( "T-Cells" )
+        .SetCount( 5000 )
+        .SetMorphology( DigitalTwin::MorphologyGenerator::CreateCube( 1.0f ) )
+        .SetDistribution( DigitalTwin::SpatialDistribution::UniformInSphere( 500, 150.0f ) )
+        .SetColor( glm::vec4( 0.2f, 0.8f, 0.3f, 1.0f ) ); // GREEN
+    DT_INFO( "Building simulation from blueprint..." );
+    engine.LoadSimulation( blueprint );
 
     // Main Engine Loop
+    DT_INFO( "Starting Editor..." );
+    ImGui::SetCurrentContext( ( ImGuiContext* )engine.GetImGuiContext() );
     while( !engine.IsWindowClosed() )
     {
         // 1. Poll events (input, window resize, etc.)
@@ -23,8 +39,8 @@ int main()
 
         // 2. Editor Logic Here
         engine.RenderUI( [ & ]() {
-            ImGui::Begin( "Hello, Digital Twin!" );
-            ImGui::Text( "This is a sample editor window." );
+            ImGui::Begin( "Simulation Control" );
+            ImGui::Text( "Total Agent Groups: %zu", blueprint.GetGroups().size() );
             ImGui::End();
         } );
 

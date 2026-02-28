@@ -355,15 +355,15 @@ TEST_F( DeviceResourceTest, CreateBuffer_UNIFORM )
     m_device->DestroyBuffer( &buffer );
 }
 
-// 5. Create MESH buffer and verify creation
-TEST_F( DeviceResourceTest, CreateBuffer_MESH )
+// 5. Create INDEX buffer and verify creation
+TEST_F( DeviceResourceTest, CreateBuffer_INDEX )
 {
     if( !m_device )
         GTEST_SKIP();
 
     BufferDesc desc;
     desc.size = 1024;
-    desc.type = BufferType::MESH;
+    desc.type = BufferType::INDEX;
 
     // Stack allocation for raw buffers
     Buffer buffer( m_device->GetAllocator(), m_device->GetHandle(), &m_device->GetAPI() );

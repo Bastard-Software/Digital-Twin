@@ -82,6 +82,7 @@ namespace DigitalTwin
                 break;
 
             case BufferType::STORAGE:
+            case BufferType::VERTEX:
                 // Standard SSBO on GPU (VRAM).
                 // Included TRANSFER bits for data upload/download.
                 // Included DEVICE_ADDRESS for pointer-like access in shaders.
@@ -97,8 +98,8 @@ namespace DigitalTwin
                 allocInfo.flags  = VMA_ALLOCATION_CREATE_MAPPED_BIT;
                 break;
 
-            case BufferType::MESH:
-                // Buffer for mesh data containing indces and GPU is able to write there
+            case BufferType::INDEX:
+                // Buffer for index data containing indces and GPU is able to write there
                 bufferInfo.usage = VK_BUFFER_USAGE_INDEX_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_STORAGE_BUFFER_BIT |
                                    VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT;
                 allocInfo.usage = VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE;

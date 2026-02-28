@@ -1,5 +1,6 @@
 #include "DigitalTwin.h"
 
+#include "SetupHelpers.h"
 #include "core/FileSystem.h"
 #include "core/Log.h"
 #include "core/Timer.h"
@@ -27,77 +28,6 @@
 
 namespace DigitalTwin
 {
-
-    std::filesystem::path FindProjectRoot()
-    {
-        std::filesystem::path p = std::filesystem::current_path();
-
-        // Safety limit to avoid scanning entire disk
-        for( int i = 0; i < 10; ++i )
-        {
-            // Check if this looks like a source folder:
-            // 1. Has CMakeLists.txt
-            // 2. Does NOT have 'CMakeFiles' folder (which implies it's a build dir)
-            // 3. Does NOT have 'CMakeCache.txt'
-            bool hasCMake = std::filesystem::exists( p / "CMakeLists.txt" );
-            bool isBuild  = std::filesystem::exists( p / "CMakeFiles" ) || std::filesystem::exists( p / "CMakeCache.txt" );
-
-            if( hasCMake && !isBuild )
-            {
-                return p;
-            }
-
-            // Also check if we simply need to strip "build" from path (Common in VS)
-            std::string pathStr  = p.generic_string();
-            size_t      buildPos = pathStr.find( "/build/" );
-            if( buildPos != std::string::npos )
-            {
-                std::string newPathStr = pathStr;
-                newPathStr.replace( buildPos, 7, "/" ); // Remove "build/"
-                std::filesystem::path trySource = newPathStr;
-                if( std::filesystem::exists( trySource ) )
-                {
-                    return trySource;
-                }
-            }
-
-            if( p.has_parent_path() )
-            {
-                p = p.parent_path();
-            }
-            else
-            {
-                break;
-            }
-        }
-
-        // Fallback: Just return CWD if heuristic fails
-        return std::filesystem::current_path();
-    }
-
-    std::filesystem::path FindEngineRoot( const std::filesystem::path& projectRoot )
-    {
-        std::filesystem::path p = projectRoot;
-
-        for( int i = 0; i < 10; ++i )
-        {
-            // We recognize Engine Root by existence of "src", "include" and "assets"
-            if( std::filesystem::exists( p / "src" ) && std::filesystem::exists( p / "include" ) && std::filesystem::exists( p / "assets" ) )
-            {
-                return p;
-            }
-            if( p.has_parent_path() )
-            {
-                p = p.parent_path();
-            }
-            else
-            {
-                break;
-            }
-        }
-        return {}; // Not found
-    }
-
     struct FrameData
     {
         ThreadContextHandle graphicsContext;
@@ -188,11 +118,11 @@ namespace DigitalTwin
             }
             else
             {
-                projectRoot = FindProjectRoot();
+                projectRoot = Helpers::FindProjectRoot();
             }
 
             // Resolve Engine Assets (Priority 2 - Fallback/Default files)
-            std::filesystem::path engineRoot = FindEngineRoot( projectRoot );
+            std::filesystem::path engineRoot = Helpers::FindEngineRoot( projectRoot );
             std::filesystem::path internalAssets;
 
             if( !engineRoot.empty() )
@@ -302,7 +232,7 @@ namespace DigitalTwin
                 DT_ERROR( "No GPU Adapters found!" );
                 return Result::FAIL;
             }
-            uint32_t selectedAdapter = SelectGPU( m_config.gpuType, adapters );
+            uint32_t selectedAdapter = Helpers::SelectGPU( m_config.gpuType, adapters );
 
             if( m_rhi->CreateDevice( selectedAdapter, m_device ) != Result::SUCCESS )
             {
@@ -370,7 +300,7 @@ namespace DigitalTwin
             // 11. Window, Swapchain, Renderer & Camera (if not headless)
             if( !m_config.headless && m_platformSystem )
             {
-                m_window = m_platformSystem->CreateWindow( { m_config.windowTitle, m_config.windowWidth, m_config.windowHeight } );
+                m_window = m_platformSystem->CreateWindow( m_config.windowDesc );
                 if( !m_window )
                 {
                     m_window.reset();
@@ -585,99 +515,6 @@ namespace DigitalTwin
                 m_memorySystem.reset();
             }
             m_initialized = false;
-        }
-
-        /**
-         * @brief Selects the best GPU adapter index based on the user preference.
-         * @param preference The GPUType preference (Default, Discrete, Integrated).
-         * @param adapters The list of available adapters.
-         * @return The index of the selected adapter.
-         */
-        uint32_t SelectGPU( GPUType preference, const std::vector<AdapterInfo>& adapters )
-        {
-            if( adapters.empty() )
-                return 0;
-
-            // 1. Handle Explicit Preference: DISCRETE
-            // Return the first discrete GPU found.
-            if( preference == GPUType::DISCRETE )
-            {
-                for( uint32_t i = 0; i < adapters.size(); ++i )
-                {
-                    if( adapters[ i ].IsDiscrete() )
-                    {
-                        DT_INFO( "GPU Selection: Forced DISCRETE. Found: {0}", adapters[ i ].name );
-                        return i;
-                    }
-                }
-                DT_WARN( "GPU Selection: Preferred DISCRETE GPU not found. Falling back to DEFAULT logic." );
-            }
-            // 2. Handle Explicit Preference: INTEGRATED
-            // Return the first integrated GPU found.
-            else if( preference == GPUType::INTEGRATED )
-            {
-                for( uint32_t i = 0; i < adapters.size(); ++i )
-                {
-                    // Check explicitly for integrated type
-                    if( adapters[ i ].type == VK_PHYSICAL_DEVICE_TYPE_INTEGRATED_GPU )
-                    {
-                        DT_INFO( "GPU Selection: Forced INTEGRATED. Found: {0}", adapters[ i ].name );
-                        return i;
-                    }
-                }
-                DT_WARN( "GPU Selection: Preferred INTEGRATED GPU not found. Falling back to DEFAULT logic." );
-            }
-
-            // 3. Handle DEFAULT (or Fallback)
-            // Algorithm:
-            // - Prioritize Discrete GPUs over Integrated.
-            // - Within the same category, pick the one with the largest VRAM.
-
-            int      bestDiscreteIndex = -1;
-            uint64_t maxDiscreteVRAM   = 0;
-
-            int      bestIntegratedIndex = -1;
-            uint64_t maxIntegratedVRAM   = 0;
-
-            for( uint32_t i = 0; i < adapters.size(); ++i )
-            {
-                const auto& info = adapters[ i ];
-                if( info.IsDiscrete() )
-                {
-                    if( info.deviceMemorySize >= maxDiscreteVRAM )
-                    {
-                        maxDiscreteVRAM   = info.deviceMemorySize;
-                        bestDiscreteIndex = ( int )i;
-                    }
-                }
-                else
-                {
-                    // Treat everything else (Integrated, Virtual, CPU) as secondary
-                    if( info.deviceMemorySize >= maxIntegratedVRAM )
-                    {
-                        maxIntegratedVRAM   = info.deviceMemorySize;
-                        bestIntegratedIndex = ( int )i;
-                    }
-                }
-            }
-
-            // Prioritize Discrete
-            if( bestDiscreteIndex != -1 )
-            {
-                DT_INFO( "GPU Selection: DEFAULT -> Selected Best Discrete: {0}", adapters[ bestDiscreteIndex ].name );
-                return ( uint32_t )bestDiscreteIndex;
-            }
-
-            // Then Integrated
-            if( bestIntegratedIndex != -1 )
-            {
-                DT_INFO( "GPU Selection: DEFAULT -> Selected Best Integrated: {0}", adapters[ bestIntegratedIndex ].name );
-                return ( uint32_t )bestIntegratedIndex;
-            }
-
-            // Absolute fallback
-            DT_WARN( "GPU Selection: Logic failed to find optimal GPU. Returning index 0." );
-            return 0;
         }
 
         void OnUpdate()

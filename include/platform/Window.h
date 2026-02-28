@@ -12,11 +12,19 @@ namespace DigitalTwin
     class PlatformSystem;
     class Swapchain;
 
+    enum class WindowMode
+    {
+        WINDOWED,
+        FULLSCREEN_WINDOWED,
+        FULLSCREEN,
+    };
+
     struct WindowDesc
     {
         std::string title  = "Digital Twin Simulation";
         uint32_t    width  = 1280;
         uint32_t    height = 720;
+        WindowMode  mode   = WindowMode::WINDOWED;
     };
 
     class DT_API Window

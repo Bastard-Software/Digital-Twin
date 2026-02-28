@@ -2,6 +2,7 @@
 
 #include "core/Core.h"
 #include "core/Handle.h"
+#include "platform/Window.h"
 
 namespace DigitalTwin
 {
@@ -32,9 +33,7 @@ namespace DigitalTwin
         bool_t      headless      = true;
         const char* rootDirectory = nullptr;
         bool_t      debugMode     = false;
-        uint32_t    windowWidth   = 1280;
-        uint32_t    windowHeight  = 720;
-        const char* windowTitle   = "Digital Twin Application";
+        WindowDesc  windowDesc;
     };
 
     struct FrameContext

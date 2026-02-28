@@ -9,7 +9,8 @@ int main()
 
     DigitalTwin::DigitalTwin       engine;
     DigitalTwin::DigitalTwinConfig config;
-    config.headless     = false;
+    config.headless        = false;
+    config.windowDesc.mode = DigitalTwin::WindowMode::FULLSCREEN_WINDOWED;
     engine.Initialize( config );
     DT_INFO( "Starting Editor..." );
     ImGui::SetCurrentContext( ( ImGuiContext* )engine.GetImGuiContext() );

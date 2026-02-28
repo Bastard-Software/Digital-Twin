@@ -7,6 +7,7 @@
 #include "rhi/Buffer.h"
 #include "rhi/CommandBuffer.h"
 #include "rhi/Device.h"
+#include "rhi/GPUProfiler.h"
 #include "rhi/Sampler.h"
 #include "rhi/Swapchain.h"
 #include "rhi/Texture.h"
@@ -250,6 +251,10 @@ namespace DigitalTwin
 
     void Renderer::RecordScenePass( CommandBuffer* cmd, Scene* scene, Camera* camera, uint32_t flightIndex )
     {
+        GPUProfiler* profiler = m_device->GetProfiler();
+        if( profiler )
+            profiler->BeginFrame( cmd, flightIndex );
+
         // 1. Update Camera Uniform Buffer
         Buffer*   ubo      = m_resourceManager->GetBuffer( m_cameraUBOs[ flightIndex ] );
         glm::mat4 viewProj = camera->GetViewProjection();
@@ -290,7 +295,11 @@ namespace DigitalTwin
         cmd->SetScissor( 0, 0, m_renderTargets[ flightIndex ]->GetWidth(), m_renderTargets[ flightIndex ]->GetHeight() );
 
         // 4. Execute passes
+        if( profiler )
+            profiler->BeginZone( cmd, flightIndex, "Geometry Pass" );
         m_geometryPass->Execute( cmd, m_cameraUBOs[ flightIndex ], scene, flightIndex );
+        if( profiler )
+            profiler->EndZone( cmd, flightIndex, "Geometry Pass" );
 
         cmd->EndRendering();
 

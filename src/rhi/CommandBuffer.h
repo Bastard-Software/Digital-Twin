@@ -62,6 +62,11 @@ namespace DigitalTwin
 
         void ClearColorImage( Texture* texture, VkImageLayout layout, const VkClearColorValue& color );
 
+        void ResetQueryPool( VkQueryPool queryPool, uint32_t firstQuery, uint32_t queryCount );
+        void WriteTimestamp( VkPipelineStageFlagBits stage, VkQueryPool queryPool, uint32_t query );
+        void BeginQuery( VkQueryPool queryPool, uint32_t query, VkQueryControlFlags flags = 0 );
+        void EndQuery( VkQueryPool queryPool, uint32_t query );
+
         // --- Getters ---
         VkCommandBuffer GetHandle() const { return m_handle; }
         QueueType       GetType() const { return m_type; }

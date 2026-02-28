@@ -36,7 +36,7 @@ namespace DigitalTwin
         Result CreateGraphicsPipeline( const GraphicsPipelineNativeDesc& desc, GraphicsPipeline* pipeline );
         void   DestroyGraphicsPipeline( GraphicsPipeline* pipeline );
 
-        ThreadContextHandle CreateThreadContext(QueueType type);
+        ThreadContextHandle CreateThreadContext( QueueType type );
         ThreadContext*      GetThreadContext( ThreadContextHandle handle );
 
         VkDevice         GetHandle() const { return m_device; }
@@ -50,6 +50,8 @@ namespace DigitalTwin
         Queue* GetGraphicsQueue() const { return m_graphicsQueue; }
         Queue* GetComputeQueue() const { return m_computeQueue; }
         Queue* GetTransferQueue() const { return m_transferQueue; }
+
+        GPUProfiler* GetProfiler() const { return m_profiler.get(); }
 
         void   WaitIdle();
         Result WaitForSemaphores( const std::vector<VkSemaphore>& semaphores, const std::vector<uint64_t>& values );
@@ -72,6 +74,8 @@ namespace DigitalTwin
         Queue* m_graphicsQueue = nullptr;
         Queue* m_computeQueue  = nullptr;
         Queue* m_transferQueue = nullptr;
+
+        Scope<GPUProfiler> m_profiler;
 
         // To control lifetime of owned queues
         std::vector<Scope<Queue>>         m_ownedQueues;

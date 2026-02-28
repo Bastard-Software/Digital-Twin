@@ -19,7 +19,6 @@ namespace DigitalTwin
 
     GeometryPass::~GeometryPass()
     {
-        Shutdown();
     }
 
     Result GeometryPass::Initialize()

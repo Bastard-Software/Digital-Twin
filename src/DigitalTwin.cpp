@@ -16,6 +16,8 @@
 #include "rhi/RHI.h"
 #include "rhi/Swapchain.h"
 #include "rhi/ThreadContext.h"
+#include "simulation/MorphologyGenerator.h"
+#include "simulation/SpatialDistribution.h"
 #include <imgui.h>
 #include <iostream>
 
@@ -450,91 +452,23 @@ namespace DigitalTwin
                 // Temp code - set up a basic camera for testing. This will be replaced with a more robust system later.
                 m_camera = CreateScope<Camera>( 45.0f, 800.0f / 600.0f, 0.1f, 1000.0f );
                 m_camera->SetFocalPoint( { 0.0f, 0.0f, 0.0f } );
-                m_camera->SetDistance( 120.0f );
+                m_camera->SetDistance( 250.0f );
 
                 m_scene = CreateScope<Scene>();
 
-                struct Vertex
-                {
-                    glm::vec4 pos;
-                    glm::vec4 normal;
-                };
+                // MorphologyData cubeData = MorphologyGenerator::CreateCube( 1.0f );
+                MorphologyData cellData = MorphologyGenerator::CreateSphere( 1.5f, 16, 16 );
+                const auto     vertices = cellData.vertices;
+                const auto     indices  = cellData.indices;
 
-                std::vector<Vertex> cubeVerts = {
-                    // Front (Z = 0.5) - Normal (0, 0, 1)
-                    { { -0.5f, -0.5f, 0.5f, 1.0f }, { 0.0f, 0.0f, 1.0f, 0.0f } },
-                    { { 0.5f, -0.5f, 0.5f, 1.0f }, { 0.0f, 0.0f, 1.0f, 0.0f } },
-                    { { 0.5f, 0.5f, 0.5f, 1.0f }, { 0.0f, 0.0f, 1.0f, 0.0f } },
-                    { { -0.5f, 0.5f, 0.5f, 1.0f }, { 0.0f, 0.0f, 1.0f, 0.0f } },
+                m_scene->vertexBuffer = m_resourceManager->CreateBuffer( { vertices.size() * sizeof( Vertex ), BufferType::VERTEX } );
+                m_scene->indexBuffer  = m_resourceManager->CreateBuffer( { indices.size() * sizeof( uint32_t ), BufferType::INDEX } );
 
-                    // Back (Z = -0.5) - Normal (0, 0, -1)
-                    { { 0.5f, -0.5f, -0.5f, 1.0f }, { 0.0f, 0.0f, -1.0f, 0.0f } },
-                    { { -0.5f, -0.5f, -0.5f, 1.0f }, { 0.0f, 0.0f, -1.0f, 0.0f } },
-                    { { -0.5f, 0.5f, -0.5f, 1.0f }, { 0.0f, 0.0f, -1.0f, 0.0f } },
-                    { { 0.5f, 0.5f, -0.5f, 1.0f }, { 0.0f, 0.0f, -1.0f, 0.0f } },
+                m_streamingManager->UploadBufferImmediate( m_scene->vertexBuffer, vertices.data(), vertices.size() * sizeof( Vertex ) );
+                m_streamingManager->UploadBufferImmediate( m_scene->indexBuffer, indices.data(), indices.size() * sizeof( uint32_t ) );
 
-                    // Left (X = -0.5) - Normal (-1, 0, 0)
-                    { { -0.5f, -0.5f, -0.5f, 1.0f }, { -1.0f, 0.0f, 0.0f, 0.0f } },
-                    { { -0.5f, -0.5f, 0.5f, 1.0f }, { -1.0f, 0.0f, 0.0f, 0.0f } },
-                    { { -0.5f, 0.5f, 0.5f, 1.0f }, { -1.0f, 0.0f, 0.0f, 0.0f } },
-                    { { -0.5f, 0.5f, -0.5f, 1.0f }, { -1.0f, 0.0f, 0.0f, 0.0f } },
-
-                    // Right (X = 0.5) - Normal (1, 0, 0)
-                    { { 0.5f, -0.5f, 0.5f, 1.0f }, { 1.0f, 0.0f, 0.0f, 0.0f } },
-                    { { 0.5f, -0.5f, -0.5f, 1.0f }, { 1.0f, 0.0f, 0.0f, 0.0f } },
-                    { { 0.5f, 0.5f, -0.5f, 1.0f }, { 1.0f, 0.0f, 0.0f, 0.0f } },
-                    { { 0.5f, 0.5f, 0.5f, 1.0f }, { 1.0f, 0.0f, 0.0f, 0.0f } },
-
-                    // Top (Y = 0.5) - Normal (0, 1, 0)
-                    { { -0.5f, 0.5f, 0.5f, 1.0f }, { 0.0f, 1.0f, 0.0f, 0.0f } },
-                    { { 0.5f, 0.5f, 0.5f, 1.0f }, { 0.0f, 1.0f, 0.0f, 0.0f } },
-                    { { 0.5f, 0.5f, -0.5f, 1.0f }, { 0.0f, 1.0f, 0.0f, 0.0f } },
-                    { { -0.5f, 0.5f, -0.5f, 1.0f }, { 0.0f, 1.0f, 0.0f, 0.0f } },
-
-                    // Bottom (Y = -0.5) - Normal (0, -1, 0)
-                    { { -0.5f, -0.5f, -0.5f, 1.0f }, { 0.0f, -1.0f, 0.0f, 0.0f } },
-                    { { 0.5f, -0.5f, -0.5f, 1.0f }, { 0.0f, -1.0f, 0.0f, 0.0f } },
-                    { { 0.5f, -0.5f, 0.5f, 1.0f }, { 0.0f, -1.0f, 0.0f, 0.0f } },
-                    { { -0.5f, -0.5f, 0.5f, 1.0f }, { 0.0f, -1.0f, 0.0f, 0.0f } },
-                };
-
-                std::vector<uint32_t> cubeInds = {
-                    0,  1,  2,  2,  3,  0,  // Front
-                    4,  5,  6,  6,  7,  4,  // Back
-                    8,  9,  10, 10, 11, 8,  // Left
-                    12, 13, 14, 14, 15, 12, // Right
-                    16, 17, 18, 18, 19, 16, // Top
-                    20, 21, 22, 22, 23, 20  // Bottom
-                };
-
-                m_scene->vertexBuffer = m_resourceManager->CreateBuffer( { cubeVerts.size() * sizeof( Vertex ), BufferType::STORAGE } );
-                m_scene->indexBuffer  = m_resourceManager->CreateBuffer( { cubeInds.size() * sizeof( uint32_t ), BufferType::MESH } );
-
-                m_streamingManager->UploadBufferImmediate( m_scene->vertexBuffer, cubeVerts.data(), cubeVerts.size() * sizeof( Vertex ) );
-                m_streamingManager->UploadBufferImmediate( m_scene->indexBuffer, cubeInds.data(), cubeInds.size() * sizeof( uint32_t ) );
-
-                const int   GRID_SIZE    = 100;
-                const float SPACING      = 0.5f;
-                const int   TOTAL_AGENTS = GRID_SIZE * GRID_SIZE * GRID_SIZE;
-
-                std::vector<glm::vec4> agents;
-                agents.reserve( TOTAL_AGENTS );
-
-                float offset = ( GRID_SIZE * SPACING ) / 2.0f; // Center the giant cube
-
-                for( int x = 0; x < GRID_SIZE; ++x )
-                {
-                    for( int y = 0; y < GRID_SIZE; ++y )
-                    {
-                        for( int z = 0; z < GRID_SIZE; ++z )
-                        {
-                            agents.push_back( {
-                                ( x * SPACING ) - offset, ( y * SPACING ) - offset, ( z * SPACING ) - offset,
-                                1.0f // w=1 -> active
-                            } );
-                        }
-                    }
-                }
+                const int              TOTAL_AGENTS = 1000;
+                std::vector<glm::vec4> agents       = SpatialDistribution::UniformInSphere( TOTAL_AGENTS, 100.0f, glm::vec3( 0.0f ) );
 
                 m_scene->agentBuffers[ 0 ] = m_resourceManager->CreateBuffer( { agents.size() * sizeof( glm::vec4 ), BufferType::STORAGE } );
                 m_scene->agentBuffers[ 1 ] = m_resourceManager->CreateBuffer( { agents.size() * sizeof( glm::vec4 ), BufferType::STORAGE } );
@@ -543,7 +477,7 @@ namespace DigitalTwin
                 m_streamingManager->UploadBufferImmediate( m_scene->agentBuffers[ 1 ], agents.data(), agents.size() * sizeof( glm::vec4 ) );
 
                 VkDrawIndexedIndirectCommand drawCmd{};
-                drawCmd.indexCount    = 36;
+                drawCmd.indexCount    = static_cast<uint32_t>( indices.size() );
                 drawCmd.instanceCount = TOTAL_AGENTS;
                 drawCmd.firstIndex    = 0;
                 drawCmd.vertexOffset  = 0;

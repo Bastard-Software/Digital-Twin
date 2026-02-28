@@ -33,13 +33,32 @@ namespace DigitalTwin
 
         DT_INFO( "Creating window {0} ({1}x{2})", config.title, config.width, config.height );
 
-        // Note: glfwInit is now handled by PlatformSystem, not here.
-
         glfwWindowHint( GLFW_CLIENT_API, GLFW_NO_API );
         glfwWindowHint( GLFW_RESIZABLE, GLFW_TRUE );
-        glfwWindowHint( GLFW_MAXIMIZED, GLFW_TRUE ); // TODO: Refactor to have nice wondow system
 
-        m_window = glfwCreateWindow( ( int )m_data.width, ( int )m_data.height, m_data.title.c_str(), nullptr, nullptr );
+        GLFWmonitor* primaryMonitor = nullptr;
+        if( config.mode == WindowMode::FULLSCREEN )
+        {
+            primaryMonitor               = glfwGetPrimaryMonitor();
+            const GLFWvidmode* videoMode = glfwGetVideoMode( primaryMonitor );
+            m_data.width                 = videoMode->width;
+            m_data.height                = videoMode->height;
+            glfwWindowHint( GLFW_RED_BITS, videoMode->redBits );
+            glfwWindowHint( GLFW_GREEN_BITS, videoMode->greenBits );
+            glfwWindowHint( GLFW_BLUE_BITS, videoMode->blueBits );
+            glfwWindowHint( GLFW_REFRESH_RATE, videoMode->refreshRate );
+        }
+        else if( config.mode == WindowMode::FULLSCREEN_WINDOWED )
+        {
+            glfwWindowHint( GLFW_MAXIMIZED, GLFW_TRUE );
+        }
+        else // WINDOWED
+        {
+            // Standardowe okno wymiarowe
+            glfwWindowHint( GLFW_MAXIMIZED, GLFW_FALSE );
+        }
+
+        m_window = glfwCreateWindow( ( int )m_data.width, ( int )m_data.height, m_data.title.c_str(), primaryMonitor, nullptr );
         DT_CORE_ASSERT( m_window, "Could not create GLFW window!" );
 
         glfwSetWindowUserPointer( m_window, &m_data );

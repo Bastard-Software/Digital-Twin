@@ -60,7 +60,9 @@ namespace DigitalTwin
         Scope<Swapchain>        m_swapchain;
         Scope<Renderer>         m_renderer;
         Scope<Camera>           m_camera;
+        SimulationBlueprint     m_blueprint;
         SimulationState         m_simulationState;
+        EngineState             m_state = EngineState::STOPPED;
 
         // Frame Data
         static const uint32_t FRAMES_IN_FLIGHT = 2;
@@ -637,8 +639,14 @@ namespace DigitalTwin
             CommandBuffer* compCmd = cmpCtx->GetCommandBuffer( m_currentContext.computeCmd );
 
             // 1. Record scene pass
-            if( !m_config.headless && m_renderer && m_simulationState.IsValid() )
+            if( !m_config.headless && m_renderer )
             {
+                SimulationState* stateToRender = nullptr;
+                if( m_state != EngineState::STOPPED && m_simulationState.IsValid() )
+                {
+                    stateToRender = &m_simulationState;
+                }
+
                 m_renderer->RenderSimulation( gfxCmd, &m_simulationState, m_camera.get(), m_flightIndex );
             }
 
@@ -752,18 +760,9 @@ namespace DigitalTwin
         m_impl->Shutdown();
     }
 
-    void DigitalTwin::LoadSimulation( const SimulationBlueprint& blueprint )
+    void DigitalTwin::SetBlueprint( const SimulationBlueprint& blueprint )
     {
-        if( m_impl->m_device )
-            m_impl->m_device->WaitIdle();
-
-        if( m_impl->m_simulationState.IsValid() )
-        {
-            m_impl->m_simulationState.Destroy( m_impl->m_resourceManager.get() );
-        }
-
-        SimulationBuilder builder( m_impl->m_resourceManager.get(), m_impl->m_streamingManager.get() );
-        m_impl->m_simulationState = builder.Build( blueprint );
+        m_impl->m_blueprint = blueprint;
     }
 
     const FrameContext& DigitalTwin::BeginFrame()
@@ -781,6 +780,58 @@ namespace DigitalTwin
     void DigitalTwin::Step()
     {
         DT_ASSERT( false, "Not implemented yet!" );
+    }
+
+    void DigitalTwin::Play()
+    {
+        if( m_impl->m_state == EngineState::STOPPED )
+        {
+            if( m_impl->m_device )
+                m_impl->m_device->WaitIdle();
+
+            SimulationBuilder builder( m_impl->m_resourceManager.get(), m_impl->m_streamingManager.get() );
+            m_impl->m_simulationState = builder.Build( m_impl->m_blueprint );
+
+            m_impl->m_state = EngineState::PLAYING;
+            DT_INFO( "Simulation State: PLAYING (Allocated)" );
+        }
+        else if( m_impl->m_state == EngineState::PAUSED )
+        {
+            m_impl->m_state = EngineState::PLAYING;
+            DT_INFO( "Simulation State: PLAYING (Resumed)" );
+        }
+    }
+
+    void DigitalTwin::Pause()
+    {
+        if( m_impl->m_state == EngineState::PLAYING )
+        {
+            m_impl->m_state = EngineState::PAUSED;
+            DT_INFO( "Simulation State: PAUSED" );
+        }
+    }
+
+    void DigitalTwin::Stop()
+    {
+        if( m_impl->m_state != EngineState::STOPPED )
+        {
+            if( m_impl->m_device )
+                m_impl->m_device->WaitIdle();
+
+            // Destroy GPU buffers
+            if( m_impl->m_simulationState.IsValid() )
+            {
+                m_impl->m_simulationState.Destroy( m_impl->m_resourceManager.get() );
+            }
+
+            m_impl->m_state = EngineState::STOPPED;
+            DT_INFO( "Simulation State: STOPPED (Memory freed)" );
+        }
+    }
+
+    EngineState DigitalTwin::GetState() const
+    {
+        return m_impl->m_state;
     }
 
     bool DigitalTwin::IsWindowClosed()

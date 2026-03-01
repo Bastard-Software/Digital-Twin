@@ -296,21 +296,24 @@ namespace DigitalTwin
         cmd->SetScissor( 0, 0, m_renderTargets[ flightIndex ]->GetWidth(), m_renderTargets[ flightIndex ]->GetHeight() );
 
         // 4. Execute passes
-        // TODO: Frustum and occlusion culling
-        Scene renderScene;
-        renderScene.vertexBuffer      = state->vertexBuffer;
-        renderScene.indexBuffer       = state->indexBuffer;
-        renderScene.indirectCmdBuffer = state->indirectCmdBuffer;
-        renderScene.groupDataBuffer   = state->groupDataBuffer;
-        renderScene.agentBuffers[ 0 ] = state->agentBuffers[ 0 ];
-        renderScene.agentBuffers[ 1 ] = state->agentBuffers[ 1 ];
-        renderScene.drawCount         = state->groupCount;
+        if( state != nullptr && state->IsValid() )
+        {
+            // TODO: Frustum and occlusion culling that create scene
+            Scene renderScene;
+            renderScene.vertexBuffer      = state->vertexBuffer;
+            renderScene.indexBuffer       = state->indexBuffer;
+            renderScene.indirectCmdBuffer = state->indirectCmdBuffer;
+            renderScene.groupDataBuffer   = state->groupDataBuffer;
+            renderScene.agentBuffers[ 0 ] = state->agentBuffers[ 0 ];
+            renderScene.agentBuffers[ 1 ] = state->agentBuffers[ 1 ];
+            renderScene.drawCount         = state->groupCount;
 
-        if( profiler )
-            profiler->BeginZone( cmd, flightIndex, "Geometry Pass" );
-        m_geometryPass->Execute( cmd, m_cameraUBOs[ flightIndex ], &renderScene, flightIndex );
-        if( profiler )
-            profiler->EndZone( cmd, flightIndex, "Geometry Pass" );
+            if( profiler )
+                profiler->BeginZone( cmd, flightIndex, "Geometry Pass" );
+            m_geometryPass->Execute( cmd, m_cameraUBOs[ flightIndex ], &renderScene, flightIndex );
+            if( profiler )
+                profiler->EndZone( cmd, flightIndex, "Geometry Pass" );
+        }
 
         cmd->EndRendering();
 

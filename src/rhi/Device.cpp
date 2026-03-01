@@ -64,10 +64,16 @@ namespace DigitalTwin
         // 3. Create Logical Device
         VkPhysicalDeviceFeatures deviceFeatures = {};
         deviceFeatures.pipelineStatisticsQuery  = VK_TRUE;
+        deviceFeatures.multiDrawIndirect        = VK_TRUE;
+
+        VkPhysicalDeviceVulkan11Features features11 = { VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_1_FEATURES };
+        features11.shaderDrawParameters             = VK_TRUE;
 
         VkPhysicalDeviceVulkan12Features features12 = { VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES };
+        features12.pNext                            = &features11;
         features12.timelineSemaphore                = VK_TRUE;
         features12.bufferDeviceAddress              = VK_TRUE;
+        features12.drawIndirectCount                = VK_TRUE;
 
         VkPhysicalDeviceVulkan13Features features13 = { VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_FEATURES };
         features13.pNext                            = &features12;
@@ -82,10 +88,10 @@ namespace DigitalTwin
         deviceFeatures2.pNext                     = &features13;
 
         std::vector<const char*> deviceExtensions;
+        deviceExtensions.push_back( VK_EXT_MEMORY_BUDGET_EXTENSION_NAME );
         if( !m_desc.headless )
         {
             deviceExtensions.push_back( VK_KHR_SWAPCHAIN_EXTENSION_NAME );
-            deviceExtensions.push_back( VK_EXT_MEMORY_BUDGET_EXTENSION_NAME );
         }
 #ifdef __APPLE__
         deviceExtensions.push_back( "VK_KHR_portability_subset" );

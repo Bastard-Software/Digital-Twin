@@ -14,6 +14,7 @@ namespace DigitalTwin
     class GeometryPass;
     class Scene;
     class Camera;
+    class SimulationState;
 
     /**
      * @brief High-level rendering manager.
@@ -45,13 +46,13 @@ namespace DigitalTwin
         }
 
         /**
-         * @brief Records the scene drawing commands (GeometryPass, etc.) into the command buffer.
+         * @brief Records the simulation drawing commands (GeometryPass, etc.) into the command buffer.
          * @param cmd Command buffer in recording state.
-         * @param scene The simulation scene containing data buffers.
+         * @param state The simulation state containing data buffers.
          * @param camera The active camera for view/projection matrices.
          * @param flightIndex Current frame-in-flight index (for ping-pong resources).
          */
-        void RecordScenePass( CommandBuffer* cmd, Scene* scene, Camera* camera, uint32_t flightIndex );
+        void RenderSimulation( CommandBuffer* cmd, SimulationState* state, Camera* camera, uint32_t flightIndex );
 
         /**
          * @brief Retrieves the ImGui texture ID for the rendered scene.

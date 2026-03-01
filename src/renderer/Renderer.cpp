@@ -11,6 +11,7 @@
 #include "rhi/Sampler.h"
 #include "rhi/Swapchain.h"
 #include "rhi/Texture.h"
+#include "simulation/SimulationState.h"
 #include <volk.h>
 
 // Rendering Systems
@@ -249,7 +250,7 @@ namespace DigitalTwin
         return ImGui::GetCurrentContext();
     }
 
-    void Renderer::RecordScenePass( CommandBuffer* cmd, Scene* scene, Camera* camera, uint32_t flightIndex )
+    void Renderer::RenderSimulation( CommandBuffer* cmd, SimulationState* state, Camera* camera, uint32_t flightIndex )
     {
         GPUProfiler* profiler = m_device->GetProfiler();
         if( profiler )
@@ -295,9 +296,19 @@ namespace DigitalTwin
         cmd->SetScissor( 0, 0, m_renderTargets[ flightIndex ]->GetWidth(), m_renderTargets[ flightIndex ]->GetHeight() );
 
         // 4. Execute passes
+        // TODO: Frustum and occlusion culling
+        Scene renderScene;
+        renderScene.vertexBuffer      = state->vertexBuffer;
+        renderScene.indexBuffer       = state->indexBuffer;
+        renderScene.indirectCmdBuffer = state->indirectCmdBuffer;
+        renderScene.groupDataBuffer   = state->groupDataBuffer;
+        renderScene.agentBuffers[ 0 ] = state->agentBuffers[ 0 ];
+        renderScene.agentBuffers[ 1 ] = state->agentBuffers[ 1 ];
+        renderScene.drawCount         = state->groupCount;
+
         if( profiler )
             profiler->BeginZone( cmd, flightIndex, "Geometry Pass" );
-        m_geometryPass->Execute( cmd, m_cameraUBOs[ flightIndex ], scene, flightIndex );
+        m_geometryPass->Execute( cmd, m_cameraUBOs[ flightIndex ], &renderScene, flightIndex );
         if( profiler )
             profiler->EndZone( cmd, flightIndex, "Geometry Pass" );
 

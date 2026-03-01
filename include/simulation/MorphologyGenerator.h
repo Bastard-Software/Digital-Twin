@@ -1,12 +1,14 @@
 #pragma once
 #include "simulation/SimulationTypes.h"
 
+#include "core/Core.h"
+
 namespace DigitalTwin
 {
     /**
      * @brief Utility class for generating procedural morphologies for agents.
      */
-    class MorphologyGenerator
+    class DT_API MorphologyGenerator
     {
     public:
         /**

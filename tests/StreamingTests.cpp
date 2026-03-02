@@ -30,7 +30,7 @@ protected:
         m_memory->Initialize();
 
         m_fileSystem = CreateScope<FileSystem>( m_memory.get() );
-        m_fileSystem->Initialize( "", "" );
+        m_fileSystem->Initialize( std::filesystem::current_path(), std::filesystem::current_path() );
 
         m_rhi = CreateScope<RHI>();
         RHIConfig config;
@@ -206,4 +206,77 @@ TEST_F( StreamingTest, DeferredTextureReadback )
     m_rm->GetBuffer( readback )->Read( result.data(), size, 0 );
 
     EXPECT_EQ( initData, result );
+}
+
+TEST_F( StreamingTest, BatchedUploadImmediate )
+{
+    if( !m_device )
+        GTEST_SKIP();
+
+    const size_t size1 = 256;
+    const size_t size2 = 512;
+
+    std::vector<int> srcData1( size1 / sizeof( int ), 42 );
+    std::vector<int> srcData2( size2 / sizeof( int ), 84 );
+
+    // Optional: test the debug name assignment if you added it to BufferDesc
+    BufferDesc desc1{ size1, BufferType::STORAGE, "BatchDst1" };
+    BufferDesc desc2{ size2, BufferType::STORAGE, "BatchDst2" };
+
+    BufferHandle dst1 = m_rm->CreateBuffer( desc1 );
+    BufferHandle dst2 = m_rm->CreateBuffer( desc2 );
+
+    // Build the request list
+    std::vector<BufferUploadRequest> requests = { { dst1, srcData1.data(), size1, 0 }, { dst2, srcData2.data(), size2, 0 } };
+
+    // Execute Batched Upload
+    m_stream->UploadBufferImmediate( requests );
+
+    // Verify via individual readbacks
+    std::vector<int> readback1( size1 / sizeof( int ) );
+    std::vector<int> readback2( size2 / sizeof( int ) );
+
+    m_stream->ReadbackBufferImmediate( dst1, readback1.data(), size1 );
+    m_stream->ReadbackBufferImmediate( dst2, readback2.data(), size2 );
+
+    EXPECT_EQ( srcData1, readback1 );
+    EXPECT_EQ( srcData2, readback2 );
+
+    m_rm->DestroyBuffer( dst1 );
+    m_rm->DestroyBuffer( dst2 );
+}
+
+TEST_F( StreamingTest, BatchedReadbackImmediate )
+{
+    if( !m_device )
+        GTEST_SKIP();
+
+    const size_t sizeA = 128;
+    const size_t sizeB = 1024;
+
+    std::vector<int> initDataA( sizeA / sizeof( int ), 7 );
+    std::vector<int> initDataB( sizeB / sizeof( int ), 9 );
+
+    BufferHandle srcA = m_rm->CreateBuffer( { sizeA, BufferType::STORAGE } );
+    BufferHandle srcB = m_rm->CreateBuffer( { sizeB, BufferType::STORAGE } );
+
+    // Setup initial data on GPU
+    std::vector<BufferUploadRequest> uploads = { { srcA, initDataA.data(), sizeA, 0 }, { srcB, initDataB.data(), sizeB, 0 } };
+    m_stream->UploadBufferImmediate( uploads );
+
+    // Prepare readback destinations
+    std::vector<int> readDataA( sizeA / sizeof( int ), 0 );
+    std::vector<int> readDataB( sizeB / sizeof( int ), 0 );
+
+    // Build Batched Readback Request
+    std::vector<BufferReadbackRequest> readbacks = { { srcA, readDataA.data(), sizeA, 0 }, { srcB, readDataB.data(), sizeB, 0 } };
+
+    // Execute Batched Readback
+    m_stream->ReadbackBufferImmediate( readbacks );
+
+    EXPECT_EQ( initDataA, readDataA );
+    EXPECT_EQ( initDataB, readDataB );
+
+    m_rm->DestroyBuffer( srcA );
+    m_rm->DestroyBuffer( srcB );
 }

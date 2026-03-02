@@ -43,6 +43,9 @@ namespace DigitalTwin
         const ShaderReflectionData& GetReflectionData() const { return m_resources.reflectionData; }
         VkDescriptorSetLayout       GetDescriptorSetLayout( uint32_t set ) const;
 
+        void               SetDebugName( const std::string& name ) { m_debugName = name; }
+        const std::string& GetDebugName() const { return m_debugName; }
+
     public:
         // Disable copying (RAII), allow moving
         ComputePipeline( const ComputePipeline& )            = delete;
@@ -55,6 +58,7 @@ namespace DigitalTwin
         const VolkDeviceTable*              m_api;
         VkPipeline                          m_pipeline = VK_NULL_HANDLE;
         PipelineUtils::PipelineLayoutResult m_resources;
+        std::string                         m_debugName;
     };
 
     class GraphicsPipeline
@@ -71,6 +75,9 @@ namespace DigitalTwin
         const ShaderReflectionData& GetReflectionData() const { return m_resources.reflectionData; }
         VkDescriptorSetLayout       GetDescriptorSetLayout( uint32_t set ) const;
 
+        void               SetDebugName( const std::string& name ) { m_debugName = name; }
+        const std::string& GetDebugName() const { return m_debugName; }
+
     public:
         // Disable copying (RAII), allow moving
         GraphicsPipeline( const GraphicsPipeline& )            = delete;
@@ -83,6 +90,7 @@ namespace DigitalTwin
         const VolkDeviceTable*              m_api;
         VkPipeline                          m_pipeline = VK_NULL_HANDLE;
         PipelineUtils::PipelineLayoutResult m_resources;
+        std::string                         m_debugName;
     };
 
 } // namespace DigitalTwin

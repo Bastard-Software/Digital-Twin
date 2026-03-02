@@ -14,7 +14,8 @@ namespace DigitalTwin
     class GeometryPass;
     class Scene;
     class Camera;
-    class SimulationState;
+
+    struct SimulationState;
 
     /**
      * @brief High-level rendering manager.

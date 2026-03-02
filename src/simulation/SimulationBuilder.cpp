@@ -134,14 +134,17 @@ namespace DigitalTwin
         }
 
         // 4. Create GPU Buffers via ResourceManager
-        state.vertexBuffer = m_resourceManager->CreateBuffer( { megaVertices.size() * sizeof( Vertex ), BufferType::VERTEX } );
-        state.indexBuffer  = m_resourceManager->CreateBuffer( { megaIndices.size() * sizeof( uint32_t ), BufferType::INDEX } );
-        state.indirectCmdBuffer =
-            m_resourceManager->CreateBuffer( { indirectCommands.size() * sizeof( VkDrawIndexedIndirectCommand ), BufferType::INDIRECT } );
-        state.groupDataBuffer = m_resourceManager->CreateBuffer( { groupColors.size() * sizeof( glm::vec4 ), BufferType::STORAGE } );
+        state.vertexBuffer =
+            m_resourceManager->CreateBuffer( { megaVertices.size() * sizeof( Vertex ), BufferType::VERTEX, "SimulationVertexBuffer" } );
+        state.indexBuffer =
+            m_resourceManager->CreateBuffer( { megaIndices.size() * sizeof( uint32_t ), BufferType::INDEX, "SimulationIndexBuffer" } );
+        state.indirectCmdBuffer = m_resourceManager->CreateBuffer(
+            { indirectCommands.size() * sizeof( VkDrawIndexedIndirectCommand ), BufferType::INDIRECT, "SimulationIndirectBuffer" } );
+        state.groupDataBuffer =
+            m_resourceManager->CreateBuffer( { groupColors.size() * sizeof( glm::vec4 ), BufferType::STORAGE, "SimulationAdditionalDataBuffer" } );
 
         // Ping-pong agent buffers (Storage for Compute, Transfer Src/Dst for Readbacks and Uploads)
-        BufferDesc agentDesc{ megaPositions.size() * sizeof( glm::vec4 ), BufferType::STORAGE };
+        BufferDesc agentDesc{ megaPositions.size() * sizeof( glm::vec4 ), BufferType::STORAGE, "SimulationAgentBuffer" };
         state.agentBuffers[ 0 ] = m_resourceManager->CreateBuffer( agentDesc );
         state.agentBuffers[ 1 ] = m_resourceManager->CreateBuffer( agentDesc );
 

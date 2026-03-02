@@ -68,10 +68,12 @@ namespace DigitalTwin
         , m_format( other.m_format )
         , m_currentLayout( other.m_currentLayout )
         , m_type( other.m_type )
+        , m_debugName( other.m_debugName )
     {
         other.m_image      = VK_NULL_HANDLE;
         other.m_view       = VK_NULL_HANDLE;
         other.m_allocation = VK_NULL_HANDLE;
+        other.m_debugName  = "";
     }
 
     Texture& Texture::operator=( Texture&& other ) noexcept
@@ -89,10 +91,12 @@ namespace DigitalTwin
             m_format        = other.m_format;
             m_currentLayout = other.m_currentLayout;
             m_type          = other.m_type;
+            m_debugName     = other.m_debugName;
 
             other.m_image      = VK_NULL_HANDLE;
             other.m_view       = VK_NULL_HANDLE;
             other.m_allocation = VK_NULL_HANDLE;
+            other.m_debugName  = "";
         }
         return *this;
     }
@@ -123,6 +127,7 @@ namespace DigitalTwin
         m_format        = desc.format;
         m_type          = desc.type;
         m_currentLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+        m_debugName     = desc.debugName;
 
         VkImageType     imageType = VK_IMAGE_TYPE_2D;
         VkImageViewType viewType  = VK_IMAGE_VIEW_TYPE_2D;

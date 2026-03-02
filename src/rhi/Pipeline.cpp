@@ -174,6 +174,8 @@ namespace DigitalTwin
     {
         DT_CORE_ASSERT( desc.shader, "ComputePipeline requires a shader!" );
 
+        m_debugName = desc.debugName;
+
         // 1. Create Layouts (Layouts are owned by this pipeline instance)
         m_resources = PipelineUtils::CreatePipelineLayout( m_device, m_api, { desc.shader } );
 
@@ -212,10 +214,12 @@ namespace DigitalTwin
         , m_api( other.m_api )
         , m_pipeline( other.m_pipeline )
         , m_resources( std::move( other.m_resources ) )
+        , m_debugName( other.m_debugName )
     {
         other.m_pipeline                 = VK_NULL_HANDLE;
         other.m_resources.pipelineLayout = VK_NULL_HANDLE;
         other.m_resources.descriptorSetLayouts.clear();
+        other.m_debugName = "";
     }
 
     ComputePipeline& ComputePipeline::operator=( ComputePipeline&& other ) noexcept
@@ -227,10 +231,12 @@ namespace DigitalTwin
             m_api       = other.m_api;
             m_pipeline  = other.m_pipeline;
             m_resources = std::move( other.m_resources );
+            m_debugName = other.m_debugName;
 
             other.m_pipeline                 = VK_NULL_HANDLE;
             other.m_resources.pipelineLayout = VK_NULL_HANDLE;
             other.m_resources.descriptorSetLayouts.clear();
+            other.m_debugName = "";
         }
         return *this;
     }
@@ -248,6 +254,8 @@ namespace DigitalTwin
     Result GraphicsPipeline::Create( const GraphicsPipelineNativeDesc& desc )
     {
         DT_CORE_ASSERT( desc.vertexShader, "GraphicsPipeline requires a Vertex Shader!" );
+
+        m_debugName = desc.debugName;
 
         // 1. Create Layouts (Merge VS + FS resources)
         std::vector<Shader*> shaders = { desc.vertexShader };
@@ -389,10 +397,12 @@ namespace DigitalTwin
         , m_api( other.m_api )
         , m_pipeline( other.m_pipeline )
         , m_resources( std::move( other.m_resources ) )
+        , m_debugName( other.m_debugName )
     {
         other.m_pipeline                 = VK_NULL_HANDLE;
         other.m_resources.pipelineLayout = VK_NULL_HANDLE;
         other.m_resources.descriptorSetLayouts.clear();
+        other.m_debugName = "";
     }
 
     GraphicsPipeline& GraphicsPipeline::operator=( GraphicsPipeline&& other ) noexcept
@@ -405,10 +415,12 @@ namespace DigitalTwin
             m_api       = other.m_api;
             m_pipeline  = other.m_pipeline;
             m_resources = std::move( other.m_resources );
+            m_debugName = other.m_debugName;
 
             other.m_pipeline                 = VK_NULL_HANDLE;
             other.m_resources.pipelineLayout = VK_NULL_HANDLE;
             other.m_resources.descriptorSetLayouts.clear();
+            other.m_debugName = "";
         }
         return *this;
     }

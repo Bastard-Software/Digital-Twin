@@ -236,7 +236,10 @@ namespace DigitalTwin
         req.bufferOffset  = dstOffset;
         m_pendingTransfers.push_back( req );
 
-        DT_INFO( "[StreamingManager] Queued Buffer Upload: {} bytes (Thread: {})", size, GetThreadHash() );
+        Buffer*     dst  = m_resourceManager->GetBuffer( dstHandle );
+        std::string name = dst ? ( dst->GetDebugName().empty() ? "Unnamed" : dst->GetDebugName() ) : "Unknown";
+
+        DT_INFO( "[StreamingManager] Queued Buffer Upload -> Target: '{}' | Size: {} bytes (Thread: {})", name, size, GetThreadHash() );
     }
 
     void StreamingManager::UploadTexture( TextureHandle dstTexture, const void* data, size_t size )
@@ -261,7 +264,10 @@ namespace DigitalTwin
             m_pendingTransfers.push_back( req );
         }
 
-        DT_INFO( "[StreamingManager] Queued TExture Upload: {} bytes (Thread: {})", size, GetThreadHash() );
+        Texture*    dst  = m_resourceManager->GetTexture( dstTexture );
+        std::string name = dst ? ( dst->GetDebugName().empty() ? "Unnamed" : dst->GetDebugName() ) : "Unknown";
+
+        DT_INFO( "[StreamingManager] Queued Texture Upload -> Target: '{}' | Size: {} bytes (Thread: {})", name, size, GetThreadHash() );
     }
 
     void StreamingManager::ReadbackBuffer( BufferHandle srcBuffer, BufferHandle dstReadbackBuffer, size_t size, size_t srcOffset )
@@ -275,7 +281,10 @@ namespace DigitalTwin
         req.bufferOffset  = srcOffset;
         m_pendingTransfers.push_back( req );
 
-        DT_INFO( "[StreamingManager] Queued Buffer Readback: {} bytes (Thread: {})", size, GetThreadHash() );
+        Buffer*     src  = m_resourceManager->GetBuffer( srcBuffer );
+        std::string name = src ? ( src->GetDebugName().empty() ? "Unnamed" : src->GetDebugName() ) : "Unknown";
+
+        DT_INFO( "[StreamingManager] Queued Buffer Readback <- Source: '{}' | Size: {} bytes (Thread: {})", name, size, GetThreadHash() );
     }
 
     void StreamingManager::ReadbackTexture( TextureHandle srcTexture, BufferHandle dstReadbackBuffer, size_t size )
@@ -288,7 +297,10 @@ namespace DigitalTwin
         req.size          = size;
         m_pendingTransfers.push_back( req );
 
-        DT_INFO( "[StreamingManager] Queued Texture Readback: {} bytes (Thread: {})", size, GetThreadHash() );
+        Texture*    src  = m_resourceManager->GetTexture( srcTexture );
+        std::string name = src ? ( src->GetDebugName().empty() ? "Unnamed" : src->GetDebugName() ) : "Unknown";
+
+        DT_INFO( "[StreamingManager] Queued Texture Readback <- Source: '{}' | Size: {} bytes (Thread: {})", name, size, GetThreadHash() );
     }
 
     void StreamingManager::ExecuteImmediateTransfer( std::function<void( CommandBuffer* )> recordCallback )
@@ -327,7 +339,8 @@ namespace DigitalTwin
         {
             stage->Write( data, size, 0 );
             ExecuteImmediateTransfer( [ & ]( CommandBuffer* cmd ) { cmd->CopyBuffer( stage, dst, size, 0, dstOffset ); } );
-            DT_INFO( "[StreamingManager] Immediate Buffer Upload SUCCESS: {} bytes (Thread: {})", size, GetThreadHash() );
+            DT_INFO( "[StreamingManager] Immediate Buffer Upload SUCCESS -> Target: '{}' | Size: {} bytes (Thread: {})",
+                     dst->GetDebugName().empty() ? "Unnamed" : dst->GetDebugName(), size, GetThreadHash() );
         }
         m_resourceManager->DestroyBuffer( stageHandle );
     }
@@ -362,7 +375,8 @@ namespace DigitalTwin
                 region.imageExtent      = dst->GetExtent();
                 vkCmdCopyBufferToImage( cmd->GetHandle(), stage->GetHandle(), dst->GetHandle(), VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &region );
             } );
-            DT_INFO( "[StreamingManager] Immediate Texture Upload SUCCESS: {} bytes (Thread: {})", size, GetThreadHash() );
+            DT_INFO( "[StreamingManager] Immediate Texture Upload SUCCESS -> Target: '{}' | Size: {} bytes (Thread: {})",
+                     dst->GetDebugName().empty() ? "Unnamed" : dst->GetDebugName(), size, GetThreadHash() );
         }
         m_resourceManager->DestroyBuffer( stageHandle );
     }
@@ -381,9 +395,127 @@ namespace DigitalTwin
         {
             ExecuteImmediateTransfer( [ & ]( CommandBuffer* cmd ) { cmd->CopyBuffer( src, stage, size, srcOffset, 0 ); } );
             stage->Read( outData, size, 0 );
-            DT_INFO( "[StreamingManager] Immediate Buffer Readback SUCCESS: {} bytes (Thread: {})", size, GetThreadHash() );
+            DT_INFO( "[StreamingManager] Immediate Buffer Readback SUCCESS <- Source: '{}' | Size: {} bytes (Thread: {})",
+                     src->GetDebugName().empty() ? "Unnamed" : src->GetDebugName(), size, GetThreadHash() );
         }
         m_resourceManager->DestroyBuffer( stageHandle );
+    }
+
+    void StreamingManager::UploadBufferImmediate( const std::vector<BufferUploadRequest>& requests )
+    {
+        if( requests.empty() )
+            return;
+
+        std::vector<BufferHandle> stagingHandles;
+        std::vector<Buffer*>      stagingBuffers;
+        std::vector<Buffer*>      dstBuffers;
+
+        size_t totalBytes = 0;
+
+        // 1. Create all staging buffers and copy data to mapped memory
+        for( const auto& req: requests )
+        {
+            Buffer* dst = m_resourceManager->GetBuffer( req.dstBuffer );
+            if( !dst || !req.data || req.size == 0 )
+                continue;
+
+            BufferDesc stageDesc{ req.size, BufferType::UPLOAD };
+            stageDesc.debugName = "UploadStaging_" + dst->GetDebugName(); // Assign helpful debug name
+
+            BufferHandle stageHandle = m_resourceManager->CreateBuffer( stageDesc );
+            Buffer*      stage       = m_resourceManager->GetBuffer( stageHandle );
+
+            if( stage )
+            {
+                stage->Write( req.data, req.size, 0 );
+                stagingHandles.push_back( stageHandle );
+                stagingBuffers.push_back( stage );
+                dstBuffers.push_back( dst );
+                totalBytes += req.size;
+            }
+        }
+
+        if( stagingHandles.empty() )
+            return;
+
+        // 2. Record all copies in a SINGLE command buffer
+        ExecuteImmediateTransfer( [ & ]( CommandBuffer* cmd ) {
+            for( size_t i = 0; i < stagingHandles.size(); ++i )
+            {
+                cmd->CopyBuffer( stagingBuffers[ i ], dstBuffers[ i ], requests[ i ].size, 0, requests[ i ].dstOffset );
+
+                // Logging with the new debug name!
+                DT_INFO( "[StreamingManager] Batched Upload -> Target: '{}' | Size: {} bytes",
+                         dstBuffers[ i ]->GetDebugName().empty() ? "Unnamed" : dstBuffers[ i ]->GetDebugName(), requests[ i ].size );
+            }
+        } );
+
+        // 3. Cleanup staging buffers
+        for( auto handle: stagingHandles )
+        {
+            m_resourceManager->DestroyBuffer( handle );
+        }
+
+        DT_INFO( "[StreamingManager] Batched Immediate Upload SUCCESS: {} buffers, {} total bytes (Thread: {})", stagingHandles.size(), totalBytes,
+                 GetThreadHash() );
+    }
+
+    void StreamingManager::ReadbackBufferImmediate( const std::vector<BufferReadbackRequest>& requests )
+    {
+        if( requests.empty() )
+            return;
+
+        std::vector<BufferHandle> stagingHandles;
+        std::vector<Buffer*>      stagingBuffers;
+        std::vector<Buffer*>      srcBuffers;
+
+        size_t totalBytes = 0;
+
+        // 1. Create staging buffers to receive the data
+        for( const auto& req: requests )
+        {
+            Buffer* src = m_resourceManager->GetBuffer( req.srcBuffer );
+            if( !src || !req.outData || req.size == 0 )
+                continue;
+
+            BufferDesc stageDesc{ req.size, BufferType::READBACK };
+            stageDesc.debugName = "ReadbackStaging_" + src->GetDebugName();
+
+            BufferHandle stageHandle = m_resourceManager->CreateBuffer( stageDesc );
+            Buffer*      stage       = m_resourceManager->GetBuffer( stageHandle );
+
+            if( stage )
+            {
+                stagingHandles.push_back( stageHandle );
+                stagingBuffers.push_back( stage );
+                srcBuffers.push_back( src );
+                totalBytes += req.size;
+            }
+        }
+
+        if( stagingHandles.empty() )
+            return;
+
+        // 2. Record all copy commands in a SINGLE submission
+        ExecuteImmediateTransfer( [ & ]( CommandBuffer* cmd ) {
+            for( size_t i = 0; i < stagingHandles.size(); ++i )
+            {
+                cmd->CopyBuffer( srcBuffers[ i ], stagingBuffers[ i ], requests[ i ].size, requests[ i ].srcOffset, 0 );
+
+                DT_INFO( "[StreamingManager] Batched Readback <- Source: '{}' | Size: {} bytes",
+                         srcBuffers[ i ]->GetDebugName().empty() ? "Unnamed" : srcBuffers[ i ]->GetDebugName(), requests[ i ].size );
+            }
+        } );
+
+        // 3. The GPU has finished copying. Now map and read data back to CPU memory
+        for( size_t i = 0; i < stagingHandles.size(); ++i )
+        {
+            stagingBuffers[ i ]->Read( requests[ i ].outData, requests[ i ].size, 0 );
+            m_resourceManager->DestroyBuffer( stagingHandles[ i ] );
+        }
+
+        DT_INFO( "[StreamingManager] Batched Immediate Readback SUCCESS: {} buffers, {} total bytes (Thread: {})", stagingHandles.size(), totalBytes,
+                 GetThreadHash() );
     }
 
 } // namespace DigitalTwin

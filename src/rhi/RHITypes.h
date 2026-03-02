@@ -117,6 +117,7 @@ namespace DigitalTwin
     {
         VkDeviceSize size = 0;
         BufferType   type = BufferType::STORAGE;
+        std::string  debugName;
     };
 
     /**
@@ -165,14 +166,13 @@ namespace DigitalTwin
      */
     struct TextureDesc
     {
-        uint32_t width  = 1;
-        uint32_t height = 1;
-        uint32_t depth  = 1;
-
-        TextureType type   = TextureType::Texture2D;
-        VkFormat    format = VK_FORMAT_R8G8B8A8_UNORM;
-
-        TextureUsage usage = TextureUsage::SAMPLED | TextureUsage::STORAGE | TextureUsage::TRANSFER_SRC | TextureUsage::TRANSFER_DST;
+        uint32_t     width     = 1;
+        uint32_t     height    = 1;
+        uint32_t     depth     = 1;
+        TextureType  type      = TextureType::Texture2D;
+        VkFormat     format    = VK_FORMAT_R8G8B8A8_UNORM;
+        TextureUsage usage     = TextureUsage::SAMPLED | TextureUsage::STORAGE | TextureUsage::TRANSFER_SRC | TextureUsage::TRANSFER_DST;
+        std::string  debugName = "";
     };
 
     /**
@@ -186,6 +186,7 @@ namespace DigitalTwin
         VkSamplerAddressMode addressModeV = VK_SAMPLER_ADDRESS_MODE_REPEAT;
         VkSamplerAddressMode addressModeW = VK_SAMPLER_ADDRESS_MODE_REPEAT;
         VkSamplerMipmapMode  mipmapMode   = VK_SAMPLER_MIPMAP_MODE_LINEAR;
+        std::string          debugName    = "";
     };
 
     /*
@@ -228,7 +229,8 @@ namespace DigitalTwin
      */
     struct ComputePipelineNativeDesc
     {
-        Shader* shader;
+        Shader*     shader;
+        std::string debugName = "";
     };
 
     /**
@@ -237,6 +239,7 @@ namespace DigitalTwin
     struct ComputePipelineDesc
     {
         ShaderHandle shader;
+        std::string  debugName = "";
     };
 
     /**
@@ -275,6 +278,8 @@ namespace DigitalTwin
         // Pipeline must know what it is rendering into
         std::vector<VkFormat> colorAttachmentFormats = { VK_FORMAT_R8G8B8A8_UNORM };
         VkFormat              depthAttachmentFormat  = VK_FORMAT_D32_SFLOAT;
+
+        std::string debugName = "";
     };
 
     /**
@@ -312,6 +317,8 @@ namespace DigitalTwin
         // Pipeline must know what it is rendering into
         std::vector<VkFormat> colorAttachmentFormats = { VK_FORMAT_R8G8B8A8_UNORM };
         VkFormat              depthAttachmentFormat  = VK_FORMAT_D32_SFLOAT;
+
+        std::string debugName = "";
     };
 
-} // namespace DigitalTwin
+} //  namespace DigitalTwin

@@ -21,10 +21,12 @@ namespace DigitalTwin
         , m_type( other.m_type )
         , m_mappedData( other.m_mappedData )
         , m_api( other.m_api )
+        , m_debugName( other.m_debugName )
     {
         other.m_buffer     = VK_NULL_HANDLE;
         other.m_allocation = VK_NULL_HANDLE;
         other.m_mappedData = nullptr;
+        other.m_debugName  = "";
     }
 
     Buffer& Buffer::operator=( Buffer&& other ) noexcept
@@ -39,10 +41,12 @@ namespace DigitalTwin
             m_size       = other.m_size;
             m_type       = other.m_type;
             m_mappedData = other.m_mappedData;
+            m_debugName  = other.m_debugName;
 
             other.m_buffer     = VK_NULL_HANDLE;
             other.m_allocation = VK_NULL_HANDLE;
             other.m_mappedData = nullptr;
+            other.m_debugName  = "";
         }
         return *this;
     }
@@ -53,8 +57,9 @@ namespace DigitalTwin
 
     Result Buffer::Create( const BufferDesc& desc )
     {
-        m_size = desc.size;
-        m_type = desc.type;
+        m_size      = desc.size;
+        m_type      = desc.type;
+        m_debugName = desc.debugName;
 
         VkBufferCreateInfo bufferInfo = { VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO };
         bufferInfo.size               = desc.size;

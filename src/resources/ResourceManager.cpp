@@ -379,7 +379,8 @@ namespace DigitalTwin
         }
 
         ComputePipelineNativeDesc nativeDesc;
-        nativeDesc.shader = shader;
+        nativeDesc.shader    = shader;
+        nativeDesc.debugName = desc.debugName;
 
         // 1. Allocate Raw Memory (Tracked)
         IAllocator* allocator = m_memorySystem->GetSystemAllocator();
@@ -448,6 +449,7 @@ namespace DigitalTwin
         nativeDesc.alphaBlendOp           = desc.alphaBlendOp;
         nativeDesc.colorAttachmentFormats = desc.colorAttachmentFormats;
         nativeDesc.depthAttachmentFormat  = desc.depthAttachmentFormat;
+        nativeDesc.debugName              = desc.debugName;
 
         // 1. Allocate Raw Memory (Tracked)
         IAllocator* allocator = m_memorySystem->GetSystemAllocator();

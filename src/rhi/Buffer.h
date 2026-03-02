@@ -31,6 +31,9 @@ namespace DigitalTwin
         BufferType   GetType() const { return m_type; }
         uint64_t     GetDeviceAddress() const;
 
+        void               SetDebugName( const std::string& name ) { m_debugName = name; }
+        const std::string& GetDebugName() const { return m_debugName; }
+
     public:
         // Disable copying (RAII), allow moving
         Buffer( const Buffer& )            = delete;
@@ -47,6 +50,7 @@ namespace DigitalTwin
         VkDeviceSize           m_size       = 0;
         BufferType             m_type       = BufferType::STORAGE;
         void*                  m_mappedData = nullptr;
+        std::string            m_debugName;
     };
 
 } // namespace DigitalTwin

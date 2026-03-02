@@ -18,33 +18,85 @@ int main()
     DigitalTwin::SimulationBlueprint blueprint;
     blueprint.AddAgentGroup( "CancerCells" )
         .SetCount( 500 )
-        .SetMorphology( DigitalTwin::MorphologyGenerator::CreateCube( 4.0f ) )
+        .SetMorphology( DigitalTwin::MorphologyGenerator::CreateCube( 3.0f ) )
         .SetDistribution( DigitalTwin::SpatialDistribution::UniformInBox( 50, glm::vec3( 20.0f ) ) )
         .SetColor( glm::vec4( 0.9f, 0.1f, 0.1f, 1.0f ) ); // RED
     blueprint.AddAgentGroup( "T-Cells" )
         .SetCount( 5000 )
         .SetMorphology( DigitalTwin::MorphologyGenerator::CreateCube( 1.0f ) )
-        .SetDistribution( DigitalTwin::SpatialDistribution::UniformInSphere( 500, 150.0f ) )
+        .SetDistribution( DigitalTwin::SpatialDistribution::UniformInSphere( 500, 75.0f ) )
         .SetColor( glm::vec4( 0.2f, 0.8f, 0.3f, 1.0f ) ); // GREEN
-    DT_INFO( "Building simulation from blueprint..." );
-    engine.LoadSimulation( blueprint );
+
+    // Inform engine about the setup
+    engine.SetBlueprint( blueprint );
 
     // Main Engine Loop
     DT_INFO( "Starting Editor..." );
     ImGui::SetCurrentContext( ( ImGuiContext* )engine.GetImGuiContext() );
+
     while( !engine.IsWindowClosed() )
     {
-        // 1. Poll events (input, window resize, etc.)
         const auto& ctx = engine.BeginFrame();
 
-        // 2. Editor Logic Here
         engine.RenderUI( [ & ]() {
-            ImGui::Begin( "Simulation Control" );
+            // SIMULATION CONTROLS PANEL
+            ImGui::Begin( "Simulation Controls" );
+
+            DigitalTwin::EngineState state = engine.GetState();
+
+            if( state == DigitalTwin::EngineState::STOPPED )
+            {
+                ImGui::TextColored( ImVec4( 0.6f, 0.6f, 0.6f, 1.0f ), "Mode: EDIT (Ready to allocate)" );
+                ImGui::Separator();
+
+                ImGui::PushStyleColor( ImGuiCol_Button, ImVec4( 0.15f, 0.6f, 0.15f, 1.0f ) );
+                ImGui::PushStyleColor( ImGuiCol_ButtonHovered, ImVec4( 0.2f, 0.8f, 0.2f, 1.0f ) );
+                if( ImGui::Button( "  >  PLAY  ", ImVec2( 120, 35 ) ) )
+                    engine.Play();
+                ImGui::PopStyleColor( 2 );
+            }
+            else if( state == DigitalTwin::EngineState::PLAYING )
+            {
+                ImGui::TextColored( ImVec4( 0.2f, 0.8f, 0.2f, 1.0f ), "Mode: RUNNING" );
+                ImGui::Separator();
+
+                ImGui::PushStyleColor( ImGuiCol_Button, ImVec4( 0.8f, 0.6f, 0.1f, 1.0f ) );
+                ImGui::PushStyleColor( ImGuiCol_ButtonHovered, ImVec4( 0.9f, 0.7f, 0.2f, 1.0f ) );
+                if( ImGui::Button( "  ||  PAUSE  ", ImVec2( 100, 35 ) ) )
+                    engine.Pause();
+                ImGui::PopStyleColor( 2 );
+
+                ImGui::SameLine();
+                ImGui::PushStyleColor( ImGuiCol_Button, ImVec4( 0.7f, 0.2f, 0.2f, 1.0f ) );
+                ImGui::PushStyleColor( ImGuiCol_ButtonHovered, ImVec4( 0.9f, 0.3f, 0.3f, 1.0f ) );
+                if( ImGui::Button( "  []  STOP  ", ImVec2( 100, 35 ) ) )
+                    engine.Stop();
+                ImGui::PopStyleColor( 2 );
+            }
+            else if( state == DigitalTwin::EngineState::PAUSED )
+            {
+                ImGui::TextColored( ImVec4( 0.8f, 0.8f, 0.2f, 1.0f ), "Mode: PAUSED" );
+                ImGui::Separator();
+
+                ImGui::PushStyleColor( ImGuiCol_Button, ImVec4( 0.15f, 0.6f, 0.15f, 1.0f ) );
+                ImGui::PushStyleColor( ImGuiCol_ButtonHovered, ImVec4( 0.2f, 0.8f, 0.2f, 1.0f ) );
+                if( ImGui::Button( "  >  RESUME  ", ImVec2( 100, 35 ) ) )
+                    engine.Play();
+                ImGui::PopStyleColor( 2 );
+
+                ImGui::SameLine();
+                ImGui::PushStyleColor( ImGuiCol_Button, ImVec4( 0.7f, 0.2f, 0.2f, 1.0f ) );
+                ImGui::PushStyleColor( ImGuiCol_ButtonHovered, ImVec4( 0.9f, 0.3f, 0.3f, 1.0f ) );
+                if( ImGui::Button( "  []  STOP  ", ImVec2( 100, 35 ) ) )
+                    engine.Stop();
+                ImGui::PopStyleColor( 2 );
+            }
+
+            ImGui::Spacing();
             ImGui::Text( "Total Agent Groups: %zu", blueprint.GetGroups().size() );
             ImGui::End();
         } );
 
-        // 3. End Frame
         engine.EndFrame();
     }
 

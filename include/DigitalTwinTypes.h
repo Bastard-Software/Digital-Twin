@@ -36,6 +36,13 @@ namespace DigitalTwin
         WindowDesc  windowDesc;
     };
 
+    enum class EngineState
+    {
+        STOPPED, // Editor mode. GPU buffers are freed. Blueprint is being edited.
+        PLAYING, // Simulation is running. Compute and Graphics are active.
+        PAUSED,  // Simulation is paused. Compute is halted, Graphics are active.
+    };
+
     struct FrameContext
     {
         CommandBufferHandle graphicsCmd;

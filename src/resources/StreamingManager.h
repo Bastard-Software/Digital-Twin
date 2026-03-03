@@ -35,6 +35,22 @@ namespace DigitalTwin
         uint32_t mipLevel = 0, arrayLayer = 0;
     };
 
+    struct BufferUploadRequest
+    {
+        BufferHandle dstBuffer;
+        const void*  data;
+        size_t       size;
+        size_t       dstOffset = 0;
+    };
+
+    struct BufferReadbackRequest
+    {
+        BufferHandle srcBuffer;
+        void*        outData;
+        size_t       size;
+        size_t       srcOffset = 0;
+    };
+
     /**
      * @brief Manages data transfer between CPU and GPU.
      * Supports deferred uploads (batched at EndFrame) and immediate blocking uploads.
@@ -80,6 +96,18 @@ namespace DigitalTwin
         void UploadBufferImmediate( BufferHandle dstBuffer, const void* data, size_t size, size_t dstOffset = 0 );
         void UploadTextureImmediate( TextureHandle dstTexture, const void* data, size_t size );
         void ReadbackBufferImmediate( BufferHandle srcBuffer, void* outData, size_t size, size_t srcOffset = 0 );
+
+        /**
+         * @brief Batches multiple buffer uploads into a single command buffer submission.
+         * Extremely efficient for initial simulation setups.
+         */
+        void UploadBufferImmediate( const std::vector<BufferUploadRequest>& requests );
+
+        /**
+         * @brief Batches multiple buffer readbacks into a single command buffer submission.
+         * Efficient for downloading full simulation states (e.g., for serialization).
+         */
+        void ReadbackBufferImmediate( const std::vector<BufferReadbackRequest>& requests );
 
     private:
         // Helper to execute commands immediately on a transient context

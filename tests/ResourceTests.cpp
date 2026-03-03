@@ -32,7 +32,7 @@ protected:
 
         m_mem.Initialize();
         m_fileSystem = CreateScope<FileSystem>( &m_mem );
-        m_fileSystem->Initialize( "", "" );
+        m_fileSystem->Initialize( std::filesystem::current_path(), std::filesystem::current_path() );
         ASSERT_EQ( m_rhi->Initialize( m_config ), Result::SUCCESS );
         ASSERT_EQ( m_rhi->CreateDevice( 0, m_device ), Result::SUCCESS );
         m_rm = CreateScope<ResourceManager>( m_device.get(), &m_mem, m_fileSystem.get() );

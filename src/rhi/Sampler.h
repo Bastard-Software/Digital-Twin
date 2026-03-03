@@ -18,6 +18,9 @@ namespace DigitalTwin
 
         VkSampler GetHandle() const { return m_sampler; }
 
+        void               SetDebugName( const std::string& name ) { m_desc.debugName = name; }
+        const std::string& GetDebugName() const { return m_desc.debugName; }
+
     public:
         // Disable copying (RAII), allow moving
         Sampler( const Sampler& )            = delete;

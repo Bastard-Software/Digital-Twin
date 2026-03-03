@@ -27,6 +27,9 @@ namespace DigitalTwin
         VkImageLayout GetCurrentLayout() const { return m_currentLayout; }
         TextureType   GetType() const { return m_type; }
 
+        void               SetDebugName( const std::string& name ) { m_debugName = name; }
+        const std::string& GetDebugName() const { return m_debugName; }
+
     public:
         // Disable copying (RAII), allow moving
         Texture( const Texture& )            = delete;
@@ -47,6 +50,7 @@ namespace DigitalTwin
         VkFormat      m_format        = VK_FORMAT_UNDEFINED;
         VkImageLayout m_currentLayout = VK_IMAGE_LAYOUT_UNDEFINED;
         TextureType   m_type          = TextureType::Texture2D;
+        std::string   m_debugName;
 
         bool m_ownsMemory = true;
     };

@@ -3,6 +3,7 @@
 #include "core/Log.h"
 #include "resources/ResourceManager.h"
 #include "resources/StreamingManager.h"
+#include "rhi/BindingGroup.h"
 #include "simulation/SimulationBlueprint.h"
 #include <volk.h>
 
@@ -149,19 +150,70 @@ namespace DigitalTwin
         state.agentBuffers[ 1 ] = m_resourceManager->CreateBuffer( agentDesc );
 
         // 5. Upload Data to VRAM
-        m_streamingManager->UploadBufferImmediate( state.vertexBuffer, megaVertices.data(), megaVertices.size() * sizeof( Vertex ) );
-        m_streamingManager->UploadBufferImmediate( state.indexBuffer, megaIndices.data(), megaIndices.size() * sizeof( uint32_t ) );
-        m_streamingManager->UploadBufferImmediate( state.indirectCmdBuffer, indirectCommands.data(),
-                                                   indirectCommands.size() * sizeof( VkDrawIndexedIndirectCommand ) );
-        m_streamingManager->UploadBufferImmediate( state.groupDataBuffer, groupColors.data(), groupColors.size() * sizeof( glm::vec4 ) );
+        m_streamingManager->UploadBufferImmediate(
+            { { state.vertexBuffer, megaVertices.data(), megaVertices.size() * sizeof( Vertex ) },
+              { state.indexBuffer, megaIndices.data(), megaIndices.size() * sizeof( uint32_t ) },
+              { state.indirectCmdBuffer, indirectCommands.data(), indirectCommands.size() * sizeof( VkDrawIndexedIndirectCommand ) },
+              { state.groupDataBuffer, groupColors.data(), groupColors.size() * sizeof( glm::vec4 ) },
+              { state.agentBuffers[ 0 ], megaPositions.data(), megaPositions.size() * sizeof( glm::vec4 ) },
+              { state.agentBuffers[ 1 ], megaPositions.data(), megaPositions.size() * sizeof( glm::vec4 ) } } );
 
-        // Initialize both ping-pong buffers with the starting positions
-        m_streamingManager->UploadBufferImmediate( state.agentBuffers[ 0 ], megaPositions.data(), megaPositions.size() * sizeof( glm::vec4 ) );
-        m_streamingManager->UploadBufferImmediate( state.agentBuffers[ 1 ], megaPositions.data(), megaPositions.size() * sizeof( glm::vec4 ) );
+        CompileBehaviours( blueprint, state );
 
         DT_INFO( "SimulationBuilder: Successfully compiled Blueprint. Groups: {0}, Total Agents: {1}", validGroupCount, totalAgents );
 
         return state;
+    }
+
+    void SimulationBuilder::CompileBehaviours( const SimulationBlueprint& blueprint, SimulationState& outState )
+    {
+        uint32_t currentOffset = 0;
+
+        for( const auto& group: blueprint.GetGroups() )
+        {
+            if( group.GetCount() == 0 )
+                continue;
+
+            for( const auto& record: group.GetBehaviours() )
+            {
+                if( std::holds_alternative<Behaviours::BrownianMotion>( record.behaviour ) )
+                {
+                    const auto&  brownian     = std::get<Behaviours::BrownianMotion>( record.behaviour );
+                    ShaderHandle shaderHandle = m_resourceManager->CreateShader( "shaders/compute/brownian.comp" );
+
+                    ComputePipelineDesc compDesc;
+                    compDesc.shader                  = shaderHandle;
+                    ComputePipelineHandle pipeHandle = m_resourceManager->CreatePipeline( compDesc );
+                    ComputePipeline*      pipe       = m_resourceManager->GetPipeline( pipeHandle );
+
+                    if( pipe )
+                    {
+                        // 1. Create Binding Group 0 (Read from 0, Write to 1)
+                        BindingGroupHandle bgHandle0 = m_resourceManager->CreateBindingGroup( pipeHandle, 0 );
+                        BindingGroup*      bg0       = m_resourceManager->GetBindingGroup( bgHandle0 );
+                        bg0->Bind( 0, m_resourceManager->GetBuffer( outState.agentBuffers[ 0 ] ) ); // readonly
+                        bg0->Bind( 1, m_resourceManager->GetBuffer( outState.agentBuffers[ 1 ] ) ); // writeonly
+                        bg0->Build();
+
+                        // 2. Create Binding Group 1 (Read from 1, Write to 0)
+                        BindingGroupHandle bgHandle1 = m_resourceManager->CreateBindingGroup( pipeHandle, 0 );
+                        BindingGroup*      bg1       = m_resourceManager->GetBindingGroup( bgHandle1 );
+                        bg1->Bind( 0, m_resourceManager->GetBuffer( outState.agentBuffers[ 1 ] ) ); // readonly
+                        bg1->Bind( 1, m_resourceManager->GetBuffer( outState.agentBuffers[ 0 ] ) ); // writeonly
+                        bg1->Build();
+
+                        ComputePushConstants pc{};
+                        pc.speed  = brownian.speed;
+                        pc.offset = currentOffset;
+                        pc.count  = group.GetCount();
+
+                        outState.computeGraph.AddTask( ComputeTask( pipe, bg0, bg1, record.targetHz, pc ) );
+                        DT_INFO( "SimulationBuilder: Compiled BrownianMotion for group '{}' at {}Hz", group.GetName(), record.targetHz );
+                    }
+                }
+            }
+            currentOffset += group.GetCount();
+        }
     }
 
 } // namespace DigitalTwin

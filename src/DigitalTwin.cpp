@@ -1,6 +1,7 @@
 #include "DigitalTwin.h"
 
 #include "SetupHelpers.h"
+#include "compute/GraphDispatcher.h"
 #include "core/FileSystem.h"
 #include "core/Log.h"
 #include "core/Timer.h"
@@ -75,6 +76,7 @@ namespace DigitalTwin
         float    m_fpsTimer   = 0.0f;
         uint32_t m_fpsFrames  = 0;
         float    m_currentFps = 0.0f;
+        float    m_totalTime  = 0.0f;
 
         Impl()
             : m_initialized( false )
@@ -170,7 +172,7 @@ namespace DigitalTwin
                 m_platformSystem = CreateScope<PlatformSystem>();
 
                 Result psRes = m_platformSystem->Initialize();
-                if( fsRes != Result::SUCCESS )
+                if( psRes != Result::SUCCESS )
                 {
                     m_platformSystem.reset();
                     m_fileSystem->Shutdown();
@@ -607,19 +609,11 @@ namespace DigitalTwin
             m_currentContext.graphicsCmd = gfxCtx->CreateCommandBuffer();
             m_currentContext.computeCmd  = cmpCtx->CreateCommandBuffer();
 
-            // 6. Begin Recording
-            CommandBuffer* gfx = gfxCtx->GetCommandBuffer( m_currentContext.graphicsCmd );
-            gfx->Begin();
-            CommandBuffer* comp = cmpCtx->GetCommandBuffer( m_currentContext.computeCmd );
-            comp->Begin();
-
-            // 7. Setup Context
+            // 6. Setup Context
             m_currentContext.frameIndex   = m_flightIndex;
             m_currentContext.sceneTexture = currFrame.sceneTexture;
 
-            // TODO: ping pong logic here
-
-            // 8. Start UI
+            // 7. Start UI
             if( !m_config.headless && m_renderer )
                 m_renderer->BeginUI();
 
@@ -633,12 +627,88 @@ namespace DigitalTwin
 
             FrameData& currFrame = m_frames[ m_flightIndex ];
 
-            ThreadContext* gfxCtx  = m_device->GetThreadContext( currFrame.graphicsContext );
-            ThreadContext* cmpCtx  = m_device->GetThreadContext( currFrame.computeContext );
-            CommandBuffer* gfxCmd  = gfxCtx->GetCommandBuffer( m_currentContext.graphicsCmd );
-            CommandBuffer* compCmd = cmpCtx->GetCommandBuffer( m_currentContext.computeCmd );
+            ThreadContext* gfxCtx = m_device->GetThreadContext( currFrame.graphicsContext );
+            ThreadContext* cmpCtx = m_device->GetThreadContext( currFrame.computeContext );
 
-            // 1. Record scene pass
+            // Allocate a secondary, independent graphics command buffer specifically for the Simulation Phase
+            CommandBufferHandle gfxSimCmdHandle = gfxCtx->CreateCommandBuffer();
+
+            // Fetch the primary command buffers for this frame
+            CommandBuffer* gfxRenderCmd = gfxCtx->GetCommandBuffer( m_currentContext.graphicsCmd );
+            CommandBuffer* compCmd      = cmpCtx->GetCommandBuffer( m_currentContext.computeCmd );
+            CommandBuffer* gfxSimCmd    = gfxCtx->GetCommandBuffer( gfxSimCmdHandle );
+
+            uint64_t transferSyncValue = m_streamingManager->EndFrame();
+
+            // Track synchronization values for hardware-level barriers
+            uint64_t computeSimSyncValue  = 0;
+            uint64_t graphicsSimSyncValue = 0;
+
+            Queue* computeQueue  = m_device->GetComputeQueue();
+            Queue* graphicsQueue = m_device->GetGraphicsQueue();
+
+            // =========================================================
+            // PHASE 1: SIMULATION PASS (Async Dispatch)
+            // =========================================================
+            if( m_state == EngineState::PLAYING && m_simulationState.IsValid() )
+            {
+                float dt = m_timer->GetDeltaTime();
+                m_totalTime += dt;
+
+                // Record computational work onto BOTH queues simultaneously
+                compCmd->Begin();
+                gfxSimCmd->Begin();
+
+                GraphDispatcher::Dispatch( &m_simulationState.computeGraph, compCmd, gfxSimCmd, dt, m_totalTime, m_simulationState.currentReadIndex );
+
+                gfxSimCmd->End();
+                compCmd->End();
+
+                // PING-PONG SWAP LOGIC:
+                // After dispatching the current frame's work, we swap the read and write buffers
+                // so the next frame reads from what we just wrote.
+                m_simulationState.currentReadIndex = ( m_simulationState.currentReadIndex + 1 ) % 2;
+
+                // 1A. Submit to COMPUTE queue
+                {
+                    std::vector<CommandBuffer*> cmdBuffers = { compCmd };
+                    std::vector<VkSemaphore>    waitSemas;
+                    std::vector<uint64_t>       waitVals;
+
+                    // Simulation must wait for any pending memory transfers to finish
+                    if( transferSyncValue > 0 )
+                    {
+                        waitSemas.push_back( m_device->GetTransferQueue()->GetTimelineSemaphore() );
+                        waitVals.push_back( transferSyncValue );
+                    }
+
+                    computeQueue->Submit( cmdBuffers, waitSemas, waitVals );
+                    computeSimSyncValue = computeQueue->GetLastSubmittedValue();
+                }
+
+                // 1B. Submit to GRAPHICS queue (Simulation workload only)
+                {
+                    std::vector<CommandBuffer*> cmdBuffers = { gfxSimCmd };
+                    std::vector<VkSemaphore>    waitSemas;
+                    std::vector<uint64_t>       waitVals;
+
+                    // Graphics simulation must also wait for transfers
+                    if( transferSyncValue > 0 )
+                    {
+                        waitSemas.push_back( m_device->GetTransferQueue()->GetTimelineSemaphore() );
+                        waitVals.push_back( transferSyncValue );
+                    }
+
+                    graphicsQueue->Submit( cmdBuffers, waitSemas, waitVals );
+                    graphicsSimSyncValue = graphicsQueue->GetLastSubmittedValue();
+                }
+            }
+
+            // =========================================================
+            // PHASE 2: RENDER PASS (Drawing to screen)
+            // =========================================================
+            gfxRenderCmd->Begin();
+
             if( !m_config.headless && m_renderer )
             {
                 SimulationState* stateToRender = nullptr;
@@ -647,92 +717,68 @@ namespace DigitalTwin
                     stateToRender = &m_simulationState;
                 }
 
-                m_renderer->RenderSimulation( gfxCmd, &m_simulationState, m_camera.get(), m_flightIndex );
-            }
+                // Draw simulation geometry
+                m_renderer->RenderSimulation( gfxRenderCmd, stateToRender, m_camera.get(), m_flightIndex );
 
-            // 2. Record UI Pass
-            if( !m_config.headless && m_renderer )
-            {
+                // Draw Editor UI
                 Texture* backbuffer = m_swapchain->GetTexture( m_currentImageIndex );
-                m_renderer->RecordUIPass( gfxCmd, backbuffer );
+                m_renderer->RecordUIPass( gfxRenderCmd, backbuffer );
             }
 
-            gfxCmd->End();
-            compCmd->End();
+            gfxRenderCmd->End();
 
-            Queue* computeQueue  = m_device->GetComputeQueue();
-            Queue* graphicsQueue = m_device->GetGraphicsQueue();
-
-            // 3. SUBMIT TRANSFER
-            uint64_t transferSyncValue = m_streamingManager->EndFrame();
-
-            // 4. SUBMIT COMPUTE
-            {
-                std::vector<CommandBuffer*> cmdBuffers = { compCmd };
-                std::vector<VkSemaphore>    waitSemas;
-                std::vector<uint64_t>       waitVals;
-
-                // Wait for transfers if any occured
-                if( transferSyncValue > 0 )
-                {
-                    waitSemas.push_back( m_device->GetTransferQueue()->GetTimelineSemaphore() );
-                    waitVals.push_back( transferSyncValue );
-                }
-
-                computeQueue->Submit( cmdBuffers, waitSemas, waitVals );
-
-                // Track compute completion for this slot
-                currFrame.computeFinishedValue = computeQueue->GetLastSubmittedValue();
-            }
-
-            // 5. SUBMIT GRAPHICS
+            // =========================================================
+            // PHASE 3: GRAPHICS SUBMIT (Strictly synchronized with Simulation)
+            // =========================================================
             if( !m_config.headless )
             {
-                std::vector<CommandBuffer*> cmdBuffers = { gfxCmd };
+                std::vector<CommandBuffer*> cmdBuffers = { gfxRenderCmd };
+                std::vector<VkSemaphore>    waitSemas;
+                std::vector<uint64_t>       waitValues;
+                std::vector<VkSemaphore>    signalSemas;
+                std::vector<uint64_t>       signalValues;
 
-                std::vector<VkSemaphore> waitSemas;
-                std::vector<uint64_t>    waitValues;
-                std::vector<VkSemaphore> signalSemas;
-                std::vector<uint64_t>    signalValues;
+                // Wait A: Swapchain image must be acquired and ready
+                waitSemas.push_back( m_swapchain->GetImageAvailableSemaphore( m_flightIndex ) );
+                waitValues.push_back( 0 );
 
-                // Wait 1: Transfer if resources were uploaded
-                if( transferSyncValue > 0 )
+                // Wait B: Wait for the Compute Simulation to finish mutating agent buffers
+                if( computeSimSyncValue > 0 )
+                {
+                    waitSemas.push_back( computeQueue->GetTimelineSemaphore() );
+                    waitValues.push_back( computeSimSyncValue );
+                }
+
+                // Wait C: Wait for the Graphics Simulation to finish
+                // (Even though it runs on the same hardware queue as rendering, the timeline semaphore
+                // ensures a full memory barrier protects the geometry buffers)
+                if( graphicsSimSyncValue > 0 )
+                {
+                    waitSemas.push_back( graphicsQueue->GetTimelineSemaphore() );
+                    waitValues.push_back( graphicsSimSyncValue );
+                }
+
+                // Wait D: If simulation is STOPPED but a transfer occurred, render must wait for it
+                if( m_state != EngineState::PLAYING && transferSyncValue > 0 )
                 {
                     waitSemas.push_back( m_device->GetTransferQueue()->GetTimelineSemaphore() );
                     waitValues.push_back( transferSyncValue );
                 }
 
-                // Wait 2: Swapchain Image
-                waitSemas.push_back( m_swapchain->GetImageAvailableSemaphore( m_flightIndex ) );
-                waitValues.push_back( 0 );
-
-                // Wait 2: Previous Compute Frame (Pipelining)
-                uint32_t   prevFlightIndex = m_flightIndex ^ 1;
-                FrameData& prevFrame       = m_frames[ prevFlightIndex ];
-                if( prevFrame.computeFinishedValue > 0 )
-                {
-                    waitSemas.push_back( computeQueue->GetTimelineSemaphore() );
-                    waitValues.push_back( prevFrame.computeFinishedValue );
-                }
-
-                // Signal: Render Finished
+                // Signal: Render is completely finished, ready for presentation
                 VkSemaphore renderFinishedSem = m_swapchain->GetRenderFinishedSemaphore( m_flightIndex );
                 signalSemas.push_back( renderFinishedSem );
                 signalValues.push_back( 0 );
 
                 graphicsQueue->Submit( cmdBuffers, waitSemas, waitValues, signalSemas, signalValues );
 
-                // Track graphics completion for this slot
+                // Save the checkpoint for the next frame's Present()
                 currFrame.graphicsFinishedValue = graphicsQueue->GetLastSubmittedValue();
             }
-            else
-            {
-                // TODO: Not true, fix that
-                // In headless, graphics isn't used, so reset this tracker to avoid waiting on old values
-                currFrame.graphicsFinishedValue = 0;
-            }
 
-            // 6. PRESENT
+            // =========================================================
+            // PHASE 4: PRESENT
+            // =========================================================
             if( !m_config.headless )
             {
                 VkSemaphore renderFinishedSem = m_swapchain->GetRenderFinishedSemaphore( m_flightIndex );
@@ -955,6 +1001,7 @@ namespace DigitalTwin
 
     void* DigitalTwin::GetImGuiTextureID( TextureHandle handle )
     {
+        ( void )handle;
         return nullptr;
     }
 

@@ -116,6 +116,18 @@ namespace DigitalTwin
         m_api->vkCmdBindIndexBuffer( m_handle, buffer->GetHandle(), offset, indexType );
     }
 
+    void CommandBuffer::PushConstants( VkPipelineLayout layout, VkShaderStageFlags stageFlags, uint32_t offset, uint32_t size, const void* pValues )
+    {
+#ifdef DT_DEBUG
+        if( m_type == QueueType::TRANSFER )
+        {
+            DT_ERROR( "PushConstants disallowed on Transfer Queue" );
+            return;
+        }
+#endif
+        m_api->vkCmdPushConstants( m_handle, layout, stageFlags, offset, size, pValues );
+    }
+
     void CommandBuffer::BeginRendering( const VkRenderingInfo& renderingInfo )
     {
         DT_CMD_CHECK_TYPE( QueueType::GRAPHICS, "BeginRendering" );
@@ -188,6 +200,9 @@ namespace DigitalTwin
                                          const VkBufferMemoryBarrier2* pBufferMemoryBarriers, uint32_t imageMemoryBarrierCount,
                                          const VkImageMemoryBarrier2* pImageMemoryBarriers )
     {
+        ( void )srcStage;
+        ( void )dstStage;
+
         VkDependencyInfo info         = { VK_STRUCTURE_TYPE_DEPENDENCY_INFO };
         info.dependencyFlags          = dependencyFlags;
         info.memoryBarrierCount       = memoryBarrierCount;
@@ -197,7 +212,12 @@ namespace DigitalTwin
         info.imageMemoryBarrierCount  = imageMemoryBarrierCount;
         info.pImageMemoryBarriers     = pImageMemoryBarriers;
 
-        m_api->vkCmdPipelineBarrier2( m_handle, &info );
+        PipelineBarrier( &info );
+    }
+
+    void CommandBuffer::PipelineBarrier( const VkDependencyInfo* pDependencyInfo )
+    {
+        m_api->vkCmdPipelineBarrier2( m_handle, pDependencyInfo );
     }
 
     void CommandBuffer::ClearColorImage( Texture* texture, VkImageLayout layout, const VkClearColorValue& color )

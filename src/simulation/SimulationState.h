@@ -1,6 +1,8 @@
 #pragma once
 #include "rhi/RHITypes.h"
 
+#include "compute/ComputeGraph.h"
+
 namespace DigitalTwin
 {
     class ResourceManager;
@@ -19,9 +21,13 @@ namespace DigitalTwin
 
         // Ping-pong buffers for compute shader integration (Read/Write swapping)
         BufferHandle agentBuffers[ 2 ];
+        uint32_t     currentReadIndex = 0;
 
         // How many distinct agent groups exist (used for Indirect Draw Count)
         uint32_t groupCount = 0;
+
+        // Simulation logic
+        ComputeGraph computeGraph;
 
         bool IsValid() const { return vertexBuffer.IsValid(); }
 

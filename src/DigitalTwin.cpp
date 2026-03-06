@@ -895,6 +895,7 @@ namespace DigitalTwin
         if( m_impl->m_renderer )
         {
             m_impl->m_renderer->RenderUI( [ & ]() {
+                // Engine stats rendering
                 ImGuiIO&    io               = ImGui::GetIO();
                 const float PAD              = 30.0f;
                 ImVec2      window_pos       = ImVec2( io.DisplaySize.x - PAD, PAD );
@@ -963,45 +964,50 @@ namespace DigitalTwin
                 }
                 ImGui::End();
 
-                ImGui::PushStyleVar( ImGuiStyleVar_WindowPadding, ImVec2( 0.0f, 0.0f ) );
-                if( ImGui::Begin( "Scene Viewport" ) )
-                {
-                    ImVec2 size = ImGui::GetContentRegionAvail();
-
-                    uint32_t newWidth  = max( 1u, ( uint32_t )size.x );
-                    uint32_t newHeight = max( 1u, ( uint32_t )size.y );
-
-                    uint32_t currentWidth, currentHeight;
-                    m_impl->m_renderer->GetViewportSize( currentWidth, currentHeight );
-
-                    if( newWidth != currentWidth || newHeight != currentHeight )
-                    {
-                        m_impl->m_renderer->SetViewportSize( newWidth, newHeight );
-
-                        if( m_impl->m_camera )
-                        {
-                            m_impl->m_camera->OnResize( newWidth, newHeight );
-                        }
-                    }
-
-                    void* texID = m_impl->m_renderer->GetSceneTextureID( m_impl->m_flightIndex );
-                    if( texID )
-                    {
-                        ImGui::Image( texID, size );
-                    }
-                }
-                ImGui::End();
-                ImGui::PopStyleVar();
-
                 if( uiCallback )
                     uiCallback();
             } );
         }
     }
 
+    void DigitalTwin::SetViewportSize( uint32_t width, uint32_t height )
+    {
+        if( m_impl->m_renderer )
+        {
+            m_impl->m_renderer->SetViewportSize( width, height );
+            if( m_impl->m_camera )
+            {
+                m_impl->m_camera->OnResize( width, height );
+            }
+        }
+    }
+
+    void DigitalTwin::GetViewportSize( uint32_t& outWidth, uint32_t& outHeight ) const
+    {
+        if( m_impl->m_renderer )
+        {
+            m_impl->m_renderer->GetViewportSize( outWidth, outHeight );
+        }
+        else
+        {
+            outWidth  = 0;
+            outHeight = 0;
+        }
+    }
+
+    void* DigitalTwin::GetSceneTextureID() const
+    {
+        if( m_impl->m_renderer )
+        {
+            return m_impl->m_renderer->GetSceneTextureID( m_impl->m_flightIndex );
+        }
+        return nullptr;
+    }
+
     void* DigitalTwin::GetImGuiTextureID( TextureHandle handle )
     {
         ( void )handle;
+        DT_ASSERT( false, "Not implemented" );
         return nullptr;
     }
 

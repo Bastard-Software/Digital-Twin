@@ -17,15 +17,19 @@ int main()
     // Setting up simulation
     DigitalTwin::SimulationBlueprint blueprint;
     blueprint.AddAgentGroup( "CancerCells" )
-        .SetCount( 500 )
+        .SetCount( 50 )
         .SetMorphology( DigitalTwin::MorphologyGenerator::CreateCube( 3.0f ) )
         .SetDistribution( DigitalTwin::SpatialDistribution::UniformInBox( 50, glm::vec3( 20.0f ) ) )
-        .SetColor( glm::vec4( 0.9f, 0.1f, 0.1f, 1.0f ) ); // RED
+        .SetColor( glm::vec4( 0.9f, 0.1f, 0.1f, 1.0f ) ) // RED
+        .AddBehaviour( DigitalTwin::Behaviours::BrownianMotion{ 0.5f } )
+        .SetHz( 30.0f );
     blueprint.AddAgentGroup( "T-Cells" )
-        .SetCount( 5000 )
+        .SetCount( 500 )
         .SetMorphology( DigitalTwin::MorphologyGenerator::CreateCube( 1.0f ) )
         .SetDistribution( DigitalTwin::SpatialDistribution::UniformInSphere( 500, 75.0f ) )
-        .SetColor( glm::vec4( 0.2f, 0.8f, 0.3f, 1.0f ) ); // GREEN
+        .SetColor( glm::vec4( 0.2f, 0.8f, 0.3f, 1.0f ) ) // GREEN
+        .AddBehaviour( DigitalTwin::Behaviours::BrownianMotion{ 5.0f } )
+        .SetHz( 60.0f );
 
     // Inform engine about the setup
     engine.SetBlueprint( blueprint );

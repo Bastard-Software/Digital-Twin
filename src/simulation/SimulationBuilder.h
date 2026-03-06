@@ -24,6 +24,9 @@ namespace DigitalTwin
         SimulationState Build( const SimulationBlueprint& blueprint );
 
     private:
+        void CompileBehaviours( const SimulationBlueprint& blueprint, SimulationState& outState );
+
+    private:
         ResourceManager*  m_resourceManager;
         StreamingManager* m_streamingManager;
     };

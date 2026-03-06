@@ -40,6 +40,8 @@ namespace DigitalTwin
         void SetBindingGroup( BindingGroup* group, VkPipelineLayout layout, VkPipelineBindPoint bindPoint );
         void SetIndexBuffer( Buffer* buffer, VkDeviceSize offset = 0, VkIndexType indexType = VK_INDEX_TYPE_UINT32 );
 
+        void PushConstants( VkPipelineLayout layout, VkShaderStageFlags stageFlags, uint32_t offset, uint32_t size, const void* pValues );
+
         void BeginRendering( const VkRenderingInfo& renderingInfo );
         void EndRendering();
 
@@ -59,6 +61,7 @@ namespace DigitalTwin
                               uint32_t memoryBarrierCount, const VkMemoryBarrier2* pMemoryBarriers, uint32_t bufferMemoryBarrierCount,
                               const VkBufferMemoryBarrier2* pBufferMemoryBarriers, uint32_t imageMemoryBarrierCount,
                               const VkImageMemoryBarrier2* pImageMemoryBarriers );
+        void PipelineBarrier( const VkDependencyInfo* pDependencyInfo );
 
         void ClearColorImage( Texture* texture, VkImageLayout layout, const VkClearColorValue& color );
 

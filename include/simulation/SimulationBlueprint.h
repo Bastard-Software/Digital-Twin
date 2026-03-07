@@ -1,6 +1,7 @@
 #pragma once
 #include "simulation/SimulationTypes.h"
 
+#include "core/Core.h"
 #include "simulation/Behaviours.h"
 #include <glm/glm.hpp>
 #include <string>

@@ -1,6 +1,8 @@
 #pragma once
 #include "rhi/RHITypes.h"
 
+#include <glm/glm.hpp>
+
 namespace DigitalTwin
 {
 
@@ -29,7 +31,8 @@ namespace DigitalTwin
     class ComputeTask
     {
     public:
-        ComputeTask( ComputePipeline* pipeline, BindingGroup* bgRead0, BindingGroup* bgRead1, float targetHz, const ComputePushConstants& pc );
+        ComputeTask( ComputePipeline* pipeline, BindingGroup* bgRead0, BindingGroup* bgRead1, float targetHz, const ComputePushConstants& pc,
+                     glm::uvec3 dispatchSize );
 
         /**
          * @brief Checks the time accumulator against targetHz to see if it should run this frame.
@@ -48,6 +51,7 @@ namespace DigitalTwin
         float            m_timeAccumulator = 0.0f;
 
         ComputePushConstants m_pc;
+        glm::uvec3           m_dispatchSize;
     };
 
 } // namespace DigitalTwin

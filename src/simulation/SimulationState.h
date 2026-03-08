@@ -40,6 +40,9 @@ namespace DigitalTwin
         // Grig fields
         std::vector<GridFieldState> gridFields;
 
+        // Domain size
+        glm::vec3 domainSize = glm::vec3( 1000.0f );
+
         // How many distinct agent groups exist (used for Indirect Draw Count)
         uint32_t groupCount = 0;
 

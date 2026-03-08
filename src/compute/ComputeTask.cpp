@@ -8,11 +8,12 @@
 
 namespace DigitalTwin
 {
-    ComputeTask::ComputeTask( ComputePipeline* pipeline, BindingGroup* bgRead0, BindingGroup* bgRead1, float targetHz,
-                              const ComputePushConstants& pc )
+    ComputeTask::ComputeTask( ComputePipeline* pipeline, BindingGroup* bgRead0, BindingGroup* bgRead1, float targetHz, const ComputePushConstants& pc,
+                              glm::uvec3 dispatchSize )
         : m_pipeline( pipeline )
         , m_targetHz( targetHz )
         , m_pc( pc )
+        , m_dispatchSize( dispatchSize )
     {
         m_bindings[ 0 ] = bgRead0;
         m_bindings[ 1 ] = bgRead1;
@@ -45,7 +46,6 @@ namespace DigitalTwin
         m_pc.totalTime = totalTime;
         cmd->PushConstants( m_pipeline->GetLayout(), VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof( ComputePushConstants ), &m_pc );
 
-        uint32_t workGroupsX = ( m_pc.count + 255 ) / 256; // Assuming local_size_x = 256
-        cmd->Dispatch( workGroupsX, 1, 1 );
+        cmd->Dispatch( m_dispatchSize.x, m_dispatchSize.y, m_dispatchSize.z );
     }
 } // namespace DigitalTwin

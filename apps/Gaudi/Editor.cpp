@@ -24,17 +24,17 @@ namespace Gaudi
 
         // 2. Add Oxygen Field
         m_blueprint.AddGridField( "Oxygen" )
-            .SetInitialConcentration( 100.0f ) // Start fully oxygenated
-            .SetDiffusionCoefficient( 0.05f )  // Moderate diffusion
-            .SetDecayRate( 0.001f )            // Natural background consumption
-            .SetComputeHz( 120.0f );           // High frequency for PDE stability
+            .SetInitializer( DigitalTwin::GridInitializer::Gaussian( glm::vec3( 0.0f ), 10.0f, 100.0f ) ) // Start with gausian distribution
+            .SetDiffusionCoefficient( 0.5f )                                                              // Moderate diffusion
+            .SetDecayRate( 0.001f )                                                                       // Natural background consumption
+            .SetComputeHz( 120.0f );                                                                      // High frequency for PDE stability
 
         // 3. Add Tumor Cells
         m_blueprint.AddAgentGroup( "TumorCells" )
-            .SetCount( 500 )
+            .SetCount( 50 )
             .SetMorphology( DigitalTwin::MorphologyGenerator::CreateSphere( 1.0f ) )
-            .SetDistribution( DigitalTwin::SpatialDistribution::UniformInSphere( 500, 30.0f ) )
-            .SetColor( glm::vec4( 0.9f, 0.8f, 0.1f, 1.0f ) )
+            .SetDistribution( DigitalTwin::SpatialDistribution::UniformInSphere( 50, 10.0f ) )
+            .SetColor( glm::vec4( 0.1f, 0.8f, 0.2f, 1.0f ) )
             .AddBehaviour( DigitalTwin::Behaviours::BrownianMotion{ 0.1f } )
             .SetHz( 30.0f );
 

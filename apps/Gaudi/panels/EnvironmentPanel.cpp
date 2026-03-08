@@ -53,9 +53,9 @@ namespace Gaudi
             // Visualization Mode Radio Buttons
             ImGui::Text( "Visualization Mode:" );
             int modeInt = static_cast<int>( m_settings.mode );
-            ImGui::RadioButton( "2D Slice (Heatmap)", &modeInt, 0 );
+            ImGui::RadioButton( "2D Slice (Heatmap)", &modeInt, 1 );
             ImGui::SameLine();
-            ImGui::RadioButton( "Volumetric Cloud", &modeInt, 1 );
+            ImGui::RadioButton( "Volumetric Cloud", &modeInt, 0 );
             m_settings.mode = static_cast<DigitalTwin::GridVisualizationMode>( modeInt );
 
             ImGui::Spacing();
@@ -64,10 +64,14 @@ namespace Gaudi
             if( m_settings.mode == DigitalTwin::GridVisualizationMode::SLICE_2D )
             {
                 ImGui::SliderFloat( "Z-Depth Slice", &m_settings.sliceZ, 0.0f, 1.0f, "%.2f" );
+                ImGui::SliderFloat( "Slice Opacity", &m_settings.opacitySlice, 0.0f, 1.0f, "%.3f" );
+            }
+            else // VOLUMETRIC_CLOUD
+            {
+                ImGui::SliderFloat( "Cloud Opacity", &m_settings.opacityCloud, 0.0f, 0.2f, "%.4f" );
             }
 
             // General appearance controls
-            ImGui::SliderFloat( "Opacity", &m_settings.opacity, 0.0f, 1.0f, "%.2f" );
             ImGui::ColorEdit4( "Base Color", &m_settings.colorMap.x );
 
             // Apply settings to the simulation engine

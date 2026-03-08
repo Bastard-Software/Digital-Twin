@@ -881,11 +881,16 @@ namespace DigitalTwin
 
     void DigitalTwin::SetGridVisualization( const GridVisualizationSettings& settings )
     {
+        if( m_impl->m_renderer )
+            m_impl->m_renderer->SetGridVisualization( settings );
     }
 
     const GridVisualizationSettings& DigitalTwin::GetGridVisualization() const
     {
-        return GridVisualizationSettings();
+        if( m_impl->m_renderer )
+            return m_impl->m_renderer->GetGridVisualization();
+        static GridVisualizationSettings def;
+        return def;
     }
 
     void DigitalTwin::RenderUI( std::function<void()> uiCallback )

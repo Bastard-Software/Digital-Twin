@@ -52,8 +52,11 @@ void main()
     float laplacian = (right + left + up + down + front + back) - (6.0 * center);
 
     // Forward Euler Integration: 
-    // New Value = Old Value + (Diffusion * Laplacian) - (Decay * Old Value)
-    float newValue = center + (pc.param1 * laplacian) - (pc.param2 * center);
+    float diffusionTerm = pc.param1 * laplacian;
+    //diffusionTerm *= 1000.0; // We multiply diffusion by a large factor internally to make it visually pleasing for the demo
+    float decayTerm = pc.param2 * center;
+
+    float newValue = center + pc.dt * (diffusionTerm - decayTerm);
     
     // Physical constraint: Concentration cannot drop below absolute zero
     newValue = max(newValue, 0.0); 

@@ -1,5 +1,6 @@
 #pragma once
 #include "core/Core.h"
+#include "simulation/GridField.h"
 #include <glm/glm.hpp>
 #include <vector>
 

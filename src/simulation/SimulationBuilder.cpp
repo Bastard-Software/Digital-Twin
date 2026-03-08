@@ -161,6 +161,9 @@ namespace DigitalTwin
         state.agentBuffers[ 0 ] = m_resourceManager->CreateBuffer( agentDesc );
         state.agentBuffers[ 1 ] = m_resourceManager->CreateBuffer( agentDesc );
 
+        // World size
+        state.domainSize = blueprint.GetDomainSize();
+
         // 5. Upload Data to VRAM
         m_streamingManager->UploadBufferImmediate(
             { { state.vertexBuffer, megaVertices.data(), megaVertices.size() * sizeof( Vertex ) },
@@ -226,14 +229,34 @@ namespace DigitalTwin
 
             // Initialize Grid Data (Upload from CPU to GPU)
             size_t             voxelCount = static_cast<size_t>( gridWidth ) * gridHeight * gridDepth;
-            std::vector<float> initialData( voxelCount, fieldDef.GetInitialConcentration() );
-            size_t             byteSize = voxelCount * sizeof( float );
+            std::vector<float> initialData( voxelCount, 0.0f );
+
+            // Domain bounds matching the shader (centered around 0,0,0)
+            glm::vec3 boxMin = -domain * 0.5f;
+
+            for( uint32_t z = 0; z < gridDepth; ++z )
+            {
+                for( uint32_t y = 0; y < gridHeight; ++y )
+                {
+                    for( uint32_t x = 0; x < gridWidth; ++x )
+                    {
+                        // Calculate the center of the current voxel in world space
+                        glm::vec3 worldPos = boxMin + glm::vec3( x, y, z ) * voxelSize + glm::vec3( voxelSize * 0.5f );
+
+                        // Call the user-defined lambda
+                        float val = fieldDef.GetInitializer()( worldPos );
+
+                        size_t index         = x + y * gridWidth + z * gridWidth * gridHeight;
+                        initialData[ index ] = val;
+                    }
+                }
+            }
+
+            size_t byteSize = voxelCount * sizeof( float );
 
             // Synchronous upload of initial concentration to both ping-pong textures
             m_streamingManager->UploadTextureImmediate( fieldState.textures[ 0 ], initialData.data(), byteSize );
             m_streamingManager->UploadTextureImmediate( fieldState.textures[ 1 ], initialData.data(), byteSize );
-
-            DT_INFO( "SimulationBuilder: Initialized '{}' grid with {} concentration.", fieldDef.GetName(), fieldDef.GetInitialConcentration() );
 
             outState.gridFields.push_back( fieldState );
 
@@ -261,7 +284,9 @@ namespace DigitalTwin
             ComputePushConstants pc{};
             pc.param1 = fieldDef.GetDiffusionCoefficient();
             pc.param2 = fieldDef.GetDecayRate();
-            outState.computeGraph.AddTask( ComputeTask( pipe, bg0, bg1, fieldDef.GetComputeHz(), pc ) );
+
+            glm::uvec3 dispatchSize( ( gridWidth + 7 ) / 8, ( gridHeight + 7 ) / 8, ( gridDepth + 7 ) / 8 );
+            outState.computeGraph.AddTask( ComputeTask( pipe, bg0, bg1, fieldDef.GetComputeHz(), pc, dispatchSize ) );
             DT_INFO( "SimulationBuilder: Compiled PDE task for '{}' at {}Hz", fieldDef.GetName(), fieldDef.GetComputeHz() );
         }
     }
@@ -307,7 +332,9 @@ namespace DigitalTwin
                     pc.param1 = brownian.speed;
                     pc.offset = currentOffset;
                     pc.count  = group.GetCount();
-                    outState.computeGraph.AddTask( ComputeTask( pipe, bg0, bg1, record.targetHz, pc ) );
+
+                    glm::uvec3 agentDispatch( ( group.GetCount() + 255 ) / 256, 1, 1 );
+                    outState.computeGraph.AddTask( ComputeTask( pipe, bg0, bg1, record.targetHz, pc, agentDispatch ) );
                     DT_INFO( "SimulationBuilder: Compiled BrownianMotion for group '{}' at {}Hz", group.GetName(), record.targetHz );
                 }
             }

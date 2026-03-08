@@ -359,39 +359,21 @@ namespace DigitalTwin
         {
             stage->Write( data, size, 0 );
             ExecuteImmediateTransfer( [ & ]( CommandBuffer* cmd ) {
-                {
-                    VkImageMemoryBarrier2 barrier = { VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2 };
-                    barrier.srcStageMask          = VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT;
-                    barrier.srcAccessMask         = 0;
-                    barrier.dstStageMask          = VK_PIPELINE_STAGE_2_TRANSFER_BIT;
-                    barrier.dstAccessMask         = VK_ACCESS_2_TRANSFER_WRITE_BIT;
-                    barrier.oldLayout             = VK_IMAGE_LAYOUT_UNDEFINED;
-                    barrier.newLayout             = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
-                    barrier.image                 = dst->GetHandle();
-                    barrier.subresourceRange      = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1 };
-                    cmd->PipelineBarrier( 0, 0, 0, 0, nullptr, 0, nullptr, 1, &barrier );
-                    dst->SetLayout( VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL );
-                }
+                VkImageMemoryBarrier2 barrier = { VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2 };
+                barrier.srcStageMask          = VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT;
+                barrier.srcAccessMask         = 0;
+                barrier.dstStageMask          = VK_PIPELINE_STAGE_2_TRANSFER_BIT;
+                barrier.dstAccessMask         = VK_ACCESS_2_TRANSFER_WRITE_BIT;
+                barrier.oldLayout             = VK_IMAGE_LAYOUT_UNDEFINED;
+                barrier.newLayout             = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+                barrier.image                 = dst->GetHandle();
+                barrier.subresourceRange      = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1 };
+                cmd->PipelineBarrier( 0, 0, 0, 0, nullptr, 0, nullptr, 1, &barrier );
 
                 VkBufferImageCopy region{};
                 region.imageSubresource = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1 };
                 region.imageExtent      = dst->GetExtent();
-                cmd->CopyBufferToImage( stage, dst, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &region );
-
-                {
-
-                    VkImageMemoryBarrier2 barrier = { VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2 };
-                    barrier.srcStageMask          = VK_PIPELINE_STAGE_2_TRANSFER_BIT;
-                    barrier.srcAccessMask         = VK_ACCESS_2_TRANSFER_WRITE_BIT;
-                    barrier.dstStageMask          = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT;
-                    barrier.dstAccessMask         = VK_ACCESS_2_SHADER_WRITE_BIT | VK_ACCESS_2_SHADER_READ_BIT;
-                    barrier.oldLayout             = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
-                    barrier.newLayout             = VK_IMAGE_LAYOUT_GENERAL;
-                    barrier.image                 = dst->GetHandle();
-                    barrier.subresourceRange      = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1 };
-                    cmd->PipelineBarrier( 0, 0, 0, 0, nullptr, 0, nullptr, 1, &barrier );
-                    dst->SetLayout( VK_IMAGE_LAYOUT_GENERAL );
-                }
+                vkCmdCopyBufferToImage( cmd->GetHandle(), stage->GetHandle(), dst->GetHandle(), VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &region );
             } );
             DT_INFO( "[StreamingManager] Immediate Texture Upload SUCCESS -> Target: '{}' | Size: {} bytes (Thread: {})",
                      dst->GetDebugName().empty() ? "Unnamed" : dst->GetDebugName(), size, GetThreadHash() );

@@ -6,12 +6,17 @@
 
 namespace DigitalTwin::Helpers
 {
+    /**
+     * @brief Attempts to dynamically find the project's root directory.
+     * Useful for locating user assets.
+     */
+    std::filesystem::path FindProjectRoot();
 
     /**
      * @brief Attempts to dynamically find the engine's internal root directory.
      * Useful for locating default shaders and engine assets.
      */
-    std::filesystem::path FindEngineRoot();
+    std::filesystem::path FindEngineRoot( const std::filesystem::path& projectRoot );
 
     /**
      * @brief Selects the best GPU adapter index based on the user preference.

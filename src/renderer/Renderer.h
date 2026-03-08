@@ -12,7 +12,6 @@ namespace DigitalTwin
     class StreamingManager;
     class RenderTarget;
     class GeometryPass;
-    class GridVisualizationPass;
     class Scene;
     class Camera;
 
@@ -71,21 +70,14 @@ namespace DigitalTwin
 
         SamplerHandle GetDefaultSampler() const { return m_defaultSampler; }
 
-        void                             SetGridVisualization( const GridVisualizationSettings& settings ) { m_gridVisSettings = settings; }
-        const GridVisualizationSettings& GetGridVisualization() const { return m_gridVisSettings; }
-
     private:
         Device*           m_device;
         Swapchain*        m_swapchain;
         ResourceManager*  m_resourceManager;
         StreamingManager* m_streamingManager;
 
-        // Settings
-        GridVisualizationSettings m_gridVisSettings;
-
         // Sub-systems / Passes
-        Scope<GeometryPass>          m_geometryPass;
-        Scope<GridVisualizationPass> m_gridVisPass;
+        Scope<GeometryPass> m_geometryPass;
 
         // --- Per-Frame Resources ---
         static const uint32_t FRAMES_IN_FLIGHT = 2;

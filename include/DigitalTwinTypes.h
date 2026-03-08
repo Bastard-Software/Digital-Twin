@@ -3,7 +3,6 @@
 #include "core/Core.h"
 #include "core/Handle.h"
 #include "platform/Window.h"
-#include <glm/glm.hpp>
 
 namespace DigitalTwin
 {
@@ -55,24 +54,6 @@ namespace DigitalTwin
         BufferHandle agentBufferWrite;
 
         uint32_t frameIndex;
-    };
-
-    // Visualization
-    enum class GridVisualizationMode
-    {
-        VOLUMETRIC_CLOUD = 0,
-        SLICE_2D         = 1
-    };
-
-    struct GridVisualizationSettings
-    {
-        bool                  active       = false;
-        int                   fieldIndex   = 0; // Index of the GridField (0 = Oxygen, 1 = VEGF, etc.)
-        GridVisualizationMode mode         = GridVisualizationMode::SLICE_2D;
-        float                 sliceZ       = 0.5f;                                // Normalized Z depth [0.0 - 1.0] for the 2D slice
-        float                 opacitySlice = 0.4f;                                // Ideal for Heatmap
-        float                 opacityCloud = 0.04f;                               // Ideal for Raymarching
-        glm::vec4             colorMap     = glm::vec4( 0.0f, 0.5f, 1.0f, 1.0f ); // Base color of the substance
     };
 
 } // namespace DigitalTwin

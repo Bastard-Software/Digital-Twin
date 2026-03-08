@@ -115,9 +115,20 @@ namespace DigitalTwin
             }
 
             // 6. FileSystem
-            m_fileSystem                      = CreateScope<FileSystem>( m_memorySystem.get() );
-            std::filesystem::path projectRoot = std::filesystem::current_path();
-            std::filesystem::path engineRoot  = Helpers::FindEngineRoot();
+            m_fileSystem = CreateScope<FileSystem>( m_memorySystem.get() );
+            // Resolve Project Root (Priority 1 - User/App files)
+            std::filesystem::path projectRoot;
+            if( m_config.rootDirectory && m_config.rootDirectory[ 0 ] != '\0' )
+            {
+                projectRoot = m_config.rootDirectory;
+            }
+            else
+            {
+                projectRoot = Helpers::FindProjectRoot();
+            }
+
+            // Resolve Engine Assets (Priority 2 - Fallback/Default files)
+            std::filesystem::path engineRoot = Helpers::FindEngineRoot( projectRoot );
             std::filesystem::path internalAssets;
 
             if( !engineRoot.empty() )
@@ -877,20 +888,6 @@ namespace DigitalTwin
         }
 
         return false;
-    }
-
-    void DigitalTwin::SetGridVisualization( const GridVisualizationSettings& settings )
-    {
-        if( m_impl->m_renderer )
-            m_impl->m_renderer->SetGridVisualization( settings );
-    }
-
-    const GridVisualizationSettings& DigitalTwin::GetGridVisualization() const
-    {
-        if( m_impl->m_renderer )
-            return m_impl->m_renderer->GetGridVisualization();
-        static GridVisualizationSettings def;
-        return def;
     }
 
     void DigitalTwin::RenderUI( std::function<void()> uiCallback )

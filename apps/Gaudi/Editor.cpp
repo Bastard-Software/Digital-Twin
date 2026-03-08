@@ -19,24 +19,22 @@ namespace Gaudi
 
     void Editor::SetupInitialBlueprint()
     {
-        // 1. Define physical simulation domain (100x100x100 voxels)
-        m_blueprint.SetDomainSize( glm::vec3( 200.0f ), 2.0f );
-
-        // 2. Add Oxygen Field
-        m_blueprint.AddGridField( "Oxygen" )
-            .SetInitializer( DigitalTwin::GridInitializer::Gaussian( glm::vec3( 0.0f ), 10.0f, 100.0f ) ) // Start with gausian distribution
-            .SetDiffusionCoefficient( 0.5f )                                                              // Moderate diffusion
-            .SetDecayRate( 0.001f )                                                                       // Natural background consumption
-            .SetComputeHz( 120.0f );                                                                      // High frequency for PDE stability
-
-        // 3. Add Tumor Cells
-        m_blueprint.AddAgentGroup( "TumorCells" )
+        // Example simulation setup
+        m_blueprint.AddAgentGroup( "CancerCells" )
             .SetCount( 50 )
-            .SetMorphology( DigitalTwin::MorphologyGenerator::CreateSphere( 1.0f ) )
-            .SetDistribution( DigitalTwin::SpatialDistribution::UniformInSphere( 50, 10.0f ) )
-            .SetColor( glm::vec4( 0.1f, 0.8f, 0.2f, 1.0f ) )
-            .AddBehaviour( DigitalTwin::Behaviours::BrownianMotion{ 0.1f } )
+            .SetMorphology( DigitalTwin::MorphologyGenerator::CreateCube( 3.0f ) )
+            .SetDistribution( DigitalTwin::SpatialDistribution::UniformInBox( 50, glm::vec3( 20.0f ) ) )
+            .SetColor( glm::vec4( 0.9f, 0.1f, 0.1f, 1.0f ) )
+            .AddBehaviour( DigitalTwin::Behaviours::BrownianMotion{ 0.5f } )
             .SetHz( 30.0f );
+
+        m_blueprint.AddAgentGroup( "T-Cells" )
+            .SetCount( 500 )
+            .SetMorphology( DigitalTwin::MorphologyGenerator::CreateCube( 1.0f ) )
+            .SetDistribution( DigitalTwin::SpatialDistribution::UniformInSphere( 500, 75.0f ) )
+            .SetColor( glm::vec4( 0.2f, 0.8f, 0.3f, 1.0f ) )
+            .AddBehaviour( DigitalTwin::Behaviours::BrownianMotion{ 5.0f } )
+            .SetHz( 60.0f );
 
         m_engine.SetBlueprint( m_blueprint );
     }

@@ -33,15 +33,6 @@ namespace DigitalTwin
         if( agentBuffers[ 1 ].IsValid() )
             resourceManager->DestroyBuffer( agentBuffers[ 1 ] );
 
-        for( auto& field: gridFields )
-        {
-            if( field.textures[ 0 ].IsValid() )
-                resourceManager->DestroyTexture( field.textures[ 0 ] );
-            if( field.textures[ 1 ].IsValid() )
-                resourceManager->DestroyTexture( field.textures[ 1 ] );
-        }
-        gridFields.clear();
-
         vertexBuffer      = {};
         indexBuffer       = {};
         indirectCmdBuffer = {};
@@ -54,15 +45,12 @@ namespace DigitalTwin
     {
         SimulationState state{};
         const auto&     groups = blueprint.GetGroups();
-        const auto&     fields = blueprint.GetGridFields();
 
-        if( groups.empty() && fields.empty() )
+        if( groups.empty() )
         {
             DT_WARN( "SimulationBuilder: Attempted to build an empty blueprint." );
             return state;
         }
-
-        CompileGridFields( blueprint, state );
 
         // 1. Calculate required capacities for the Mega-Buffers
         uint32_t totalVertices   = 0;
@@ -161,9 +149,6 @@ namespace DigitalTwin
         state.agentBuffers[ 0 ] = m_resourceManager->CreateBuffer( agentDesc );
         state.agentBuffers[ 1 ] = m_resourceManager->CreateBuffer( agentDesc );
 
-        // World size
-        state.domainSize = blueprint.GetDomainSize();
-
         // 5. Upload Data to VRAM
         m_streamingManager->UploadBufferImmediate(
             { { state.vertexBuffer, megaVertices.data(), megaVertices.size() * sizeof( Vertex ) },
@@ -178,117 +163,6 @@ namespace DigitalTwin
         DT_INFO( "SimulationBuilder: Successfully compiled Blueprint. Groups: {0}, Total Agents: {1}", validGroupCount, totalAgents );
 
         return state;
-    }
-
-    void SimulationBuilder::CompileGridFields( const SimulationBlueprint& blueprint, SimulationState& outState )
-    {
-        const auto& fields = blueprint.GetGridFields();
-        if( fields.empty() )
-            return;
-
-        // Calculate grid dimensions based on physical domain and voxel resolution
-        glm::vec3 domain    = blueprint.GetDomainSize();
-        float     voxelSize = blueprint.GetVoxelSize();
-
-        uint32_t gridWidth  = std::max( 1u, static_cast<uint32_t>( std::ceil( domain.x / voxelSize ) ) );
-        uint32_t gridHeight = std::max( 1u, static_cast<uint32_t>( std::ceil( domain.y / voxelSize ) ) );
-        uint32_t gridDepth  = std::max( 1u, static_cast<uint32_t>( std::ceil( domain.z / voxelSize ) ) );
-
-        DT_INFO( "SimulationBuilder: Compiling {} Grid Fields at resolution {}x{}x{}", fields.size(), gridWidth, gridHeight, gridDepth );
-
-        // Texture Descriptor for the PDE Grid
-        // Note: Using R32_SFLOAT for now to simplify CPU-side array initialization.
-        // We will optimize this to R16_SFLOAT in the future to halve VRAM bandwidth!
-        TextureDesc texDesc{};
-        texDesc.type   = TextureType::Texture3D;
-        texDesc.format = VK_FORMAT_R32_SFLOAT;
-        texDesc.width  = gridWidth;
-        texDesc.height = gridHeight;
-        texDesc.depth  = gridDepth;
-        texDesc.usage  = TextureUsage::STORAGE | TextureUsage::TRANSFER_SRC | TextureUsage::TRANSFER_DST;
-
-        ShaderHandle diffShader = m_resourceManager->CreateShader( "shaders/compute/diffusion.comp" );
-        if( !diffShader.IsValid() )
-        {
-            DT_ASSERT( false, "" )
-            DT_ERROR( "SimulationBuilder: CRITICAL! Failed to load 'diffusion.comp'. PDE solver will not work!" );
-        }
-
-        for( const auto& fieldDef: fields )
-        {
-            GridFieldState fieldState;
-            fieldState.width            = gridWidth;
-            fieldState.height           = gridHeight;
-            fieldState.depth            = gridDepth;
-            fieldState.currentReadIndex = 0;
-
-            // Allocate Ping-Pong 3D Textures for PDE Solver
-            texDesc.debugName        = fieldDef.GetName() + "GridField";
-            fieldState.textures[ 0 ] = m_resourceManager->CreateTexture( texDesc );
-            fieldState.textures[ 1 ] = m_resourceManager->CreateTexture( texDesc );
-
-            // Initialize Grid Data (Upload from CPU to GPU)
-            size_t             voxelCount = static_cast<size_t>( gridWidth ) * gridHeight * gridDepth;
-            std::vector<float> initialData( voxelCount, 0.0f );
-
-            // Domain bounds matching the shader (centered around 0,0,0)
-            glm::vec3 boxMin = -domain * 0.5f;
-
-            for( uint32_t z = 0; z < gridDepth; ++z )
-            {
-                for( uint32_t y = 0; y < gridHeight; ++y )
-                {
-                    for( uint32_t x = 0; x < gridWidth; ++x )
-                    {
-                        // Calculate the center of the current voxel in world space
-                        glm::vec3 worldPos = boxMin + glm::vec3( x, y, z ) * voxelSize + glm::vec3( voxelSize * 0.5f );
-
-                        // Call the user-defined lambda
-                        float val = fieldDef.GetInitializer()( worldPos );
-
-                        size_t index         = x + y * gridWidth + z * gridWidth * gridHeight;
-                        initialData[ index ] = val;
-                    }
-                }
-            }
-
-            size_t byteSize = voxelCount * sizeof( float );
-
-            // Synchronous upload of initial concentration to both ping-pong textures
-            m_streamingManager->UploadTextureImmediate( fieldState.textures[ 0 ], initialData.data(), byteSize );
-            m_streamingManager->UploadTextureImmediate( fieldState.textures[ 1 ], initialData.data(), byteSize );
-
-            outState.gridFields.push_back( fieldState );
-
-            ComputePipelineDesc pipeDesc{};
-            pipeDesc.shader                  = diffShader;
-            ComputePipelineHandle pipeHandle = m_resourceManager->CreatePipeline( pipeDesc );
-            ComputePipeline*      pipe       = m_resourceManager->GetPipeline( pipeHandle );
-
-            DT_ASSERT( pipeHandle.IsValid(), "" );
-
-            // Binding Group 0: Read from Tex0, Write to Tex1
-            BindingGroupHandle bgHandle0 = m_resourceManager->CreateBindingGroup( pipeHandle, 0 );
-            BindingGroup*      bg0       = m_resourceManager->GetBindingGroup( bgHandle0 );
-            bg0->Bind( 0, m_resourceManager->GetTexture( fieldState.textures[ 0 ] ), VK_IMAGE_LAYOUT_GENERAL );
-            bg0->Bind( 1, m_resourceManager->GetTexture( fieldState.textures[ 1 ] ), VK_IMAGE_LAYOUT_GENERAL );
-            bg0->Build();
-
-            // Binding Group 1: Read from Tex1, Write to Tex0
-            BindingGroupHandle bgHandle1 = m_resourceManager->CreateBindingGroup( pipeHandle, 0 );
-            BindingGroup*      bg1       = m_resourceManager->GetBindingGroup( bgHandle1 );
-            bg1->Bind( 0, m_resourceManager->GetTexture( fieldState.textures[ 1 ] ), VK_IMAGE_LAYOUT_GENERAL );
-            bg1->Bind( 1, m_resourceManager->GetTexture( fieldState.textures[ 0 ] ), VK_IMAGE_LAYOUT_GENERAL );
-            bg1->Build();
-
-            ComputePushConstants pc{};
-            pc.param1 = fieldDef.GetDiffusionCoefficient();
-            pc.param2 = fieldDef.GetDecayRate();
-
-            glm::uvec3 dispatchSize( ( gridWidth + 7 ) / 8, ( gridHeight + 7 ) / 8, ( gridDepth + 7 ) / 8 );
-            outState.computeGraph.AddTask( ComputeTask( pipe, bg0, bg1, fieldDef.GetComputeHz(), pc, dispatchSize ) );
-            DT_INFO( "SimulationBuilder: Compiled PDE task for '{}' at {}Hz", fieldDef.GetName(), fieldDef.GetComputeHz() );
-        }
     }
 
     void SimulationBuilder::CompileBehaviours( const SimulationBlueprint& blueprint, SimulationState& outState )
@@ -312,30 +186,30 @@ namespace DigitalTwin
                     ComputePipelineHandle pipeHandle = m_resourceManager->CreatePipeline( compDesc );
                     ComputePipeline*      pipe       = m_resourceManager->GetPipeline( pipeHandle );
 
-                    DT_ASSERT( pipeHandle.IsValid(), "" );
+                    if( pipe )
+                    {
+                        // 1. Create Binding Group 0 (Read from 0, Write to 1)
+                        BindingGroupHandle bgHandle0 = m_resourceManager->CreateBindingGroup( pipeHandle, 0 );
+                        BindingGroup*      bg0       = m_resourceManager->GetBindingGroup( bgHandle0 );
+                        bg0->Bind( 0, m_resourceManager->GetBuffer( outState.agentBuffers[ 0 ] ) ); // readonly
+                        bg0->Bind( 1, m_resourceManager->GetBuffer( outState.agentBuffers[ 1 ] ) ); // writeonly
+                        bg0->Build();
 
-                    // 1. Create Binding Group 0 (Read from 0, Write to 1)
-                    BindingGroupHandle bgHandle0 = m_resourceManager->CreateBindingGroup( pipeHandle, 0 );
-                    BindingGroup*      bg0       = m_resourceManager->GetBindingGroup( bgHandle0 );
-                    bg0->Bind( 0, m_resourceManager->GetBuffer( outState.agentBuffers[ 0 ] ) ); // readonly
-                    bg0->Bind( 1, m_resourceManager->GetBuffer( outState.agentBuffers[ 1 ] ) ); // writeonly
-                    bg0->Build();
+                        // 2. Create Binding Group 1 (Read from 1, Write to 0)
+                        BindingGroupHandle bgHandle1 = m_resourceManager->CreateBindingGroup( pipeHandle, 0 );
+                        BindingGroup*      bg1       = m_resourceManager->GetBindingGroup( bgHandle1 );
+                        bg1->Bind( 0, m_resourceManager->GetBuffer( outState.agentBuffers[ 1 ] ) ); // readonly
+                        bg1->Bind( 1, m_resourceManager->GetBuffer( outState.agentBuffers[ 0 ] ) ); // writeonly
+                        bg1->Build();
 
-                    // 2. Create Binding Group 1 (Read from 1, Write to 0)
-                    BindingGroupHandle bgHandle1 = m_resourceManager->CreateBindingGroup( pipeHandle, 0 );
-                    BindingGroup*      bg1       = m_resourceManager->GetBindingGroup( bgHandle1 );
-                    bg1->Bind( 0, m_resourceManager->GetBuffer( outState.agentBuffers[ 1 ] ) ); // readonly
-                    bg1->Bind( 1, m_resourceManager->GetBuffer( outState.agentBuffers[ 0 ] ) ); // writeonly
-                    bg1->Build();
+                        ComputePushConstants pc{};
+                        pc.speed  = brownian.speed;
+                        pc.offset = currentOffset;
+                        pc.count  = group.GetCount();
 
-                    ComputePushConstants pc{};
-                    pc.param1 = brownian.speed;
-                    pc.offset = currentOffset;
-                    pc.count  = group.GetCount();
-
-                    glm::uvec3 agentDispatch( ( group.GetCount() + 255 ) / 256, 1, 1 );
-                    outState.computeGraph.AddTask( ComputeTask( pipe, bg0, bg1, record.targetHz, pc, agentDispatch ) );
-                    DT_INFO( "SimulationBuilder: Compiled BrownianMotion for group '{}' at {}Hz", group.GetName(), record.targetHz );
+                        outState.computeGraph.AddTask( ComputeTask( pipe, bg0, bg1, record.targetHz, pc ) );
+                        DT_INFO( "SimulationBuilder: Compiled BrownianMotion for group '{}' at {}Hz", group.GetName(), record.targetHz );
+                    }
                 }
             }
             currentOffset += group.GetCount();

@@ -56,10 +56,6 @@ namespace DigitalTwin
         void Dispatch( uint32_t groupCountX, uint32_t groupCountY, uint32_t groupCountZ );
 
         void CopyBuffer( Buffer* src, Buffer* dst, VkDeviceSize size, VkDeviceSize srcOffset = 0, VkDeviceSize dstOffset = 0 );
-        void CopyBufferToImage( Buffer* srcBuffer, Texture* dstTexture, VkImageLayout dstImageLayout, uint32_t regionCount,
-                                const VkBufferImageCopy* pRegions );
-        void CopyImageToBuffer( Texture* srcTexture, VkImageLayout srcImageLayout, Buffer* dstBuffer, uint32_t regionCount,
-                                const VkBufferImageCopy* pRegions );
 
         void PipelineBarrier( VkPipelineStageFlags2 srcStage, VkPipelineStageFlags2 dstStage, VkDependencyFlags dependencyFlags,
                               uint32_t memoryBarrierCount, const VkMemoryBarrier2* pMemoryBarriers, uint32_t bufferMemoryBarrierCount,

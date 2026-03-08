@@ -3,15 +3,27 @@
 
 namespace DigitalTwin::Helpers
 {
-    std::filesystem::path FindEngineRoot()
+    std::filesystem::path FindProjectRoot()
     {
         std::filesystem::path p = std::filesystem::current_path();
 
         for( int i = 0; i < 10; ++i )
         {
-            if( std::filesystem::exists( p / "assets" ) && std::filesystem::exists( p / "src" ) )
-            {
+            bool hasCMake = std::filesystem::exists( p / "CMakeLists.txt" );
+            bool isBuild  = std::filesystem::exists( p / "CMakeFiles" ) || std::filesystem::exists( p / "CMakeCache.txt" );
+
+            if( hasCMake && !isBuild )
                 return p;
+
+            std::string pathStr  = p.generic_string();
+            size_t      buildPos = pathStr.find( "/build/" );
+            if( buildPos != std::string::npos )
+            {
+                std::string newPathStr = pathStr;
+                newPathStr.replace( buildPos, 7, "/" );
+                std::filesystem::path trySource = newPathStr;
+                if( std::filesystem::exists( trySource ) )
+                    return trySource;
             }
 
             if( p.has_parent_path() )
@@ -21,6 +33,23 @@ namespace DigitalTwin::Helpers
         }
 
         return std::filesystem::current_path();
+    }
+
+    std::filesystem::path FindEngineRoot( const std::filesystem::path& projectRoot )
+    {
+        std::filesystem::path p = projectRoot;
+
+        for( int i = 0; i < 10; ++i )
+        {
+            if( std::filesystem::exists( p / "src" ) && std::filesystem::exists( p / "include" ) && std::filesystem::exists( p / "assets" ) )
+                return p;
+
+            if( p.has_parent_path() )
+                p = p.parent_path();
+            else
+                break;
+        }
+        return {};
     }
 
     uint32_t SelectGPU( GPUType preference, const std::vector<AdapterInfo>& adapters )

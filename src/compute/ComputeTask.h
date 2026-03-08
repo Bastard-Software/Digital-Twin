@@ -7,13 +7,20 @@ namespace DigitalTwin
     /**
      * @brief Raw data mapped directly to Vulkan Push Constants in the compute shader.
      */
+    /**
+     * @brief Standardized 32-byte payload mapped to Vulkan Push Constants.
+     * All compute shaders MUST define this exact memory layout.
+     */
     struct ComputePushConstants
     {
         float    dt;
         float    totalTime;
-        float    speed;
-        uint32_t offset;
-        uint32_t count;
+        float    param1; // Usage depends on shader (e.g. speed, diffusion)
+        float    param2; // Usage depends on shader (e.g. decay, radius)
+        uint32_t offset; // For agent buffers
+        uint32_t count;  // For agent buffers
+        uint32_t extra1; // Reserved / Padding
+        uint32_t extra2; // Reserved / Padding
     };
 
     /**

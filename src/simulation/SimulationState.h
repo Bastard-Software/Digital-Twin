@@ -8,6 +8,20 @@ namespace DigitalTwin
     class ResourceManager;
 
     /**
+     * @brief Holds the ping-pong 3D textures for a single PDE grid field.
+     */
+    struct GridFieldState
+    {
+        TextureHandle textures[ 2 ]; // 0: Read, 1: Write (swapped each tick)
+        uint32_t      currentReadIndex = 0;
+
+        // Dimensions in voxels
+        uint32_t width  = 0;
+        uint32_t height = 0;
+        uint32_t depth  = 0;
+    };
+
+    /**
      * @brief Represents the compiled, GPU-side state of a simulation.
      * Contains handles to the heavily optimized SoA buffers and mega-buffers.
      * This class is internal to the engine and should not be exposed to the user.
@@ -22,6 +36,9 @@ namespace DigitalTwin
         // Ping-pong buffers for compute shader integration (Read/Write swapping)
         BufferHandle agentBuffers[ 2 ];
         uint32_t     currentReadIndex = 0;
+
+        // Grig fields
+        std::vector<GridFieldState> gridFields;
 
         // How many distinct agent groups exist (used for Indirect Draw Count)
         uint32_t groupCount = 0;

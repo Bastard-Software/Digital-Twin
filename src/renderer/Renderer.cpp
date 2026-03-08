@@ -26,6 +26,10 @@
 #include <backends/imgui_impl_vulkan.h>
 #include <imgui.h>
 
+#if defined( max )
+#    undef max
+#endif
+
 namespace DigitalTwin
 {
     Renderer::Renderer( Device* device, Swapchain* swapchain, ResourceManager* rm, StreamingManager* sm )

@@ -24,6 +24,7 @@ namespace DigitalTwin
         SimulationState Build( const SimulationBlueprint& blueprint );
 
     private:
+        void CompileGridFields( const SimulationBlueprint& blueprint, SimulationState& outState );
         void CompileBehaviours( const SimulationBlueprint& blueprint, SimulationState& outState );
 
     private:

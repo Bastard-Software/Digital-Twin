@@ -19,12 +19,17 @@
 #include "renderer/RenderTarget.h"
 #include "renderer/Scene.h"
 #include "renderer/passes/GeometryPass.h"
+#include "renderer/passes/GridVisualizationPass.h"
 
 // ImGui
 #include <GLFW/glfw3.h>
 #include <backends/imgui_impl_glfw.h>
 #include <backends/imgui_impl_vulkan.h>
 #include <imgui.h>
+
+#if defined( max )
+#    undef max
+#endif
 
 namespace DigitalTwin
 {
@@ -128,8 +133,8 @@ namespace DigitalTwin
         {
             m_renderTargets[ i ] = CreateScope<RenderTarget>( m_resourceManager, m_viewportWidth, m_viewportHeight );
 
-            // Uniform Buffer for Camera Matrices (Host Visible so we can update it easily)
-            BufferDesc uboDesc{ sizeof( glm::mat4 ), BufferType::UNIFORM };
+            // Uniform Buffer for Camera Matrices (viewProj + invViewProj)
+            BufferDesc uboDesc{ sizeof( glm::mat4 ) * 2, BufferType::UNIFORM };
             m_cameraUBOs[ i ] = m_resourceManager->CreateBuffer( uboDesc );
         }
 
@@ -138,6 +143,13 @@ namespace DigitalTwin
         if( m_geometryPass->Initialize() != Result::SUCCESS )
         {
             DT_ERROR( "Failed to initialize GeometryPass." );
+            return Result::FAIL;
+        }
+
+        m_gridVisPass = CreateScope<GridVisualizationPass>( m_device, m_resourceManager );
+        if( m_gridVisPass->Initialize( VK_FORMAT_R8G8B8A8_UNORM, VK_FORMAT_D32_SFLOAT ) != Result::SUCCESS )
+        {
+            DT_ERROR( "Failed to initialize GridVisualizationPass." );
             return Result::FAIL;
         }
 
@@ -167,6 +179,11 @@ namespace DigitalTwin
         {
             m_geometryPass->Shutdown();
             m_geometryPass.reset();
+        }
+        if( m_gridVisPass )
+        {
+            m_gridVisPass->Shutdown();
+            m_gridVisPass.reset();
         }
 
         // 3. Cleanup ImGui
@@ -257,9 +274,17 @@ namespace DigitalTwin
             profiler->BeginFrame( cmd, flightIndex );
 
         // 1. Update Camera Uniform Buffer
-        Buffer*   ubo      = m_resourceManager->GetBuffer( m_cameraUBOs[ flightIndex ] );
-        glm::mat4 viewProj = camera->GetViewProjection();
-        ubo->Write( &viewProj, sizeof( glm::mat4 ) );
+        struct CameraUBOData
+        {
+            glm::mat4 viewProj;
+            glm::mat4 invViewProj;
+        } uboData;
+
+        uboData.viewProj    = camera->GetViewProjection();
+        uboData.invViewProj = glm::inverse( camera->GetViewProjection() );
+
+        Buffer* ubo = m_resourceManager->GetBuffer( m_cameraUBOs[ flightIndex ] );
+        ubo->Write( &uboData, sizeof( CameraUBOData ) );
 
         // 2. Prepare RenderTarget textures for writing
         m_renderTargets[ flightIndex ]->TransitionForRendering( cmd );
@@ -308,11 +333,25 @@ namespace DigitalTwin
             renderScene.agentBuffers[ 1 ] = state->agentBuffers[ 0 ];
             renderScene.drawCount         = state->groupCount;
 
+            // Scene pass
             if( profiler )
                 profiler->BeginZone( cmd, flightIndex, "Geometry Pass" );
             m_geometryPass->Execute( cmd, m_cameraUBOs[ flightIndex ], &renderScene, flightIndex );
             if( profiler )
                 profiler->EndZone( cmd, flightIndex, "Geometry Pass" );
+
+            // Grid pass
+            if( m_gridVisSettings.active && m_gridVisSettings.fieldIndex < state->gridFields.size() )
+            {
+                if( profiler )
+                    profiler->BeginZone( cmd, flightIndex, "Grid Visualization Pass" );
+
+                m_gridVisPass->Execute( cmd, m_cameraUBOs[ flightIndex ], &state->gridFields[ m_gridVisSettings.fieldIndex ], m_gridVisSettings,
+                                        state->domainSize, flightIndex );
+
+                if( profiler )
+                    profiler->EndZone( cmd, flightIndex, "Grid Visualization Pass" );
+            }
         }
 
         cmd->EndRendering();

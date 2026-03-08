@@ -1,0 +1,66 @@
+#version 450
+
+// Thread group size (e.g., 8x8x8 voxels per workgroup)
+layout(local_size_x = 8, local_size_y = 8, local_size_z = 8) in;
+
+layout(set = 0, binding = 0, r32f) uniform readonly image3D u_ReadTexture;
+layout(set = 0, binding = 1, r32f) uniform writeonly image3D u_WriteTexture;
+
+// Push constants tailored for the physical properties of the grid
+layout(push_constant) uniform PushConstants 
+{
+    float dt;
+    float totalTime;
+    float param1; // diffusion coef
+    float param2; // decay
+    uint offset;
+    uint count;
+    uint extra1;
+    uint extra2;
+} pc;
+
+// Helper function to safely read from the texture with Neumann boundary conditions (Clamp to Edge)
+float getVal(ivec3 coord, ivec3 size) 
+{
+    coord = clamp(coord, ivec3(0), size - ivec3(1));
+    return imageLoad(u_ReadTexture, coord).r;
+}
+
+void main() 
+{
+    ivec3 voxelCoord = ivec3(gl_GlobalInvocationID.xyz);
+    ivec3 texSize    = imageSize(u_WriteTexture);
+
+    // Prevent execution outside the grid bounds
+    if (voxelCoord.x >= texSize.x || voxelCoord.y >= texSize.y || voxelCoord.z >= texSize.z) 
+    {
+        return;
+    }
+
+    // Current concentration at the center voxel
+    float center = imageLoad(u_ReadTexture, voxelCoord).r;
+
+    // 7-point Laplacian stencil for 3D diffusion
+    float right  = getVal(voxelCoord + ivec3(1, 0, 0), texSize);
+    float left   = getVal(voxelCoord + ivec3(-1, 0, 0), texSize);
+    float up     = getVal(voxelCoord + ivec3(0, 1, 0), texSize);
+    float down   = getVal(voxelCoord + ivec3(0, -1, 0), texSize);
+    float front  = getVal(voxelCoord + ivec3(0, 0, 1), texSize);
+    float back   = getVal(voxelCoord + ivec3(0, 0, -1), texSize);
+
+    // Sum of neighbors minus 6 * center
+    float laplacian = (right + left + up + down + front + back) - (6.0 * center);
+
+    // Forward Euler Integration: 
+    float diffusionTerm = pc.param1 * laplacian;
+    //diffusionTerm *= 1000.0; // We multiply diffusion by a large factor internally to make it visually pleasing for the demo
+    float decayTerm = pc.param2 * center;
+
+    float newValue = center + pc.dt * (diffusionTerm - decayTerm);
+    
+    // Physical constraint: Concentration cannot drop below absolute zero
+    newValue = max(newValue, 0.0); 
+
+    // Store the updated concentration into the next frame's texture
+    imageStore(u_WriteTexture, voxelCoord, vec4(newValue, 0.0, 0.0, 0.0));
+}

@@ -27,6 +27,7 @@ namespace DigitalTwin
         VkImageLayout GetCurrentLayout() const { return m_currentLayout; }
         TextureType   GetType() const { return m_type; }
 
+        void               SetLayout( VkImageLayout layout ) { m_currentLayout = layout; }
         void               SetDebugName( const std::string& name ) { m_debugName = name; }
         const std::string& GetDebugName() const { return m_debugName; }
 

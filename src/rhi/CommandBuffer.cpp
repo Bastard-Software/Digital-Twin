@@ -195,6 +195,18 @@ namespace DigitalTwin
         m_api->vkCmdCopyBuffer( m_handle, src->GetHandle(), dst->GetHandle(), 1, &region );
     }
 
+    void CommandBuffer::CopyBufferToImage( Buffer* srcBuffer, Texture* dstTexture, VkImageLayout dstImageLayout, uint32_t regionCount,
+                                           const VkBufferImageCopy* pRegions )
+    {
+        m_api->vkCmdCopyBufferToImage( m_handle, srcBuffer->GetHandle(), dstTexture->GetHandle(), dstImageLayout, regionCount, pRegions );
+    }
+
+    void CommandBuffer::CopyImageToBuffer( Texture* srcTexture, VkImageLayout srcImageLayout, Buffer* dstBuffer, uint32_t regionCount,
+                                           const VkBufferImageCopy* pRegions )
+    {
+        m_api->vkCmdCopyImageToBuffer( m_handle, srcTexture->GetHandle(), srcImageLayout, dstBuffer->GetHandle(), regionCount, pRegions );
+    }
+
     void CommandBuffer::PipelineBarrier( VkPipelineStageFlags2 srcStage, VkPipelineStageFlags2 dstStage, VkDependencyFlags dependencyFlags,
                                          uint32_t memoryBarrierCount, const VkMemoryBarrier2* pMemoryBarriers, uint32_t bufferMemoryBarrierCount,
                                          const VkBufferMemoryBarrier2* pBufferMemoryBarriers, uint32_t imageMemoryBarrierCount,

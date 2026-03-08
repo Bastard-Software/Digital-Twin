@@ -36,12 +36,14 @@ namespace DigitalTwin
         bool IsWindowClosed();
 
         // Rendering
-        void  RenderUI( std::function<void()> uiCallback );
-        void  SetViewportSize( uint32_t width, uint32_t height );
-        void  GetViewportSize( uint32_t& outWidth, uint32_t& outHeight ) const;
-        void* GetSceneTextureID() const;
-        void* GetImGuiTextureID( TextureHandle handle );
-        void* GetImGuiContext();
+        void                             SetGridVisualization( const GridVisualizationSettings& settings );
+        const GridVisualizationSettings& GetGridVisualization() const;
+        void                             RenderUI( std::function<void()> uiCallback );
+        void                             SetViewportSize( uint32_t width, uint32_t height );
+        void                             GetViewportSize( uint32_t& outWidth, uint32_t& outHeight ) const;
+        void*                            GetSceneTextureID() const;
+        void*                            GetImGuiTextureID( TextureHandle handle );
+        void*                            GetImGuiContext();
 
     public:
         FileSystem* GetFileSystem() const;

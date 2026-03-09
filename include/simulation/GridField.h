@@ -45,6 +45,28 @@ namespace DigitalTwin
                 return peakValue * std::exp( -distSq / ( 2.0f * sigma * sigma ) );
             };
         }
+
+        /**
+         * @brief Creates a field with multiple overlapping sources (Gaussians).
+         * Ideal for simulating a network of blood vessels.
+         */
+        static GridInitFunction MultiGaussian( const std::vector<glm::vec3>& centers, float sigma, float peakValue )
+        {
+            // Capture the 'centers' vector by value so the lambda holds its own copy
+            return [ centers, sigma, peakValue ]( const glm::vec3& pos ) {
+                float totalValue = 0.0f;
+                float twoSigmaSq = 2.0f * sigma * sigma;
+
+                for( const auto& center: centers )
+                {
+                    float distSq = glm::dot( pos - center, pos - center );
+                    totalValue += peakValue * std::exp( -distSq / twoSigmaSq );
+                }
+
+                // Clamp to prevent exceeding the maximum physical concentration (e.g., 100.0)
+                return std::min( totalValue, 100.0f );
+            };
+        }
     };
 
     /**

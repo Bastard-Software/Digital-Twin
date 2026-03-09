@@ -2,6 +2,7 @@
 
 #include <core/Log.h>
 #include <imgui.h>
+#include <random>
 #include <simulation/MorphologyGenerator.h>
 #include <simulation/SpatialDistribution.h>
 
@@ -22,10 +23,18 @@ namespace Gaudi
         // 1. Define physical simulation domain (100x100x100 voxels)
         m_blueprint.SetDomainSize( glm::vec3( 200.0f ), 2.0f );
 
-        // 2. Add Oxygen Field
+        // 2. Add Oxygen Field - random points representing "blood vessels" or oxygen sources
+        std::vector<glm::vec3>                bloodVessels;
+        std::mt19937                          rng( 49 );             // Fixed seed for reproducible results during MVP testing
+        std::uniform_real_distribution<float> dist( -40.0f, 40.0f ); // Scatter around the center
+        for( int i = 0; i < 6; ++i )                                 // Generate 6 sources
+        {
+            bloodVessels.push_back( glm::vec3( dist( rng ), dist( rng ), dist( rng ) ) );
+        }
+
         m_blueprint.AddGridField( "Oxygen" )
-            .SetInitializer( DigitalTwin::GridInitializer::Gaussian( glm::vec3( 0.0f ), 10.0f, 100.0f ) ) // Start with gausian distribution
-            .SetDiffusionCoefficient( 0.5f )                                                              // Moderate diffusion
+            .SetInitializer( DigitalTwin::GridInitializer::MultiGaussian( bloodVessels, 10.0f, 100.0f ) ) // Multigaussian
+            .SetDiffusionCoefficient( 2.0f )                                                              // Moderate diffusion
             .SetDecayRate( 0.001f )                                                                       // Natural background consumption
             .SetComputeHz( 120.0f );                                                                      // High frequency for PDE stability
 

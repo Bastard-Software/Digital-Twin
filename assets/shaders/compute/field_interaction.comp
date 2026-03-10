@@ -1,0 +1,52 @@
+#version 460
+layout(local_size_x = 256) in;
+
+layout(push_constant) uniform PushConstants {
+    float dt;
+    float totalTime;
+    float param1; // rate of consumption/secretion
+    float param2;
+    uint offset;
+    uint count;
+    uint padding1;
+    uint padding2;
+    vec4 domainSize;
+    uvec4 gridSize;
+} pc;
+
+layout(std140, binding = 0) readonly buffer AgentBuffer {
+    vec4 positions[];
+} agents;
+
+// Binding 1: Atomic Target
+layout(std430, binding = 1) buffer DeltaBuffer {
+    int deltas[];
+};
+
+void main() {
+    uint idx = gl_GlobalInvocationID.x;
+    if(idx >= pc.count) return;
+
+    uint globalIdx = pc.offset + idx;
+    vec3 pos = agents.positions[globalIdx].xyz;
+
+    vec3 boxMin = -pc.domainSize.xyz * 0.5;
+    vec3 boxMax =  pc.domainSize.xyz * 0.5;
+    
+    // Skip if agent is completely out of grid bounds
+    if(any(lessThan(pos, boxMin)) || any(greaterThanEqual(pos, boxMax))) return;
+
+    // Map physical [-domain/2, domain/2] to normalized [0, 1]
+    vec3 uvw = (pos - boxMin) / pc.domainSize.xyz;
+    
+    // Map to voxel coordinates
+    ivec3 coord = ivec3(uvw * vec3(pc.gridSize.xyz));
+    coord = clamp(coord, ivec3(0), ivec3(pc.gridSize.xyz) - ivec3(1));
+
+    uint flatIdx = coord.x + coord.y * pc.gridSize.x + coord.z * pc.gridSize.x * pc.gridSize.y;
+
+    // Scale float delta to integer to allow atomic additions across multiple agents
+    int intDelta = int(pc.param1 * pc.dt * 100000.0);
+    
+    atomicAdd(deltas[flatIdx], intDelta);
+}

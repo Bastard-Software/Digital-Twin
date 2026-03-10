@@ -5,6 +5,7 @@
 #include "resources/StreamingManager.h"
 #include "rhi/BindingGroup.h"
 #include "simulation/SimulationBlueprint.h"
+#include <tuple>
 #include <volk.h>
 
 namespace DigitalTwin
@@ -39,6 +40,8 @@ namespace DigitalTwin
                 resourceManager->DestroyTexture( field.textures[ 0 ] );
             if( field.textures[ 1 ].IsValid() )
                 resourceManager->DestroyTexture( field.textures[ 1 ] );
+            if( field.interactionDeltaBuffer.IsValid() )
+                resourceManager->DestroyBuffer( field.interactionDeltaBuffer );
         }
         gridFields.clear();
 
@@ -147,14 +150,21 @@ namespace DigitalTwin
         }
 
         // 4. Create GPU Buffers via ResourceManager
-        state.vertexBuffer =
-            m_resourceManager->CreateBuffer( { megaVertices.size() * sizeof( Vertex ), BufferType::VERTEX, "SimulationVertexBuffer" } );
-        state.indexBuffer =
-            m_resourceManager->CreateBuffer( { megaIndices.size() * sizeof( uint32_t ), BufferType::INDEX, "SimulationIndexBuffer" } );
-        state.indirectCmdBuffer = m_resourceManager->CreateBuffer(
-            { indirectCommands.size() * sizeof( VkDrawIndexedIndirectCommand ), BufferType::INDIRECT, "SimulationIndirectBuffer" } );
-        state.groupDataBuffer =
-            m_resourceManager->CreateBuffer( { groupColors.size() * sizeof( glm::vec4 ), BufferType::STORAGE, "SimulationAdditionalDataBuffer" } );
+        if( !megaVertices.empty() )
+            state.vertexBuffer =
+                m_resourceManager->CreateBuffer( { megaVertices.size() * sizeof( Vertex ), BufferType::VERTEX, "SimulationVertexBuffer" } );
+
+        if( !megaIndices.empty() )
+            state.indexBuffer =
+                m_resourceManager->CreateBuffer( { megaIndices.size() * sizeof( uint32_t ), BufferType::INDEX, "SimulationIndexBuffer" } );
+
+        if( !indirectCommands.empty() )
+            state.indirectCmdBuffer = m_resourceManager->CreateBuffer(
+                { indirectCommands.size() * sizeof( VkDrawIndexedIndirectCommand ), BufferType::INDIRECT, "SimulationIndirectBuffer" } );
+
+        if( !groupColors.empty() )
+            state.groupDataBuffer = m_resourceManager->CreateBuffer(
+                { groupColors.size() * sizeof( glm::vec4 ), BufferType::STORAGE, "SimulationAdditionalDataBuffer" } );
 
         // Ping-pong agent buffers (Storage for Compute, Transfer Src/Dst for Readbacks and Uploads)
         BufferDesc agentDesc{ megaPositions.size() * sizeof( glm::vec4 ), BufferType::STORAGE, "SimulationAgentBuffer" };
@@ -165,13 +175,26 @@ namespace DigitalTwin
         state.domainSize = blueprint.GetDomainSize();
 
         // 5. Upload Data to VRAM
-        m_streamingManager->UploadBufferImmediate(
-            { { state.vertexBuffer, megaVertices.data(), megaVertices.size() * sizeof( Vertex ) },
-              { state.indexBuffer, megaIndices.data(), megaIndices.size() * sizeof( uint32_t ) },
-              { state.indirectCmdBuffer, indirectCommands.data(), indirectCommands.size() * sizeof( VkDrawIndexedIndirectCommand ) },
-              { state.groupDataBuffer, groupColors.data(), groupColors.size() * sizeof( glm::vec4 ) },
-              { state.agentBuffers[ 0 ], megaPositions.data(), megaPositions.size() * sizeof( glm::vec4 ) },
-              { state.agentBuffers[ 1 ], megaPositions.data(), megaPositions.size() * sizeof( glm::vec4 ) } } );
+        std::vector<BufferUploadRequest> uploads;
+
+        if( state.vertexBuffer.IsValid() )
+            uploads.push_back( { state.vertexBuffer, megaVertices.data(), megaVertices.size() * sizeof( Vertex ) } );
+
+        if( state.indexBuffer.IsValid() )
+            uploads.push_back( { state.indexBuffer, megaIndices.data(), megaIndices.size() * sizeof( uint32_t ) } );
+
+        if( state.indirectCmdBuffer.IsValid() )
+            uploads.push_back(
+                { state.indirectCmdBuffer, indirectCommands.data(), indirectCommands.size() * sizeof( VkDrawIndexedIndirectCommand ) } );
+
+        if( state.groupDataBuffer.IsValid() )
+            uploads.push_back( { state.groupDataBuffer, groupColors.data(), groupColors.size() * sizeof( glm::vec4 ) } );
+
+        // Always upload agents
+        uploads.push_back( { state.agentBuffers[ 0 ], megaPositions.data(), megaPositions.size() * sizeof( glm::vec4 ) } );
+        uploads.push_back( { state.agentBuffers[ 1 ], megaPositions.data(), megaPositions.size() * sizeof( glm::vec4 ) } );
+
+        m_streamingManager->UploadBufferImmediate( uploads );
 
         CompileBehaviours( blueprint, state );
 
@@ -217,18 +240,26 @@ namespace DigitalTwin
         for( const auto& fieldDef: fields )
         {
             GridFieldState fieldState;
+            fieldState.name             = fieldDef.GetName();
             fieldState.width            = gridWidth;
             fieldState.height           = gridHeight;
             fieldState.depth            = gridDepth;
             fieldState.currentReadIndex = 0;
 
             // Allocate Ping-Pong 3D Textures for PDE Solver
-            texDesc.debugName        = fieldDef.GetName() + "GridField";
+            texDesc.debugName        = "Texture_" + fieldDef.GetName();
             fieldState.textures[ 0 ] = m_resourceManager->CreateTexture( texDesc );
             fieldState.textures[ 1 ] = m_resourceManager->CreateTexture( texDesc );
 
+            size_t     voxelCount = static_cast<size_t>( gridWidth ) * gridHeight * gridDepth;
+            BufferDesc deltaDesc{ voxelCount * sizeof( int32_t ), BufferType::STORAGE, "DeltaBuffer_" + fieldDef.GetName() };
+            fieldState.interactionDeltaBuffer = m_resourceManager->CreateBuffer( deltaDesc );
+
             // Initialize Grid Data (Upload from CPU to GPU)
-            size_t             voxelCount = static_cast<size_t>( gridWidth ) * gridHeight * gridDepth;
+            std::vector<int32_t> zeroDeltas( voxelCount, 0 );
+            m_streamingManager->UploadBufferImmediate(
+                { { fieldState.interactionDeltaBuffer, zeroDeltas.data(), zeroDeltas.size() * sizeof( int32_t ) } } );
+
             std::vector<float> initialData( voxelCount, 0.0f );
 
             // Domain bounds matching the shader (centered around 0,0,0)
@@ -272,6 +303,7 @@ namespace DigitalTwin
             BindingGroup*      bg0       = m_resourceManager->GetBindingGroup( bgHandle0 );
             bg0->Bind( 0, m_resourceManager->GetTexture( fieldState.textures[ 0 ] ), VK_IMAGE_LAYOUT_GENERAL );
             bg0->Bind( 1, m_resourceManager->GetTexture( fieldState.textures[ 1 ] ), VK_IMAGE_LAYOUT_GENERAL );
+            bg0->Bind( 2, m_resourceManager->GetBuffer( fieldState.interactionDeltaBuffer ) );
             bg0->Build();
 
             // Binding Group 1: Read from Tex1, Write to Tex0
@@ -279,6 +311,7 @@ namespace DigitalTwin
             BindingGroup*      bg1       = m_resourceManager->GetBindingGroup( bgHandle1 );
             bg1->Bind( 0, m_resourceManager->GetTexture( fieldState.textures[ 1 ] ), VK_IMAGE_LAYOUT_GENERAL );
             bg1->Bind( 1, m_resourceManager->GetTexture( fieldState.textures[ 0 ] ), VK_IMAGE_LAYOUT_GENERAL );
+            bg1->Bind( 2, m_resourceManager->GetBuffer( fieldState.interactionDeltaBuffer ) );
             bg1->Build();
 
             ComputePushConstants pc{};
@@ -336,6 +369,68 @@ namespace DigitalTwin
                     glm::uvec3 agentDispatch( ( group.GetCount() + 255 ) / 256, 1, 1 );
                     outState.computeGraph.AddTask( ComputeTask( pipe, bg0, bg1, record.targetHz, pc, agentDispatch ) );
                     DT_INFO( "SimulationBuilder: Compiled BrownianMotion for group '{}' at {}Hz", group.GetName(), record.targetHz );
+                }
+                if( std::holds_alternative<Behaviours::ConsumeField>( record.behaviour ) ||
+                    std::holds_alternative<Behaviours::SecreteField>( record.behaviour ) )
+                {
+                    bool        isConsume  = std::holds_alternative<Behaviours::ConsumeField>( record.behaviour );
+                    std::string targetName = isConsume ? std::get<Behaviours::ConsumeField>( record.behaviour ).fieldName
+                                                       : std::get<Behaviours::SecreteField>( record.behaviour ).fieldName;
+
+                    // Consume translates to negative rate, secrete to positive
+                    float rate = isConsume ? -std::get<Behaviours::ConsumeField>( record.behaviour ).rate
+                                           : std::get<Behaviours::SecreteField>( record.behaviour ).rate;
+
+                    // Find target grid
+                    GridFieldState* targetGrid = nullptr;
+                    for( auto& grid: outState.gridFields )
+                    {
+                        if( grid.name == targetName )
+                        {
+                            targetGrid = &grid;
+                            break;
+                        }
+                    }
+
+                    if( targetGrid )
+                    {
+                        ShaderHandle        shaderHandle = m_resourceManager->CreateShader( "shaders/compute/field_interaction.comp" );
+                        ComputePipelineDesc compDesc{};
+                        compDesc.shader                  = shaderHandle;
+                        ComputePipelineHandle pipeHandle = m_resourceManager->CreatePipeline( compDesc );
+                        ComputePipeline*      pipe       = m_resourceManager->GetPipeline( pipeHandle );
+
+                        // Read agents[0], write to DeltaBuffer
+                        BindingGroupHandle bgHandle0 = m_resourceManager->CreateBindingGroup( pipeHandle, 0 );
+                        BindingGroup*      bg0       = m_resourceManager->GetBindingGroup( bgHandle0 );
+                        bg0->Bind( 0, m_resourceManager->GetBuffer( outState.agentBuffers[ 0 ] ) );
+                        bg0->Bind( 1, m_resourceManager->GetBuffer( targetGrid->interactionDeltaBuffer ) );
+                        bg0->Build();
+
+                        // Read agents[1], write to DeltaBuffer
+                        BindingGroupHandle bgHandle1 = m_resourceManager->CreateBindingGroup( pipeHandle, 0 );
+                        BindingGroup*      bg1       = m_resourceManager->GetBindingGroup( bgHandle1 );
+                        bg1->Bind( 0, m_resourceManager->GetBuffer( outState.agentBuffers[ 1 ] ) );
+                        bg1->Bind( 1, m_resourceManager->GetBuffer( targetGrid->interactionDeltaBuffer ) );
+                        bg1->Build();
+
+                        ComputePushConstants pc{};
+                        pc.param1     = rate;
+                        pc.offset     = currentOffset;
+                        pc.count      = group.GetCount();
+                        pc.domainSize = glm::vec4( blueprint.GetDomainSize(), 0.0f );
+                        pc.gridSize   = glm::uvec4( targetGrid->width, targetGrid->height, targetGrid->depth, 0 );
+
+                        glm::uvec3 agentDispatch( ( group.GetCount() + 255 ) / 256, 1, 1 );
+                        outState.computeGraph.AddTask( ComputeTask( pipe, bg0, bg1, record.targetHz, pc, agentDispatch ) );
+
+                        DT_INFO( "SimulationBuilder: Compiled {} for '{}' at {}Hz", isConsume ? "Consumption" : "Secretion", targetName,
+                                 record.targetHz );
+                    }
+                    else
+                    {
+                        DT_WARN( "SimulationBuilder: Target grid '{}' not found for agent interaction!", targetName );
+                    }
                 }
             }
             currentOffset += group.GetCount();

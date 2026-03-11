@@ -9,7 +9,7 @@ layout(set = 0, binding = 0) uniform CameraUBO
     mat4 invViewProj;
 } camera;
 
-layout(set = 0, binding = 1, r32f) uniform readonly image3D u_Grid;
+layout(set = 0, binding = 1) uniform sampler3D u_Grid;
 
 layout(push_constant) uniform PC 
 {
@@ -34,9 +34,10 @@ vec2 intersectAABB(vec3 ro, vec3 rd, vec3 boxMin, vec3 boxMax)
 
 float sampleGrid(vec3 uvw) 
 {
-    ivec3 texSize = imageSize(u_Grid);
-    ivec3 coord = clamp(ivec3(uvw * vec3(texSize)), ivec3(0), texSize - ivec3(1));
-    return imageLoad(u_Grid, coord).r;
+    // ivec3 texSize = imageSize(u_Grid);
+    // ivec3 coord = clamp(ivec3(uvw * vec3(texSize)), ivec3(0), texSize - ivec3(1));
+    // return imageLoad(u_Grid, coord).r;
+    return texture(u_Grid, uvw).r;
 }
 
 // --- MEDICAL TRANSFER FUNCTION (Heatmap) ---

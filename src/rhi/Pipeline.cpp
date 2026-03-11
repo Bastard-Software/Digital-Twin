@@ -16,8 +16,10 @@ namespace DigitalTwin
                 return VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
             case ShaderResourceType::STORAGE_BUFFER:
                 return VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-            case ShaderResourceType::SAMPLED_IMAGE:
+            case ShaderResourceType::COMBINED_IMAGE_SAMPLER:
                 return VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+            case ShaderResourceType::SAMPLED_IMAGE:
+                return VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE;
             case ShaderResourceType::STORAGE_IMAGE:
                 return VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
             default:

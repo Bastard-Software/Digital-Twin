@@ -132,11 +132,12 @@ namespace DigitalTwin
                         barrier.srcAccessMask         = 0;
                         barrier.dstStageMask          = VK_PIPELINE_STAGE_2_TRANSFER_BIT;
                         barrier.dstAccessMask         = VK_ACCESS_2_TRANSFER_WRITE_BIT;
-                        barrier.oldLayout             = VK_IMAGE_LAYOUT_UNDEFINED;
+                        barrier.oldLayout             = dst->GetCurrentLayout();
                         barrier.newLayout             = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
                         barrier.image                 = dst->GetHandle();
                         barrier.subresourceRange      = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1 };
                         m_currentCmd->PipelineBarrier( 0, 0, 0, 0, nullptr, 0, nullptr, 1, &barrier );
+                        dst->SetLayout( VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL );
 
                         VkBufferImageCopy region{};
                         region.imageSubresource = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1 };
@@ -152,25 +153,17 @@ namespace DigitalTwin
                     Texture* src = m_resourceManager->GetTexture( req.targetTexture );
                     if( src && dst )
                     {
-
-                        // NOTE: We assume the texture was recently uploaded or is in a compatible state.
-                        // Ideally we should track state. Here we assume TRANSFER_DST (if just uploaded)
-                        // or SHADER_READ_ONLY. We transition from DST to SRC for safety in tests.
-                        // WARNING: oldLayout=UNDEFINED invalidates content! We must guess a safe layout or track it.
-                        // For this implementation (streaming manager), we assume we own it and it's likely TRANSFER_DST_OPTIMAL.
-
                         VkImageMemoryBarrier2 barrier = { VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2 };
                         barrier.srcStageMask          = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT; // Wait for anything
                         barrier.srcAccessMask         = VK_ACCESS_2_MEMORY_WRITE_BIT;
                         barrier.dstStageMask          = VK_PIPELINE_STAGE_2_TRANSFER_BIT;
                         barrier.dstAccessMask         = VK_ACCESS_2_TRANSFER_READ_BIT;
-                        // Use TRANSFER_DST_OPTIMAL as oldLayout since this is mostly used after Upload.
-                        // If used after rendering, this might be invalid without state tracking.
-                        barrier.oldLayout        = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
-                        barrier.newLayout        = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
-                        barrier.image            = src->GetHandle();
-                        barrier.subresourceRange = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1 };
+                        barrier.oldLayout             = src->GetCurrentLayout();
+                        barrier.newLayout             = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+                        barrier.image                 = src->GetHandle();
+                        barrier.subresourceRange      = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1 };
                         m_currentCmd->PipelineBarrier( 0, 0, 0, 0, nullptr, 0, nullptr, 1, &barrier );
+                        src->SetLayout( VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL );
 
                         VkBufferImageCopy region{};
                         region.imageSubresource = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1 };

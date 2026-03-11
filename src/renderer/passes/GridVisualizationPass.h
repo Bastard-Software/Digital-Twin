@@ -30,6 +30,8 @@ namespace DigitalTwin
         Device*          m_device;
         ResourceManager* m_resourceManager;
 
+        SamplerHandle m_linearSampler;
+
         ShaderHandle           m_vertShader;
         ShaderHandle           m_fragShader;
         GraphicsPipelineHandle m_pipeline;

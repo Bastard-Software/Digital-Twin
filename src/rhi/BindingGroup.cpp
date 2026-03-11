@@ -203,7 +203,10 @@ namespace DigitalTwin
             case ShaderResourceType::SAMPLED_IMAGE:
                 compatible = ( type == VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE );
                 break;
-            // ... add others
+            case ShaderResourceType::COMBINED_IMAGE_SAMPLER:
+                compatible = ( type == VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER );
+                break;
+            // TODO: add others
             default:
                 compatible = true;
         }

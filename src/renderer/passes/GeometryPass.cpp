@@ -68,6 +68,11 @@ namespace DigitalTwin
 
     void GeometryPass::Execute( CommandBuffer* cmd, BufferHandle cameraUBO, Scene* scene, uint32_t flightIndex )
     {
+        if( !scene->vertexBuffer.IsValid() || !scene->indexBuffer.IsValid() || !scene->indirectCmdBuffer.IsValid() )
+        {
+            return;
+        }
+
         BindingGroup* bg = m_resourceManager->GetBindingGroup( m_bindingGroups[ flightIndex ] );
 
         // Update bindings dynamically for the current frame

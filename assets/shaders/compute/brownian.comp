@@ -9,8 +9,10 @@ layout(push_constant) uniform PushConstants
     float param2;
     uint offset;
     uint count;
-    uint extra1;
-    uint extra2;
+    uint padding1;
+    uint padding2;
+    vec4 domainSize;
+    uvec4 gridSize;
 } pc;
 
 // Read-only input buffer (Ping)

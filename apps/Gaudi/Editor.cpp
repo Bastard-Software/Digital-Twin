@@ -20,32 +20,43 @@ namespace Gaudi
 
     void Editor::SetupInitialBlueprint()
     {
-        // 1. Define physical simulation domain (100x100x100 voxels)
-        m_blueprint.SetDomainSize( glm::vec3( 200.0f ), 2.0f );
+        // 1. Define physical simulation domain( 200x200x200 micrometers )
+            // With a voxel size of 2.0, this creates a 100x100x100 grid (1 million voxels)
+            m_blueprint.SetDomainSize( glm::vec3( 200.0f ), 2.0f );
 
-        // 2. Add Oxygen Field - random points representing "blood vessels" or oxygen sources
-        std::vector<glm::vec3>                bloodVessels;
-        std::mt19937                          rng( 49 );             // Fixed seed for reproducible results during MVP testing
-        std::uniform_real_distribution<float> dist( -40.0f, 40.0f ); // Scatter around the center
-        for( int i = 0; i < 6; ++i )                                 // Generate 6 sources
+        // 2. Add Oxygen Field - Simulating an organic network of blood vessels
+        std::vector<glm::vec3> bloodVessels;
+        std::mt19937           rng( 42 ); // Fixed seed for reproducible organic shapes
+
+        // Scatter 8 oxygen supply points around the edges of the simulation domain
+        std::uniform_real_distribution<float> dist( -60.0f, 60.0f );
+        for( int i = 0; i < 8; ++i )
         {
             bloodVessels.push_back( glm::vec3( dist( rng ), dist( rng ), dist( rng ) ) );
         }
 
         m_blueprint.AddGridField( "Oxygen" )
-            .SetInitializer( DigitalTwin::GridInitializer::MultiGaussian( bloodVessels, 10.0f, 100.0f ) ) // Multigaussian
-            .SetDiffusionCoefficient( 2.0f )                                                              // Moderate diffusion
-            .SetDecayRate( 0.001f )                                                                       // Natural background consumption
-            .SetComputeHz( 120.0f );                                                                      // High frequency for PDE stability
+            .SetInitializer( DigitalTwin::GridInitializer::MultiGaussian( bloodVessels, 25.0f, 100.0f ) )
+            .SetDiffusionCoefficient( 0.4f ) // Moderate diffusion allows steep gradients to form
+            .SetDecayRate( 0.005f )          // Natural biological decay of oxygen in tissue
+            .SetComputeHz( 120.0f );         // High frequency ensures stable PDE integration
 
-        // 3. Add Tumor Cells
-        m_blueprint.AddAgentGroup( "TumorCells" )
-            .SetCount( 50 )
-            .SetMorphology( DigitalTwin::MorphologyGenerator::CreateSphere( 1.0f ) )
-            .SetDistribution( DigitalTwin::SpatialDistribution::UniformInSphere( 50, 10.0f ) )
-            .SetColor( glm::vec4( 0.1f, 0.8f, 0.2f, 1.0f ) )
-            .AddBehaviour( DigitalTwin::Behaviours::BrownianMotion{ 0.1f } )
-            .SetHz( 30.0f );
+        // 3. Add Tumor Cells - A massive, dense, and hungry tumor core
+        // We use 8000 cells to create a highly visible and organic-looking mass
+        auto& tumorCells = m_blueprint.AddAgentGroup( "TumorCells" )
+                               .SetCount( 8000 )
+                               .SetMorphology( DigitalTwin::MorphologyGenerator::CreateSphere( 1.5f ) )
+                               .SetDistribution( DigitalTwin::SpatialDistribution::UniformInSphere( 8000, 25.0f ) )
+                               .SetColor( glm::vec4( 0.1f, 0.8f, 0.2f, 1.0f ) ); // Distinct green color for contrast
+
+        // 4. Attach Biological Behaviours
+
+        // Brownian Motion: Cells jiggle, simulating random thermal motion and cell crawling
+        tumorCells.AddBehaviour( DigitalTwin::Behaviours::BrownianMotion{ 0.3f } ).SetHz( 60.0f );
+
+        // Consumption: The tumor aggressively eats oxygen.
+        // With 8000 cells, this will quickly drain the center, creating a massive "hypoxic core".
+        tumorCells.AddBehaviour( DigitalTwin::Behaviours::ConsumeField{ "Oxygen", 8.0f } ).SetHz( 60.0f );
 
         m_engine.SetBlueprint( m_blueprint );
     }

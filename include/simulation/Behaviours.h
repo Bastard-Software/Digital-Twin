@@ -1,4 +1,5 @@
 #pragma once
+#include <string>
 #include <variant>
 
 namespace DigitalTwin::Behaviours
@@ -12,13 +13,25 @@ namespace DigitalTwin::Behaviours
         float speed = 1.0f;
     };
 
-    // Future mechanisms: Chemotaxis, ConsumeField, Proliferate, etc.
+    struct ConsumeField
+    {
+        std::string fieldName;
+        float       rate = 1.0f;
+    };
+
+    struct SecreteField
+    {
+        std::string fieldName;
+        float       rate = 1.0f;
+    };
+
+    // Future mechanisms: Chemotaxis, Proliferate, etc.
 } // namespace DigitalTwin::Behaviours
 
 namespace DigitalTwin
 {
     // A variant holding all possible behaviours the engine understands
-    using BehaviourVariant = std::variant<Behaviours::BrownianMotion>;
+    using BehaviourVariant = std::variant<Behaviours::BrownianMotion, Behaviours::ConsumeField, Behaviours::SecreteField>;
 
     // Wrapper to attach execution parameters (like frequency) to a behaviour
     struct BehaviourRecord

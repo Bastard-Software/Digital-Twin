@@ -1,8 +1,13 @@
 #pragma once
 #include "core/Core.h"
-#include <functional>
 #include <glm/glm.hpp>
 #include <string>
+#include <functional>
+
+#if defined( min )
+#    undef min
+#endif
+
 
 namespace DigitalTwin
 {

@@ -12,7 +12,9 @@ namespace DigitalTwin
      */
     struct GridFieldState
     {
-        TextureHandle textures[ 2 ]; // 0: Read, 1: Write (swapped each tick)
+        std::string   name;                   // Needed to match behaviours to grids
+        BufferHandle  interactionDeltaBuffer; // SSBO for atomic agent interactions
+        TextureHandle textures[ 2 ];          // 0: Read, 1: Write (swapped each tick)
         uint32_t      currentReadIndex = 0;
 
         // Dimensions in voxels

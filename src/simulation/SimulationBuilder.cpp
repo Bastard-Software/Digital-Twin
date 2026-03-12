@@ -228,7 +228,7 @@ namespace DigitalTwin
         texDesc.width  = gridWidth;
         texDesc.height = gridHeight;
         texDesc.depth  = gridDepth;
-        texDesc.usage  = TextureUsage::STORAGE | TextureUsage::TRANSFER_SRC | TextureUsage::TRANSFER_DST;
+        texDesc.usage  = TextureUsage::STORAGE | TextureUsage::SAMPLED | TextureUsage::TRANSFER_SRC | TextureUsage::TRANSFER_DST;
 
         ShaderHandle diffShader = m_resourceManager->CreateShader( "shaders/compute/diffusion.comp" );
         if( !diffShader.IsValid() )

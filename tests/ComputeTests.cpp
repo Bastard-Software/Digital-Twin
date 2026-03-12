@@ -99,8 +99,9 @@ protected:
         out << "#version 450\n"
             << "layout(local_size_x=256) in;\n"
             << "layout(set=0, binding=0) buffer P { float pos[]; };\n"
-            << "layout(push_constant) uniform PC { float dt; float totalTime; float speed; uint offset; uint count; } pc;\n"
-            << "void main() { if(gl_GlobalInvocationID.x < pc.count) { pos[pc.offset + gl_GlobalInvocationID.x] += pc.speed; } }";
+            << "layout(push_constant) uniform PC { float dt; float totalTime; float param1; float param2; uint offset; uint count; uint "
+               "padding1; uint padding2; vec4 domainSize; uvec4 gridSize; } pc;\n"
+            << "void main() { if(gl_GlobalInvocationID.x < pc.count) { pos[pc.offset + gl_GlobalInvocationID.x] += pc.param1; } }";
         out.close();
     }
 
@@ -157,7 +158,7 @@ TEST_F( ComputeEngineTest, GraphExecution )
     bg0->Build();
     bg1->Build();
 
-    ComputePushConstants pc{ 0.16f, 1.0f, 1.0f, 0, 100 };
+    ComputePushConstants pc{ 0.16f, 1.0f, 1.0f, 0, 0, 100 };
     ComputeTask          task( pipe, bg0, bg1, 0.0f, pc, glm::uvec3( 1 ) );
 
     ComputeGraph graph;
@@ -257,10 +258,10 @@ TEST_F( ComputeEngineTest, PhysicsAndInteractions_DiffusionConsumption )
     auto compCmd       = compCtx->GetCommandBuffer( compCtx->CreateCommandBuffer() );
 
     GraphDispatcher dispatcher;
-
-    // Ping
     compCmd->Begin();
+    // Ping
     dispatcher.Dispatch( &state.computeGraph, compCmd, nullptr, 1.0f, 1.0f, 0 );
+    // Pong
     dispatcher.Dispatch( &state.computeGraph, compCmd, nullptr, 1.0f, 2.0f, 1 );
     compCmd->End();
 
@@ -279,6 +280,63 @@ TEST_F( ComputeEngineTest, PhysicsAndInteractions_DiffusionConsumption )
 
     // A voxel far away (e.g. 0,0,0) should still be relatively untouched (close to 100)
     EXPECT_GT( gridData[ 0 ], 99.0f );
+
+    state.Destroy( m_rm.get() );
+}
+
+TEST_F( ComputeEngineTest, PhysicsAndInteractions_DiffusionSecretion )
+{
+    if( !m_device )
+        GTEST_SKIP();
+
+    SimulationBlueprint blueprint;
+    blueprint.SetDomainSize( glm::vec3( 10.0f ), 1.0f ); // Small 10x10x10 grid
+
+    // Base Lactate at 0.0 (completely empty), slight diffusion
+    blueprint.AddGridField( "Lactate" )
+        .SetInitializer( DigitalTwin::GridInitializer::Constant( 0.0f ) )
+        .SetDiffusionCoefficient( 0.01f )
+        .SetComputeHz( 1.0f );
+
+    // Put exactly 1 agent dead in the center
+    std::vector<glm::vec4> oneCell = { glm::vec4( 0.0f, 0.0f, 0.0f, 1.0f ) };
+
+    blueprint.AddAgentGroup( "TestCell" )
+        .SetCount( 1 )
+        .SetDistribution( oneCell )
+        .AddBehaviour( DigitalTwin::Behaviours::SecreteField{ "Lactate", 10.0f } ) // Secrete 10 units / sec
+        .SetHz( 1.0f );
+
+    auto streamingManager = CreateScope<StreamingManager>( m_device.get(), m_rm.get() );
+    ASSERT_EQ( streamingManager->Initialize(), Result::SUCCESS );
+
+    DigitalTwin::SimulationBuilder builder( m_rm.get(), streamingManager.get() );
+    SimulationState                state = builder.Build( blueprint );
+
+    auto compCtxHandle = m_device->CreateThreadContext( QueueType::COMPUTE );
+    auto compCtx       = m_device->GetThreadContext( compCtxHandle );
+    auto compCmd       = compCtx->GetCommandBuffer( compCtx->CreateCommandBuffer() );
+
+    GraphDispatcher dispatcher;
+    compCmd->Begin();
+    // Ping
+    dispatcher.Dispatch( &state.computeGraph, compCmd, nullptr, 1.0f, 1.0f, 0 );
+    // Pong
+    dispatcher.Dispatch( &state.computeGraph, compCmd, nullptr, 1.0f, 2.0f, 1 );
+    compCmd->End();
+    m_device->GetComputeQueue()->Submit( { compCmd } );
+    m_device->GetComputeQueue()->WaitIdle();
+
+    // We read back the buffer that was written to in Frame 2 (index 0)
+    std::vector<float> gridData = ReadbackGrid( state, 0, 0, m_rm.get(), m_device.get() );
+
+    uint32_t centerIdx = 5 + 5 * 10 + 5 * 100;
+
+    // Center should be heavily saturated with secreted lactate (>9.0 due to slight diffusion loss)
+    EXPECT_GT( gridData[ centerIdx ], 9.0f );
+
+    // A voxel far away should still be completely clean
+    EXPECT_LT( gridData[ 0 ], 0.1f );
 
     state.Destroy( m_rm.get() );
 }

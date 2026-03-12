@@ -48,6 +48,17 @@ namespace DigitalTwin
         if( !m_pipeline.IsValid() )
             return Result::FAIL;
 
+        SamplerDesc samplerDesc{};
+        samplerDesc.minFilter    = VK_FILTER_LINEAR;
+        samplerDesc.magFilter    = VK_FILTER_LINEAR;
+        samplerDesc.addressModeU = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+        samplerDesc.addressModeV = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+        samplerDesc.addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+
+        m_linearSampler = m_resourceManager->CreateSampler( samplerDesc );
+        if( !m_linearSampler.IsValid() )
+            return Result::FAIL;
+
         for( uint32_t i = 0; i < FRAMES_IN_FLIGHT; ++i )
         {
             m_bindingGroups[ i ] = m_resourceManager->CreateBindingGroup( m_pipeline, 0 );
@@ -57,6 +68,8 @@ namespace DigitalTwin
 
     void GridVisualizationPass::Shutdown()
     {
+        if( !m_linearSampler.IsValid() )
+            m_resourceManager->DestroySampler( m_linearSampler );
         if( m_pipeline.IsValid() )
             m_resourceManager->DestroyPipeline( m_pipeline );
         if( m_vertShader.IsValid() )
@@ -78,10 +91,13 @@ namespace DigitalTwin
 
         // Bind Camera UBO and the currently READABLE texture from the PDE ping-pong
         bg->Bind( 0, m_resourceManager->GetBuffer( cameraUBO ) );
-        bg->Bind( 1, m_resourceManager->GetTexture( gridState->textures[ gridState->currentReadIndex ] ), VK_IMAGE_LAYOUT_GENERAL );
+        bg->Bind( 1, m_resourceManager->GetTexture( gridState->textures[ gridState->currentReadIndex ] ),
+                  m_resourceManager->GetSampler( m_linearSampler ), VK_IMAGE_LAYOUT_GENERAL );
         bg->Build();
 
         GraphicsPipeline* pipeline = m_resourceManager->GetPipeline( m_pipeline );
+
+        // TODO: set layout for read only and transit from currentLayout -> read only
 
         cmd->SetPipeline( pipeline );
         cmd->SetBindingGroup( bg, pipeline->GetLayout(), VK_PIPELINE_BIND_POINT_GRAPHICS );

@@ -33,6 +33,12 @@ namespace DigitalTwin
             resourceManager->DestroyBuffer( agentBuffers[ 0 ] );
         if( agentBuffers[ 1 ].IsValid() )
             resourceManager->DestroyBuffer( agentBuffers[ 1 ] );
+        if( hashBuffer.IsValid() )
+            resourceManager->DestroyBuffer( hashBuffer );
+        if( offsetBuffer.IsValid() )
+            resourceManager->DestroyBuffer( offsetBuffer );
+        if( pressureBuffer.IsValid() )
+            resourceManager->DestroyBuffer( pressureBuffer );
 
         for( auto& field: gridFields )
         {
@@ -49,6 +55,9 @@ namespace DigitalTwin
         indexBuffer       = {};
         indirectCmdBuffer = {};
         groupDataBuffer   = {};
+        hashBuffer        = {};
+        offsetBuffer      = {};
+        pressureBuffer    = {};
         agentBuffers[ 0 ] = {};
         agentBuffers[ 1 ] = {};
     }
@@ -315,8 +324,8 @@ namespace DigitalTwin
             bg1->Build();
 
             ComputePushConstants pc{};
-            pc.param1 = fieldDef.GetDiffusionCoefficient();
-            pc.param2 = fieldDef.GetDecayRate();
+            pc.fParam1 = fieldDef.GetDiffusionCoefficient();
+            pc.fParam2 = fieldDef.GetDecayRate();
 
             glm::uvec3 dispatchSize( ( gridWidth + 7 ) / 8, ( gridHeight + 7 ) / 8, ( gridDepth + 7 ) / 8 );
             outState.computeGraph.AddTask( ComputeTask( pipe, bg0, bg1, fieldDef.GetComputeHz(), pc, dispatchSize ) );
@@ -362,9 +371,9 @@ namespace DigitalTwin
                     bg1->Build();
 
                     ComputePushConstants pc{};
-                    pc.param1 = brownian.speed;
-                    pc.offset = currentOffset;
-                    pc.count  = group.GetCount();
+                    pc.fParam1 = brownian.speed;
+                    pc.offset  = currentOffset;
+                    pc.count   = group.GetCount();
 
                     glm::uvec3 agentDispatch( ( group.GetCount() + 255 ) / 256, 1, 1 );
                     outState.computeGraph.AddTask( ComputeTask( pipe, bg0, bg1, record.targetHz, pc, agentDispatch ) );
@@ -415,7 +424,7 @@ namespace DigitalTwin
                         bg1->Build();
 
                         ComputePushConstants pc{};
-                        pc.param1     = rate;
+                        pc.fParam1    = rate;
                         pc.offset     = currentOffset;
                         pc.count      = group.GetCount();
                         pc.domainSize = glm::vec4( blueprint.GetDomainSize(), 0.0f );
@@ -431,6 +440,151 @@ namespace DigitalTwin
                     {
                         DT_WARN( "SimulationBuilder: Target grid '{}' not found for agent interaction!", targetName );
                     }
+                }
+                if( std::holds_alternative<Behaviours::Biomechanics>( record.behaviour ) )
+                {
+                    auto& biomechanics = std::get<Behaviours::Biomechanics>( record.behaviour );
+
+                    uint32_t agentCount = group.GetCount();
+
+                    // GPU Bitonic Sort requires the array size to be a power of two
+                    uint32_t paddedCount = agentCount;
+                    paddedCount--;
+                    paddedCount |= paddedCount >> 1;
+                    paddedCount |= paddedCount >> 2;
+                    paddedCount |= paddedCount >> 4;
+                    paddedCount |= paddedCount >> 8;
+                    paddedCount |= paddedCount >> 16;
+                    paddedCount++;
+
+                    uint32_t offsetArraySize = 262144; // 64x64x64 hash grid slots
+
+                    // 1. Allocate Physics Buffers (if not already allocated for this state)
+                    if( !outState.hashBuffer.IsValid() )
+                    {
+                        outState.hashBuffer = m_resourceManager->CreateBuffer( { paddedCount * 8, BufferType::STORAGE, "AgentHashes" } );
+                    }
+                    if( !outState.offsetBuffer.IsValid() )
+                    {
+                        outState.offsetBuffer = m_resourceManager->CreateBuffer( { offsetArraySize * 4, BufferType::STORAGE, "CellOffsets" } );
+
+                        // Clear Offsets with 0xFFFFFFFF (Empty Cell Marker) using StreamingManager
+                        std::vector<uint32_t>            emptyOffsets( offsetArraySize, 0xFFFFFFFF );
+                        std::vector<BufferUploadRequest> uploads = { { outState.offsetBuffer, emptyOffsets.data(), offsetArraySize * 4, 0 } };
+                        m_streamingManager->UploadBufferImmediate( uploads );
+                    }
+                    if( !outState.pressureBuffer.IsValid() )
+                    {
+                        outState.pressureBuffer = m_resourceManager->CreateBuffer( { agentCount * 4, BufferType::STORAGE, "AgentPressures" } );
+                    }
+
+                    // 2. Load Shaders and Create Pipelines using Pipeline Descriptions
+                    ComputePipelineDesc hashDesc{};
+                    hashDesc.shader                      = m_resourceManager->CreateShader( "shaders/compute/hash_agents.comp" );
+                    hashDesc.debugName                   = "HashAgentsPipeline";
+                    ComputePipelineHandle hashPipeHandle = m_resourceManager->CreatePipeline( hashDesc );
+                    ComputePipeline*      hashPipe       = m_resourceManager->GetPipeline( hashPipeHandle );
+
+                    ComputePipelineDesc sortDesc{};
+                    sortDesc.shader                      = m_resourceManager->CreateShader( "shaders/compute/bitonic_sort.comp" );
+                    sortDesc.debugName                   = "BitonicSortPipeline";
+                    ComputePipelineHandle sortPipeHandle = m_resourceManager->CreatePipeline( sortDesc );
+                    ComputePipeline*      sortPipe       = m_resourceManager->GetPipeline( sortPipeHandle );
+
+                    ComputePipelineDesc offsetDesc{};
+                    offsetDesc.shader                      = m_resourceManager->CreateShader( "shaders/compute/build_offsets.comp" );
+                    offsetDesc.debugName                   = "BuildOffsetsPipeline";
+                    ComputePipelineHandle offsetPipeHandle = m_resourceManager->CreatePipeline( offsetDesc );
+                    ComputePipeline*      offsetPipe       = m_resourceManager->GetPipeline( offsetPipeHandle );
+
+                    ComputePipelineDesc jkrDesc{};
+                    jkrDesc.shader                      = m_resourceManager->CreateShader( "shaders/compute/jkr_forces.comp" );
+                    jkrDesc.debugName                   = "JKRForcesPipeline";
+                    ComputePipelineHandle jkrPipeHandle = m_resourceManager->CreatePipeline( jkrDesc );
+                    ComputePipeline*      jkrPipe       = m_resourceManager->GetPipeline( jkrPipeHandle );
+
+                    // 3. Setup Binding Groups
+                    BindingGroup* bgHash0 = m_resourceManager->GetBindingGroup( m_resourceManager->CreateBindingGroup( hashPipeHandle, 0 ) );
+                    bgHash0->Bind( 0, m_resourceManager->GetBuffer( outState.agentBuffers[ 0 ] ) );
+                    bgHash0->Bind( 1, m_resourceManager->GetBuffer( outState.hashBuffer ) );
+                    bgHash0->Build();
+
+                    BindingGroup* bgHash1 = m_resourceManager->GetBindingGroup( m_resourceManager->CreateBindingGroup( hashPipeHandle, 0 ) );
+                    bgHash1->Bind( 0, m_resourceManager->GetBuffer( outState.agentBuffers[ 1 ] ) );
+                    bgHash1->Bind( 1, m_resourceManager->GetBuffer( outState.hashBuffer ) );
+                    bgHash1->Build();
+
+                    BindingGroup* bgSort = m_resourceManager->GetBindingGroup( m_resourceManager->CreateBindingGroup( sortPipeHandle, 0 ) );
+                    bgSort->Bind( 0, m_resourceManager->GetBuffer( outState.hashBuffer ) );
+                    bgSort->Build();
+
+                    BindingGroup* bgOffset = m_resourceManager->GetBindingGroup( m_resourceManager->CreateBindingGroup( offsetPipeHandle, 0 ) );
+                    bgOffset->Bind( 0, m_resourceManager->GetBuffer( outState.hashBuffer ) );
+                    bgOffset->Bind( 1, m_resourceManager->GetBuffer( outState.offsetBuffer ) );
+                    bgOffset->Build();
+
+                    BindingGroup* bgJkr0 = m_resourceManager->GetBindingGroup( m_resourceManager->CreateBindingGroup( jkrPipeHandle, 0 ) );
+                    bgJkr0->Bind( 0, m_resourceManager->GetBuffer( outState.agentBuffers[ 0 ] ) );
+                    bgJkr0->Bind( 1, m_resourceManager->GetBuffer( outState.agentBuffers[ 1 ] ) );
+                    bgJkr0->Bind( 2, m_resourceManager->GetBuffer( outState.pressureBuffer ) );
+                    bgJkr0->Bind( 3, m_resourceManager->GetBuffer( outState.hashBuffer ) );
+                    bgJkr0->Bind( 4, m_resourceManager->GetBuffer( outState.offsetBuffer ) );
+                    bgJkr0->Build();
+
+                    BindingGroup* bgJkr1 = m_resourceManager->GetBindingGroup( m_resourceManager->CreateBindingGroup( jkrPipeHandle, 0 ) );
+                    bgJkr1->Bind( 0, m_resourceManager->GetBuffer( outState.agentBuffers[ 1 ] ) );
+                    bgJkr1->Bind( 1, m_resourceManager->GetBuffer( outState.agentBuffers[ 0 ] ) );
+                    bgJkr1->Bind( 2, m_resourceManager->GetBuffer( outState.pressureBuffer ) );
+                    bgJkr1->Bind( 3, m_resourceManager->GetBuffer( outState.hashBuffer ) );
+                    bgJkr1->Bind( 4, m_resourceManager->GetBuffer( outState.offsetBuffer ) );
+                    bgJkr1->Build();
+
+                    // 4. Base Push Constants
+                    ComputePushConstants basePC{};
+                    basePC.offset     = currentOffset;
+                    basePC.count      = agentCount;
+                    basePC.domainSize = glm::vec4( blueprint.GetDomainSize(), biomechanics.maxRadius );
+                    basePC.gridSize   = glm::uvec4( 0 ); // Unused for particle physics
+
+                    // --- TASK A: HASH AGENTS ---
+                    const auto& spatialConfig = blueprint.GetSpatialPartitioning();
+
+                    ComputePushConstants hashPC = basePC;
+                    hashPC.fParam1              = spatialConfig.cellSize; // cellSize
+                    glm::uvec3 hashDispatch( ( agentCount + 255 ) / 256, 1, 1 );
+                    outState.computeGraph.AddTask( ComputeTask( hashPipe, bgHash0, bgHash1, record.targetHz, hashPC, hashDispatch ) );
+
+                    // --- TASK B: BITONIC SORT (The Magic GPU Loop) ---
+                    glm::uvec3 sortDispatch( ( paddedCount + 255 ) / 256, 1, 1 );
+                    for( uint32_t k = 2; k <= paddedCount; k <<= 1 )
+                    {
+                        for( uint32_t j = k >> 1; j > 0; j >>= 1 )
+                        {
+                            ComputePushConstants sortPC = basePC;
+                            sortPC.count                = paddedCount; // Sort operates on the padded size
+                            sortPC.uParam1              = j;
+                            sortPC.uParam2              = k;
+                            outState.computeGraph.AddTask( ComputeTask( sortPipe, bgSort, bgSort, record.targetHz, sortPC, sortDispatch ) );
+                        }
+                    }
+
+                    // --- TASK C: BUILD OFFSETS ---
+                    ComputePushConstants offsetPC = basePC;
+                    offsetPC.count                = paddedCount;
+                    glm::uvec3 offsetDispatch( ( paddedCount + 255 ) / 256, 1, 1 );
+                    outState.computeGraph.AddTask( ComputeTask( offsetPipe, bgOffset, bgOffset, record.targetHz, offsetPC, offsetDispatch ) );
+
+                    // --- TASK D: JKR FORCES (Physics Application) ---
+                    ComputePushConstants jkrPC = basePC;
+                    jkrPC.fParam1              = biomechanics.repulsionStiffness;
+                    jkrPC.fParam2              = biomechanics.adhesionStrength;
+                    jkrPC.uParam1              = offsetArraySize;
+                    glm::uvec3 jkrDispatch( ( agentCount + 255 ) / 256, 1, 1 );
+
+                    // Using Ping-Pong correctly based on activeIndex inside the graph
+                    outState.computeGraph.AddTask( ComputeTask( jkrPipe, bgJkr0, bgJkr1, record.targetHz, jkrPC, jkrDispatch ) );
+
+                    DT_INFO( "SimulationBuilder: Compiled Biomechanics for '{}' at {}Hz", group.GetName(), record.targetHz );
                 }
             }
             currentOffset += group.GetCount();

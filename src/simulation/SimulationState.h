@@ -39,6 +39,11 @@ namespace DigitalTwin
         BufferHandle agentBuffers[ 2 ];
         uint32_t     currentReadIndex = 0;
 
+        // Biomechanics
+        BufferHandle hashBuffer;
+        BufferHandle offsetBuffer;
+        BufferHandle pressureBuffer;
+
         // Grig fields
         std::vector<GridFieldState> gridFields;
 

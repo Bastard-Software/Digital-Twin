@@ -1,0 +1,42 @@
+#version 460
+layout(local_size_x = 256) in;
+
+layout(push_constant) uniform PushConstants {
+    float dt;
+    float totalTime;
+    float fParam1;    // cellSize
+    float fParam2;    // Unused
+    uint  offset;
+    uint  count;
+    uint  uParam1;    // Unused
+    uint  uParam2;    // Unused
+    vec4  domainSize;
+    uvec4 gridSize;
+} pc;
+
+layout(std140, binding = 0) readonly buffer Agents { vec4 positions[]; } inAgents;
+
+struct AgentHash { uint hash; uint agentIndex; };
+layout(std430, binding = 1) writeonly buffer Hashes { AgentHash data[]; } outHashes;
+
+// Hash function mapping 3D coordinates to a 1D index
+uint hashPos(ivec3 cell) {
+    const uint p1 = 73856093;
+    const uint p2 = 19349663;
+    const uint p3 = 83492791;
+    return (uint(cell.x) * p1) ^ (uint(cell.y) * p2) ^ (uint(cell.z) * p3);
+}
+
+void main() {
+    uint idx = gl_GlobalInvocationID.x;
+    if(idx >= pc.count) return;
+
+    uint globalIdx = pc.offset + idx;
+    vec3 pos = inAgents.positions[globalIdx].xyz;
+    
+    // fParam1 acts as the cellSize
+    ivec3 cellCoord = ivec3(floor(pos / pc.fParam1));
+    
+    outHashes.data[idx].hash = hashPos(cellCoord);
+    outHashes.data[idx].agentIndex = globalIdx;
+}

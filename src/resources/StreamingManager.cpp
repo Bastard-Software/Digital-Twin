@@ -412,6 +412,70 @@ namespace DigitalTwin
         m_resourceManager->DestroyBuffer( stageHandle );
     }
 
+    void StreamingManager::ReadbackTextureImmediate( TextureHandle srcTexture, void* outData, size_t size )
+    {
+        Texture* src = m_resourceManager->GetTexture( srcTexture );
+        if( !src )
+            return;
+
+        // 1. Create a single readback staging buffer
+        BufferHandle stageHandle = m_resourceManager->CreateBuffer( { size, BufferType::READBACK, "TextureImmediateReadbackStaging" } );
+        Buffer*      stage       = m_resourceManager->GetBuffer( stageHandle );
+
+        if( !stage )
+            return;
+
+        // 2. Record commands to transition and copy image data to the readback buffer
+        ExecuteImmediateTransfer( [ & ]( CommandBuffer* cmd ) {
+            VkImageAspectFlags aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+
+            // Transition: Current -> TRANSFER_SRC
+            VkImageMemoryBarrier2 barrier = { VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2 };
+            barrier.srcStageMask          = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT;
+            barrier.srcAccessMask         = VK_ACCESS_2_MEMORY_WRITE_BIT | VK_ACCESS_2_MEMORY_READ_BIT;
+            barrier.dstStageMask          = VK_PIPELINE_STAGE_2_TRANSFER_BIT;
+            barrier.dstAccessMask         = VK_ACCESS_2_TRANSFER_READ_BIT;
+            barrier.oldLayout             = src->GetCurrentLayout();
+            barrier.newLayout             = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+            barrier.image                 = src->GetHandle();
+            barrier.subresourceRange      = { aspectMask, 0, 1, 0, 1 };
+
+            cmd->PipelineBarrier( 0, 0, 0, 0, nullptr, 0, nullptr, 1, &barrier );
+            src->SetLayout( VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL );
+
+            // Copy Image to Buffer
+            VkBufferImageCopy region{};
+            region.imageSubresource = { aspectMask, 0, 0, 1 };
+            region.imageExtent      = src->GetExtent();
+
+            vkCmdCopyImageToBuffer( cmd->GetHandle(), src->GetHandle(), VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, stage->GetHandle(), 1, &region );
+
+            // Transition back: TRANSFER_SRC -> GENERAL
+            VkImageMemoryBarrier2 barrierGen = { VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2 };
+            barrierGen.srcStageMask          = VK_PIPELINE_STAGE_2_TRANSFER_BIT;
+            barrierGen.srcAccessMask         = VK_ACCESS_2_TRANSFER_READ_BIT;
+            barrierGen.dstStageMask          = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT;
+            barrierGen.dstAccessMask         = VK_ACCESS_2_MEMORY_READ_BIT | VK_ACCESS_2_MEMORY_WRITE_BIT;
+            barrierGen.oldLayout             = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+            barrierGen.newLayout             = VK_IMAGE_LAYOUT_GENERAL;
+            barrierGen.image                 = src->GetHandle();
+            barrierGen.subresourceRange      = { aspectMask, 0, 1, 0, 1 };
+
+            cmd->PipelineBarrier( 0, 0, 0, 0, nullptr, 0, nullptr, 1, &barrierGen );
+            src->SetLayout( VK_IMAGE_LAYOUT_GENERAL );
+
+            DT_INFO( "[StreamingManager] Immediate Texture Readback <- Source: '{}' | Size: {} bytes",
+                     src->GetDebugName().empty() ? "Unnamed" : src->GetDebugName(), size );
+        } );
+
+        // 3. Map GPU staging buffer and copy the actual data back to the user's CPU pointer
+        stage->Read( outData, size, 0 );
+        m_resourceManager->DestroyBuffer( stageHandle );
+
+        DT_INFO( "[StreamingManager] Immediate Texture Readback SUCCESS -> Source: '{}' | Size: {} bytes (Thread: {})",
+                 src->GetDebugName().empty() ? "Unnamed" : src->GetDebugName(), size, GetThreadHash() );
+    }
+
     void StreamingManager::UploadBufferImmediate( const std::vector<BufferUploadRequest>& requests )
     {
         if( requests.empty() )
@@ -527,6 +591,186 @@ namespace DigitalTwin
 
         DT_INFO( "[StreamingManager] Batched Immediate Readback SUCCESS: {} buffers, {} total bytes (Thread: {})", stagingHandles.size(), totalBytes,
                  GetThreadHash() );
+    }
+
+    void StreamingManager::UploadTextureImmediate( const std::vector<TextureUploadRequest>& requests )
+    {
+        if( requests.empty() )
+            return;
+
+        std::vector<BufferHandle> stagingHandles;
+        std::vector<Buffer*>      stagingBuffers;
+        std::vector<Texture*>     dstTextures;
+        size_t                    totalBytes = 0;
+
+        // 1. Create staging buffers and copy CPU data into them
+        for( const auto& req: requests )
+        {
+            BufferHandle stageHandle = m_resourceManager->CreateBuffer( { req.size, BufferType::UPLOAD, "TextureBatchedUploadStaging" } );
+            Buffer*      stage       = m_resourceManager->GetBuffer( stageHandle );
+            Texture*     dst         = m_resourceManager->GetTexture( req.dstTexture );
+
+            if( stage && dst )
+            {
+                stage->Write( req.data, req.size, 0 );
+                stagingHandles.push_back( stageHandle );
+                stagingBuffers.push_back( stage );
+                dstTextures.push_back( dst );
+                totalBytes += req.size;
+            }
+        }
+
+        if( stagingHandles.empty() )
+            return;
+
+        // 2. Record all texture copy commands and layout transitions
+        ExecuteImmediateTransfer( [ & ]( CommandBuffer* cmd ) {
+            for( size_t i = 0; i < stagingHandles.size(); ++i )
+            {
+                Texture*    dst   = dstTextures[ i ];
+                Buffer*     stage = stagingBuffers[ i ];
+                const auto& req   = requests[ i ];
+
+                VkImageAspectFlags aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+
+                // Transition: Current -> TRANSFER_DST
+                VkImageMemoryBarrier2 barrier = { VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2 };
+                barrier.srcStageMask          = VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT;
+                barrier.srcAccessMask         = 0;
+                barrier.dstStageMask          = VK_PIPELINE_STAGE_2_TRANSFER_BIT;
+                barrier.dstAccessMask         = VK_ACCESS_2_TRANSFER_WRITE_BIT;
+                barrier.oldLayout             = dst->GetCurrentLayout();
+                barrier.newLayout             = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+                barrier.image                 = dst->GetHandle();
+                barrier.subresourceRange      = { aspectMask, req.mipLevel, 1, req.arrayLayer, 1 };
+
+                cmd->PipelineBarrier( 0, 0, 0, 0, nullptr, 0, nullptr, 1, &barrier );
+                dst->SetLayout( VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL );
+
+                // Copy Buffer to Image
+                VkBufferImageCopy region{};
+                region.imageSubresource = { aspectMask, req.mipLevel, req.arrayLayer, 1 };
+                region.imageExtent      = dst->GetExtent();
+
+                vkCmdCopyBufferToImage( cmd->GetHandle(), stage->GetHandle(), dst->GetHandle(), VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &region );
+
+                // Transition: TRANSFER_DST -> GENERAL (Ready for Compute PDE Ping-Pong)
+                VkImageMemoryBarrier2 barrierGen = { VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2 };
+                barrierGen.srcStageMask          = VK_PIPELINE_STAGE_2_TRANSFER_BIT;
+                barrierGen.srcAccessMask         = VK_ACCESS_2_TRANSFER_WRITE_BIT;
+                barrierGen.dstStageMask          = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT;
+                barrierGen.dstAccessMask         = VK_ACCESS_2_MEMORY_READ_BIT | VK_ACCESS_2_MEMORY_WRITE_BIT;
+                barrierGen.oldLayout             = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+                barrierGen.newLayout             = VK_IMAGE_LAYOUT_GENERAL;
+                barrierGen.image                 = dst->GetHandle();
+                barrierGen.subresourceRange      = { aspectMask, req.mipLevel, 1, req.arrayLayer, 1 };
+
+                cmd->PipelineBarrier( 0, 0, 0, 0, nullptr, 0, nullptr, 1, &barrierGen );
+                dst->SetLayout( VK_IMAGE_LAYOUT_GENERAL );
+
+                DT_INFO( "[StreamingManager] Batched Texture Upload -> Target: '{}' | Size: {} bytes",
+                         dst->GetDebugName().empty() ? "Unnamed" : dst->GetDebugName(), req.size );
+            }
+        } );
+
+        // 3. Cleanup staging memory
+        for( auto handle: stagingHandles )
+        {
+            m_resourceManager->DestroyBuffer( handle );
+        }
+
+        DT_INFO( "[StreamingManager] Batched Immediate Texture Upload SUCCESS: {} textures, {} total bytes (Thread: {})", stagingHandles.size(),
+                 totalBytes, GetThreadHash() );
+    }
+
+    void StreamingManager::ReadbackTextureImmediate( const std::vector<TextureReadbackRequest>& requests )
+    {
+        if( requests.empty() )
+            return;
+
+        std::vector<BufferHandle> stagingHandles;
+        std::vector<Buffer*>      stagingBuffers;
+        std::vector<Texture*>     srcTextures;
+        size_t                    totalBytes = 0;
+
+        // 1. Create readback staging buffers
+        for( const auto& req: requests )
+        {
+            BufferHandle stageHandle = m_resourceManager->CreateBuffer( { req.size, BufferType::READBACK, "TextureBatchedReadbackStaging" } );
+            Buffer*      stage       = m_resourceManager->GetBuffer( stageHandle );
+            Texture*     src         = m_resourceManager->GetTexture( req.srcTexture );
+
+            if( stage && src )
+            {
+                stagingHandles.push_back( stageHandle );
+                stagingBuffers.push_back( stage );
+                srcTextures.push_back( src );
+                totalBytes += req.size;
+            }
+        }
+
+        if( stagingHandles.empty() )
+            return;
+
+        // 2. Record commands to transition and copy image data to readback buffers
+        ExecuteImmediateTransfer( [ & ]( CommandBuffer* cmd ) {
+            for( size_t i = 0; i < stagingHandles.size(); ++i )
+            {
+                Texture*    src   = srcTextures[ i ];
+                Buffer*     stage = stagingBuffers[ i ];
+                const auto& req   = requests[ i ];
+
+                VkImageAspectFlags aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+
+                // Transition: Current (Usually GENERAL) -> TRANSFER_SRC
+                VkImageMemoryBarrier2 barrier = { VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2 };
+                barrier.srcStageMask          = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT;
+                barrier.srcAccessMask         = VK_ACCESS_2_MEMORY_WRITE_BIT | VK_ACCESS_2_MEMORY_READ_BIT;
+                barrier.dstStageMask          = VK_PIPELINE_STAGE_2_TRANSFER_BIT;
+                barrier.dstAccessMask         = VK_ACCESS_2_TRANSFER_READ_BIT;
+                barrier.oldLayout             = src->GetCurrentLayout();
+                barrier.newLayout             = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+                barrier.image                 = src->GetHandle();
+                barrier.subresourceRange      = { aspectMask, req.mipLevel, 1, req.arrayLayer, 1 };
+
+                cmd->PipelineBarrier( 0, 0, 0, 0, nullptr, 0, nullptr, 1, &barrier );
+                src->SetLayout( VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL );
+
+                // Copy Image to Buffer
+                VkBufferImageCopy region{};
+                region.imageSubresource = { aspectMask, req.mipLevel, req.arrayLayer, 1 };
+                region.imageExtent      = src->GetExtent();
+
+                vkCmdCopyImageToBuffer( cmd->GetHandle(), src->GetHandle(), VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, stage->GetHandle(), 1, &region );
+
+                // Transition back: TRANSFER_SRC -> GENERAL
+                VkImageMemoryBarrier2 barrierGen = { VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2 };
+                barrierGen.srcStageMask          = VK_PIPELINE_STAGE_2_TRANSFER_BIT;
+                barrierGen.srcAccessMask         = VK_ACCESS_2_TRANSFER_READ_BIT;
+                barrierGen.dstStageMask          = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT;
+                barrierGen.dstAccessMask         = VK_ACCESS_2_MEMORY_READ_BIT | VK_ACCESS_2_MEMORY_WRITE_BIT;
+                barrierGen.oldLayout             = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+                barrierGen.newLayout             = VK_IMAGE_LAYOUT_GENERAL;
+                barrierGen.image                 = src->GetHandle();
+                barrierGen.subresourceRange      = { aspectMask, req.mipLevel, 1, req.arrayLayer, 1 };
+
+                cmd->PipelineBarrier( 0, 0, 0, 0, nullptr, 0, nullptr, 1, &barrierGen );
+                src->SetLayout( VK_IMAGE_LAYOUT_GENERAL );
+
+                DT_INFO( "[StreamingManager] Batched Texture Readback <- Source: '{}' | Size: {} bytes",
+                         src->GetDebugName().empty() ? "Unnamed" : src->GetDebugName(), req.size );
+            }
+        } );
+
+        // 3. Map GPU staging buffers and copy the actual data back to the user's CPU pointers
+        for( size_t i = 0; i < stagingHandles.size(); ++i )
+        {
+            stagingBuffers[ i ]->Read( requests[ i ].outData, requests[ i ].size, 0 );
+            m_resourceManager->DestroyBuffer( stagingHandles[ i ] );
+        }
+
+        DT_INFO( "[StreamingManager] Batched Immediate Texture Readback SUCCESS: {} textures, {} total bytes (Thread: {})", stagingHandles.size(),
+                 totalBytes, GetThreadHash() );
     }
 
 } // namespace DigitalTwin

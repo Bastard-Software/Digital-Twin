@@ -13,12 +13,12 @@ layout(std430, set = 0, binding = 2) buffer DeltaBuffer {
 layout(push_constant) uniform PushConstants {
     float dt;
     float totalTime;
-    float param1; // diffusion coef
-    float param2; // decay
+    float fParam1; // diffusion coef
+    float fParam2; // decay
     uint offset;
     uint count;
-    uint padding1;
-    uint padding2;
+    uint uParam1;
+    uint uParam2;
     vec4 domainSize;
     uvec4 gridSize;
 } pc;
@@ -56,9 +56,9 @@ void main()
     float laplacian = (right + left + up + down + front + back) - (6.0 * center);
 
     // Forward Euler Integration: 
-    float diffusionTerm = pc.param1 * laplacian;
+    float diffusionTerm = pc.fParam1 * laplacian;
     //diffusionTerm *= 1000.0; // We multiply diffusion by a large factor internally to make it visually pleasing for the demo
-    float decayTerm = pc.param2 * center;
+    float decayTerm = pc.fParam2 * center;
 
     // fetch and reset external interactions
     uint flatIdx = voxelCoord.x + voxelCoord.y * texSize.x + voxelCoord.z * texSize.x * texSize.y;

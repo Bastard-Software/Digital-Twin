@@ -36,14 +36,6 @@ namespace DigitalTwin::Behaviours
         float maxRadius          = 1.5f;  // The interaction radius for collision detection
     };
 
-    /**
-     * @brief Evaluates mechanical pressure to stop cell cycle (Quiescence)
-     */
-    struct ContactInhibition
-    {
-        float pressureThreshold = 2.5f; // MPa
-    };
-
     // Future mechanisms: Chemotaxis, Proliferate, etc.
 } // namespace DigitalTwin::Behaviours
 

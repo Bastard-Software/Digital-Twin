@@ -64,17 +64,32 @@ namespace DigitalTwin
 
     SimulationState SimulationBuilder::Build( const SimulationBlueprint& blueprint )
     {
-        SimulationState state{};
-        const auto&     groups = blueprint.GetGroups();
-        const auto&     fields = blueprint.GetGridFields();
+        SimulationState state;
 
-        if( groups.empty() && fields.empty() )
-        {
-            DT_WARN( "SimulationBuilder: Attempted to build an empty blueprint." );
-            return state;
-        }
+        DT_INFO( "[SimulationBuilder] Starting simulation build process..." );
 
+        // 1. Allocate GPU memory for agents and morphology (Mega-Buffers)
+        AllocateAgentBuffers( blueprint, state );
+
+        // 2. Build the Global Spatial Partitioning Grid (Hash, Sort, Build Offsets)
+        // This is executed FIRST in the compute graph, ensuring all subsequent tasks
+        // have an up-to-date spatial view of all agents.
+        CompileSpatialGrid( blueprint, state );
+
+        // 3. Compile PDEs and Fields (e.g., Oxygen, Glucose diffusion)
         CompileGridFields( blueprint, state );
+
+        // 4. Compile specific cellular behaviours (Biomechanics, Chemotaxis, etc.)
+        CompileBehaviours( blueprint, state );
+
+        DT_INFO( "[SimulationBuilder] Simulation build process completed successfully." );
+
+        return state;
+    }
+
+    void SimulationBuilder::AllocateAgentBuffers( const SimulationBlueprint& blueprint, SimulationState& outState )
+    {
+        const auto& groups = blueprint.GetGroups();
 
         // 1. Calculate required capacities for the Mega-Buffers
         uint32_t totalVertices   = 0;
@@ -95,11 +110,11 @@ namespace DigitalTwin
 
         if( totalAgents == 0 )
         {
-            DT_WARN( "SimulationBuilder: Blueprint contains 0 agents across all groups." );
-            return state;
+            DT_WARN( "[SimulationBuilder] Blueprint contains 0 agents across all groups." );
+            return;
         }
 
-        state.groupCount = validGroupCount;
+        outState.groupCount = validGroupCount;
 
         // 2. Allocate CPU-side continuous memory blocks
         std::vector<Vertex>                       megaVertices;
@@ -131,7 +146,6 @@ namespace DigitalTwin
             megaIndices.insert( megaIndices.end(), morph.indices.begin(), morph.indices.end() );
 
             // Append Initial State (Positions)
-            // Ensure we don't copy more positions than the requested count, or fewer if mismatched
             uint32_t copyCount = std::min( group.GetCount(), static_cast<uint32_t>( group.GetPositions().size() ) );
             megaPositions.insert( megaPositions.end(), group.GetPositions().begin(), group.GetPositions().begin() + copyCount );
 
@@ -158,58 +172,179 @@ namespace DigitalTwin
             currentInstanceOffset += group.GetCount();
         }
 
-        // 4. Create GPU Buffers via ResourceManager
+        // 4. Create core GPU Buffers via ResourceManager
         if( !megaVertices.empty() )
-            state.vertexBuffer =
+            outState.vertexBuffer =
                 m_resourceManager->CreateBuffer( { megaVertices.size() * sizeof( Vertex ), BufferType::VERTEX, "SimulationVertexBuffer" } );
 
         if( !megaIndices.empty() )
-            state.indexBuffer =
+            outState.indexBuffer =
                 m_resourceManager->CreateBuffer( { megaIndices.size() * sizeof( uint32_t ), BufferType::INDEX, "SimulationIndexBuffer" } );
 
         if( !indirectCommands.empty() )
-            state.indirectCmdBuffer = m_resourceManager->CreateBuffer(
+            outState.indirectCmdBuffer = m_resourceManager->CreateBuffer(
                 { indirectCommands.size() * sizeof( VkDrawIndexedIndirectCommand ), BufferType::INDIRECT, "SimulationIndirectBuffer" } );
 
         if( !groupColors.empty() )
-            state.groupDataBuffer = m_resourceManager->CreateBuffer(
+            outState.groupDataBuffer = m_resourceManager->CreateBuffer(
                 { groupColors.size() * sizeof( glm::vec4 ), BufferType::STORAGE, "SimulationAdditionalDataBuffer" } );
 
-        // Ping-pong agent buffers (Storage for Compute, Transfer Src/Dst for Readbacks and Uploads)
+        // Ping-pong agent buffers
         BufferDesc agentDesc{ megaPositions.size() * sizeof( glm::vec4 ), BufferType::STORAGE, "SimulationAgentBuffer" };
-        state.agentBuffers[ 0 ] = m_resourceManager->CreateBuffer( agentDesc );
-        state.agentBuffers[ 1 ] = m_resourceManager->CreateBuffer( agentDesc );
+        outState.agentBuffers[ 0 ] = m_resourceManager->CreateBuffer( agentDesc );
+        outState.agentBuffers[ 1 ] = m_resourceManager->CreateBuffer( agentDesc );
 
-        // World size
-        state.domainSize = blueprint.GetDomainSize();
-
-        // 5. Upload Data to VRAM
+        // 5. Upload Data to VRAM synchronously
         std::vector<BufferUploadRequest> uploads;
 
-        if( state.vertexBuffer.IsValid() )
-            uploads.push_back( { state.vertexBuffer, megaVertices.data(), megaVertices.size() * sizeof( Vertex ) } );
+        if( outState.vertexBuffer.IsValid() )
+            uploads.push_back( { outState.vertexBuffer, megaVertices.data(), megaVertices.size() * sizeof( Vertex ) } );
 
-        if( state.indexBuffer.IsValid() )
-            uploads.push_back( { state.indexBuffer, megaIndices.data(), megaIndices.size() * sizeof( uint32_t ) } );
+        if( outState.indexBuffer.IsValid() )
+            uploads.push_back( { outState.indexBuffer, megaIndices.data(), megaIndices.size() * sizeof( uint32_t ) } );
 
-        if( state.indirectCmdBuffer.IsValid() )
+        if( outState.indirectCmdBuffer.IsValid() )
             uploads.push_back(
-                { state.indirectCmdBuffer, indirectCommands.data(), indirectCommands.size() * sizeof( VkDrawIndexedIndirectCommand ) } );
+                { outState.indirectCmdBuffer, indirectCommands.data(), indirectCommands.size() * sizeof( VkDrawIndexedIndirectCommand ) } );
 
-        if( state.groupDataBuffer.IsValid() )
-            uploads.push_back( { state.groupDataBuffer, groupColors.data(), groupColors.size() * sizeof( glm::vec4 ) } );
+        if( outState.groupDataBuffer.IsValid() )
+            uploads.push_back( { outState.groupDataBuffer, groupColors.data(), groupColors.size() * sizeof( glm::vec4 ) } );
 
         // Always upload agents
-        uploads.push_back( { state.agentBuffers[ 0 ], megaPositions.data(), megaPositions.size() * sizeof( glm::vec4 ) } );
-        uploads.push_back( { state.agentBuffers[ 1 ], megaPositions.data(), megaPositions.size() * sizeof( glm::vec4 ) } );
+        uploads.push_back( { outState.agentBuffers[ 0 ], megaPositions.data(), megaPositions.size() * sizeof( glm::vec4 ) } );
+        uploads.push_back( { outState.agentBuffers[ 1 ], megaPositions.data(), megaPositions.size() * sizeof( glm::vec4 ) } );
 
         m_streamingManager->UploadBufferImmediate( uploads );
 
-        CompileBehaviours( blueprint, state );
+        DT_INFO( "[SimulationBuilder] Agent Mega-Buffers allocated. Total Agents: {}", totalAgents );
+    }
 
-        DT_INFO( "SimulationBuilder: Successfully compiled Blueprint. Groups: {0}, Total Agents: {1}", validGroupCount, totalAgents );
+    void SimulationBuilder::CompileSpatialGrid( const SimulationBlueprint& blueprint, SimulationState& outState )
+    {
+        // 1. Calculate total agents across all groups for the global grid
+        uint32_t totalAgents = 0;
+        for( const auto& group: blueprint.GetGroups() )
+        {
+            totalAgents += group.GetCount();
+        }
 
-        return state;
+        if( totalAgents == 0 )
+        {
+            return; // No agents, no grid needed
+        }
+
+        // 2. Fetch Spatial Configuration from Blueprint
+        const auto& spatialConfig = blueprint.GetSpatialPartitioning();
+        float       computeHz     = spatialConfig.computeHz;
+        float       cellSize      = spatialConfig.cellSize;
+
+        // GPU Bitonic Sort requires the array size to be a power of two
+        uint32_t paddedCount = totalAgents;
+        paddedCount--;
+        paddedCount |= paddedCount >> 1;
+        paddedCount |= paddedCount >> 2;
+        paddedCount |= paddedCount >> 4;
+        paddedCount |= paddedCount >> 8;
+        paddedCount |= paddedCount >> 16;
+        paddedCount++;
+
+        uint32_t offsetArraySize = 262144; // 64x64x64 hash grid slots
+
+        // 3. Allocate Spatial & Physics Buffers (if not already allocated)
+        if( !outState.hashBuffer.IsValid() )
+        {
+            outState.hashBuffer = m_resourceManager->CreateBuffer( { paddedCount * 8, BufferType::STORAGE, "AgentHashes" } );
+        }
+        if( !outState.offsetBuffer.IsValid() )
+        {
+            outState.offsetBuffer = m_resourceManager->CreateBuffer( { offsetArraySize * 4, BufferType::STORAGE, "CellOffsets" } );
+
+            // Clear Offsets with 0xFFFFFFFF (Empty Cell Marker) using StreamingManager
+            std::vector<uint32_t>            emptyOffsets( offsetArraySize, 0xFFFFFFFF );
+            std::vector<BufferUploadRequest> uploads = { { outState.offsetBuffer, emptyOffsets.data(), offsetArraySize * 4, 0 } };
+            m_streamingManager->UploadBufferImmediate( uploads );
+        }
+        if( !outState.pressureBuffer.IsValid() )
+        {
+            // We keep pressure buffer here since it's a global physics property
+            // shared across potentially multiple mechanical behaviours.
+            outState.pressureBuffer = m_resourceManager->CreateBuffer( { totalAgents * 4, BufferType::STORAGE, "AgentPressures" } );
+        }
+
+        // 4. Load Shaders and Create Pipelines for Spatial Partitioning
+        ComputePipelineDesc hashDesc{};
+        hashDesc.shader                      = m_resourceManager->CreateShader( "shaders/compute/hash_agents.comp" );
+        hashDesc.debugName                   = "HashAgentsPipeline";
+        ComputePipelineHandle hashPipeHandle = m_resourceManager->CreatePipeline( hashDesc );
+        ComputePipeline*      hashPipe       = m_resourceManager->GetPipeline( hashPipeHandle );
+
+        ComputePipelineDesc sortDesc{};
+        sortDesc.shader                      = m_resourceManager->CreateShader( "shaders/compute/bitonic_sort.comp" );
+        sortDesc.debugName                   = "BitonicSortPipeline";
+        ComputePipelineHandle sortPipeHandle = m_resourceManager->CreatePipeline( sortDesc );
+        ComputePipeline*      sortPipe       = m_resourceManager->GetPipeline( sortPipeHandle );
+
+        ComputePipelineDesc offsetDesc{};
+        offsetDesc.shader                      = m_resourceManager->CreateShader( "shaders/compute/build_offsets.comp" );
+        offsetDesc.debugName                   = "BuildOffsetsPipeline";
+        ComputePipelineHandle offsetPipeHandle = m_resourceManager->CreatePipeline( offsetDesc );
+        ComputePipeline*      offsetPipe       = m_resourceManager->GetPipeline( offsetPipeHandle );
+
+        // 5. Setup Binding Groups
+        BindingGroup* bgHash0 = m_resourceManager->GetBindingGroup( m_resourceManager->CreateBindingGroup( hashPipeHandle, 0 ) );
+        bgHash0->Bind( 0, m_resourceManager->GetBuffer( outState.agentBuffers[ 0 ] ) );
+        bgHash0->Bind( 1, m_resourceManager->GetBuffer( outState.hashBuffer ) );
+        bgHash0->Build();
+
+        BindingGroup* bgHash1 = m_resourceManager->GetBindingGroup( m_resourceManager->CreateBindingGroup( hashPipeHandle, 0 ) );
+        bgHash1->Bind( 0, m_resourceManager->GetBuffer( outState.agentBuffers[ 1 ] ) );
+        bgHash1->Bind( 1, m_resourceManager->GetBuffer( outState.hashBuffer ) );
+        bgHash1->Build();
+
+        BindingGroup* bgSort = m_resourceManager->GetBindingGroup( m_resourceManager->CreateBindingGroup( sortPipeHandle, 0 ) );
+        bgSort->Bind( 0, m_resourceManager->GetBuffer( outState.hashBuffer ) );
+        bgSort->Build();
+
+        BindingGroup* bgOffset = m_resourceManager->GetBindingGroup( m_resourceManager->CreateBindingGroup( offsetPipeHandle, 0 ) );
+        bgOffset->Bind( 0, m_resourceManager->GetBuffer( outState.hashBuffer ) );
+        bgOffset->Bind( 1, m_resourceManager->GetBuffer( outState.offsetBuffer ) );
+        bgOffset->Build();
+
+        // 6. Base Push Constants
+        ComputePushConstants basePC{};
+        basePC.offset = 0; // Processing all agents globally, offset is always 0
+        basePC.count  = totalAgents;
+        // w component acts as padding here since maxRadius is not needed for pure hashing
+        basePC.domainSize = glm::vec4( blueprint.GetDomainSize(), 0.0f );
+        basePC.gridSize   = glm::uvec4( 0 );
+
+        // --- TASK A: HASH AGENTS ---
+        ComputePushConstants hashPC = basePC;
+        hashPC.fParam1              = cellSize;
+        glm::uvec3 hashDispatch( ( totalAgents + 255 ) / 256, 1, 1 );
+        outState.computeGraph.AddTask( ComputeTask( hashPipe, bgHash0, bgHash1, computeHz, hashPC, hashDispatch ) );
+
+        // --- TASK B: BITONIC SORT (The Magic GPU Loop) ---
+        glm::uvec3 sortDispatch( ( paddedCount + 255 ) / 256, 1, 1 );
+        for( uint32_t k = 2; k <= paddedCount; k <<= 1 )
+        {
+            for( uint32_t j = k >> 1; j > 0; j >>= 1 )
+            {
+                ComputePushConstants sortPC = basePC;
+                sortPC.count                = paddedCount; // Sort operates on the padded size
+                sortPC.uParam1              = j;
+                sortPC.uParam2              = k;
+                outState.computeGraph.AddTask( ComputeTask( sortPipe, bgSort, bgSort, computeHz, sortPC, sortDispatch ) );
+            }
+        }
+
+        // --- TASK C: BUILD OFFSETS ---
+        ComputePushConstants offsetPC = basePC;
+        offsetPC.count                = paddedCount;
+        glm::uvec3 offsetDispatch( ( paddedCount + 255 ) / 256, 1, 1 );
+        outState.computeGraph.AddTask( ComputeTask( offsetPipe, bgOffset, bgOffset, computeHz, offsetPC, offsetDispatch ) );
+
+        DT_INFO( "[SimulationBuilder] Compiled Global Spatial Grid. Total Agents: {}, Frequency: {}Hz", totalAgents, computeHz );
     }
 
     void SimulationBuilder::CompileGridFields( const SimulationBlueprint& blueprint, SimulationState& outState )
@@ -445,84 +580,18 @@ namespace DigitalTwin
                 {
                     auto& biomechanics = std::get<Behaviours::Biomechanics>( record.behaviour );
 
-                    uint32_t agentCount = group.GetCount();
+                    uint32_t agentCount      = group.GetCount();
+                    uint32_t offsetArraySize = 262144; // 64x64x64 hash grid slots (must match CompileSpatialGrid)
 
-                    // GPU Bitonic Sort requires the array size to be a power of two
-                    uint32_t paddedCount = agentCount;
-                    paddedCount--;
-                    paddedCount |= paddedCount >> 1;
-                    paddedCount |= paddedCount >> 2;
-                    paddedCount |= paddedCount >> 4;
-                    paddedCount |= paddedCount >> 8;
-                    paddedCount |= paddedCount >> 16;
-                    paddedCount++;
-
-                    uint32_t offsetArraySize = 262144; // 64x64x64 hash grid slots
-
-                    // 1. Allocate Physics Buffers (if not already allocated for this state)
-                    if( !outState.hashBuffer.IsValid() )
-                    {
-                        outState.hashBuffer = m_resourceManager->CreateBuffer( { paddedCount * 8, BufferType::STORAGE, "AgentHashes" } );
-                    }
-                    if( !outState.offsetBuffer.IsValid() )
-                    {
-                        outState.offsetBuffer = m_resourceManager->CreateBuffer( { offsetArraySize * 4, BufferType::STORAGE, "CellOffsets" } );
-
-                        // Clear Offsets with 0xFFFFFFFF (Empty Cell Marker) using StreamingManager
-                        std::vector<uint32_t>            emptyOffsets( offsetArraySize, 0xFFFFFFFF );
-                        std::vector<BufferUploadRequest> uploads = { { outState.offsetBuffer, emptyOffsets.data(), offsetArraySize * 4, 0 } };
-                        m_streamingManager->UploadBufferImmediate( uploads );
-                    }
-                    if( !outState.pressureBuffer.IsValid() )
-                    {
-                        outState.pressureBuffer = m_resourceManager->CreateBuffer( { agentCount * 4, BufferType::STORAGE, "AgentPressures" } );
-                    }
-
-                    // 2. Load Shaders and Create Pipelines using Pipeline Descriptions
-                    ComputePipelineDesc hashDesc{};
-                    hashDesc.shader                      = m_resourceManager->CreateShader( "shaders/compute/hash_agents.comp" );
-                    hashDesc.debugName                   = "HashAgentsPipeline";
-                    ComputePipelineHandle hashPipeHandle = m_resourceManager->CreatePipeline( hashDesc );
-                    ComputePipeline*      hashPipe       = m_resourceManager->GetPipeline( hashPipeHandle );
-
-                    ComputePipelineDesc sortDesc{};
-                    sortDesc.shader                      = m_resourceManager->CreateShader( "shaders/compute/bitonic_sort.comp" );
-                    sortDesc.debugName                   = "BitonicSortPipeline";
-                    ComputePipelineHandle sortPipeHandle = m_resourceManager->CreatePipeline( sortDesc );
-                    ComputePipeline*      sortPipe       = m_resourceManager->GetPipeline( sortPipeHandle );
-
-                    ComputePipelineDesc offsetDesc{};
-                    offsetDesc.shader                      = m_resourceManager->CreateShader( "shaders/compute/build_offsets.comp" );
-                    offsetDesc.debugName                   = "BuildOffsetsPipeline";
-                    ComputePipelineHandle offsetPipeHandle = m_resourceManager->CreatePipeline( offsetDesc );
-                    ComputePipeline*      offsetPipe       = m_resourceManager->GetPipeline( offsetPipeHandle );
-
+                    // 1. Load Shaders and Create Pipeline for Biomechanics
                     ComputePipelineDesc jkrDesc{};
                     jkrDesc.shader                      = m_resourceManager->CreateShader( "shaders/compute/jkr_forces.comp" );
                     jkrDesc.debugName                   = "JKRForcesPipeline";
                     ComputePipelineHandle jkrPipeHandle = m_resourceManager->CreatePipeline( jkrDesc );
                     ComputePipeline*      jkrPipe       = m_resourceManager->GetPipeline( jkrPipeHandle );
 
-                    // 3. Setup Binding Groups
-                    BindingGroup* bgHash0 = m_resourceManager->GetBindingGroup( m_resourceManager->CreateBindingGroup( hashPipeHandle, 0 ) );
-                    bgHash0->Bind( 0, m_resourceManager->GetBuffer( outState.agentBuffers[ 0 ] ) );
-                    bgHash0->Bind( 1, m_resourceManager->GetBuffer( outState.hashBuffer ) );
-                    bgHash0->Build();
-
-                    BindingGroup* bgHash1 = m_resourceManager->GetBindingGroup( m_resourceManager->CreateBindingGroup( hashPipeHandle, 0 ) );
-                    bgHash1->Bind( 0, m_resourceManager->GetBuffer( outState.agentBuffers[ 1 ] ) );
-                    bgHash1->Bind( 1, m_resourceManager->GetBuffer( outState.hashBuffer ) );
-                    bgHash1->Build();
-
-                    BindingGroup* bgSort = m_resourceManager->GetBindingGroup( m_resourceManager->CreateBindingGroup( sortPipeHandle, 0 ) );
-                    bgSort->Bind( 0, m_resourceManager->GetBuffer( outState.hashBuffer ) );
-                    bgSort->Build();
-
-                    BindingGroup* bgOffset = m_resourceManager->GetBindingGroup( m_resourceManager->CreateBindingGroup( offsetPipeHandle, 0 ) );
-                    bgOffset->Bind( 0, m_resourceManager->GetBuffer( outState.hashBuffer ) );
-                    bgOffset->Bind( 1, m_resourceManager->GetBuffer( outState.offsetBuffer ) );
-                    bgOffset->Build();
-
+                    // 2. Setup Binding Groups
+                    // Note: hashBuffer, offsetBuffer, and pressureBuffer are globally built in CompileSpatialGrid
                     BindingGroup* bgJkr0 = m_resourceManager->GetBindingGroup( m_resourceManager->CreateBindingGroup( jkrPipeHandle, 0 ) );
                     bgJkr0->Bind( 0, m_resourceManager->GetBuffer( outState.agentBuffers[ 0 ] ) );
                     bgJkr0->Bind( 1, m_resourceManager->GetBuffer( outState.agentBuffers[ 1 ] ) );
@@ -539,52 +608,27 @@ namespace DigitalTwin
                     bgJkr1->Bind( 4, m_resourceManager->GetBuffer( outState.offsetBuffer ) );
                     bgJkr1->Build();
 
-                    // 4. Base Push Constants
+                    // 3. Base Push Constants
                     ComputePushConstants basePC{};
-                    basePC.offset     = currentOffset;
-                    basePC.count      = agentCount;
+                    basePC.offset = currentOffset;
+                    basePC.count  = agentCount;
+                    // Embed interaction radius in the W component of domainSize
                     basePC.domainSize = glm::vec4( blueprint.GetDomainSize(), biomechanics.maxRadius );
                     basePC.gridSize   = glm::uvec4( 0 ); // Unused for particle physics
 
-                    // --- TASK A: HASH AGENTS ---
-                    const auto& spatialConfig = blueprint.GetSpatialPartitioning();
-
-                    ComputePushConstants hashPC = basePC;
-                    hashPC.fParam1              = spatialConfig.cellSize; // cellSize
-                    glm::uvec3 hashDispatch( ( agentCount + 255 ) / 256, 1, 1 );
-                    outState.computeGraph.AddTask( ComputeTask( hashPipe, bgHash0, bgHash1, record.targetHz, hashPC, hashDispatch ) );
-
-                    // --- TASK B: BITONIC SORT (The Magic GPU Loop) ---
-                    glm::uvec3 sortDispatch( ( paddedCount + 255 ) / 256, 1, 1 );
-                    for( uint32_t k = 2; k <= paddedCount; k <<= 1 )
-                    {
-                        for( uint32_t j = k >> 1; j > 0; j >>= 1 )
-                        {
-                            ComputePushConstants sortPC = basePC;
-                            sortPC.count                = paddedCount; // Sort operates on the padded size
-                            sortPC.uParam1              = j;
-                            sortPC.uParam2              = k;
-                            outState.computeGraph.AddTask( ComputeTask( sortPipe, bgSort, bgSort, record.targetHz, sortPC, sortDispatch ) );
-                        }
-                    }
-
-                    // --- TASK C: BUILD OFFSETS ---
-                    ComputePushConstants offsetPC = basePC;
-                    offsetPC.count                = paddedCount;
-                    glm::uvec3 offsetDispatch( ( paddedCount + 255 ) / 256, 1, 1 );
-                    outState.computeGraph.AddTask( ComputeTask( offsetPipe, bgOffset, bgOffset, record.targetHz, offsetPC, offsetDispatch ) );
-
-                    // --- TASK D: JKR FORCES (Physics Application) ---
+                    // 4. Configure Task specific parameters
                     ComputePushConstants jkrPC = basePC;
                     jkrPC.fParam1              = biomechanics.repulsionStiffness;
                     jkrPC.fParam2              = biomechanics.adhesionStrength;
                     jkrPC.uParam1              = offsetArraySize;
+
+                    // 5. Append Task to Compute Graph
                     glm::uvec3 jkrDispatch( ( agentCount + 255 ) / 256, 1, 1 );
 
                     // Using Ping-Pong correctly based on activeIndex inside the graph
                     outState.computeGraph.AddTask( ComputeTask( jkrPipe, bgJkr0, bgJkr1, record.targetHz, jkrPC, jkrDispatch ) );
 
-                    DT_INFO( "SimulationBuilder: Compiled Biomechanics for '{}' at {}Hz", group.GetName(), record.targetHz );
+                    DT_INFO( "[SimulationBuilder] Compiled Biomechanics (JKR) for '{}' at {}Hz", group.GetName(), record.targetHz );
                 }
             }
             currentOffset += group.GetCount();

@@ -24,6 +24,8 @@ namespace DigitalTwin
         SimulationState Build( const SimulationBlueprint& blueprint );
 
     private:
+        void AllocateAgentBuffers( const SimulationBlueprint& blueprint, SimulationState& outState );
+        void CompileSpatialGrid( const SimulationBlueprint& blueprint, SimulationState& outState );
         void CompileGridFields( const SimulationBlueprint& blueprint, SimulationState& outState );
         void CompileBehaviours( const SimulationBlueprint& blueprint, SimulationState& outState );
 

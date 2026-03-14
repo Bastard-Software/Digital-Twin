@@ -1,0 +1,31 @@
+#version 460
+layout(local_size_x = 64) in;
+
+layout(push_constant) uniform PushConstants {
+    float dt; float totalTime;
+    float fParam0; float fParam1; float fParam2; float fParam3; float fParam4; float fParam5;
+    uint  offset; uint  maxCapacity; uint  uParam0; uint  grpNdx;
+    vec4  domainSize; uvec4 gridSize;
+} pc;
+
+// Binding 0: GPU-Driven Atomic Counter
+layout(std430, binding = 0) readonly buffer CounterBuffer { uint counts[]; } counters;
+
+struct DrawCommand {
+    uint indexCount;
+    uint instanceCount;
+    uint firstIndex;
+    uint vertexOffset;
+    uint firstInstance;
+};
+
+// Binding 1: Indirect Command Buffer for Renderer
+layout(std430, binding = 1) buffer IndirectCommandBuffer { DrawCommand commands[]; } indirectCmds;
+
+void main() {
+    uint idx = gl_GlobalInvocationID.x;
+    if(idx >= pc.grpNdx) return; // uParam1 is the number of agent groups
+    
+    // Dynamically overwrite the instanceCount for the Geometry Pass!
+    indirectCmds.commands[idx].instanceCount = counters.counts[idx];
+}

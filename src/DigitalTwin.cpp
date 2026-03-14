@@ -853,6 +853,11 @@ namespace DigitalTwin
             if( m_impl->m_device )
                 m_impl->m_device->WaitIdle();
 
+            // Reset visualization flags
+            auto gridSettings   = m_impl->m_renderer->GetGridVisualization();
+            gridSettings.active = false;
+            m_impl->m_renderer->SetGridVisualization( gridSettings );
+
             // Destroy GPU buffers
             if( m_impl->m_simulationState.IsValid() )
             {

@@ -3,6 +3,8 @@
 #include <core/Log.h>
 #include <imgui.h>
 #include <random>
+#include <simulation/BiologyGenerator.h>
+#include <simulation/BiomechanicsGenerator.h>
 #include <simulation/MorphologyGenerator.h>
 #include <simulation/SpatialDistribution.h>
 
@@ -79,6 +81,16 @@ namespace Gaudi
                                .SetMaxInteractionRadius( 1.5f ) // Maximum cell radius
                                .Build() )
             .SetHz( 120.0f );
+
+        tumorCells
+            .AddBehaviour( DigitalTwin::BiologyGenerator::StandardCellCycle()
+                               .SetBaseDoublingTime( 18.0f ) // Proliferation
+                               .SetProliferationOxygenTarget( 38.0f )
+                               .SetArrestPressureThreshold( 2.5f ) // Contact inhibition preasure
+                               .SetNecrosisOxygenThreshold( 5.0f ) // Death
+                               .SetApoptosisRate( 0.05f )
+                               .Build() )
+            .SetHz( 1.0f );
 
         m_engine.SetBlueprint( m_blueprint );
     }

@@ -1,3 +1,4 @@
+#include "simulation/BiomechanicsGenerator.h"
 #include "simulation/MorphologyGenerator.h"
 #include "simulation/SimulationBlueprint.h"
 #include "simulation/SimulationBuilder.h"
@@ -20,8 +21,7 @@
 using namespace DigitalTwin;
 
 // Helper method to readback 3D Grid from GPU into CPU memory
-std::vector<float> ReadbackGrid( DigitalTwin::SimulationState& state, uint32_t fieldIndex, DigitalTwin::ResourceManager* rm,
-                                 DigitalTwin::Device* device, DigitalTwin::StreamingManager* stream )
+std::vector<float> ReadbackGrid( DigitalTwin::SimulationState& state, uint32_t fieldIndex, DigitalTwin::StreamingManager* stream )
 {
     // 1. Get the requested grid field from the simulation state
     auto& field = state.gridFields[ fieldIndex ];
@@ -294,7 +294,7 @@ TEST_F( SimulationBuilderTest, Behaviour_ConsumeField )
     m_device->GetComputeQueue()->WaitIdle();
 
     // Readback the grid using our updated StreamingManager pipeline
-    std::vector<float> gridData = ReadbackGrid( state, 0, m_resourceManager.get(), m_device.get(), m_streamingManager.get() );
+    std::vector<float> gridData = ReadbackGrid( state, 0, m_streamingManager.get() );
 
     // Center is at 5,5,5 in a 10x10x10 grid (using 0-based index)
     uint32_t centerIdx = 5 + 5 * 10 + 5 * 100;
@@ -352,7 +352,7 @@ TEST_F( SimulationBuilderTest, Behaviour_SecreteField )
     m_device->GetComputeQueue()->WaitIdle();
 
     // Readback the grid using our updated StreamingManager pipeline
-    std::vector<float> gridData = ReadbackGrid( state, 0, m_resourceManager.get(), m_device.get(), m_streamingManager.get() );
+    std::vector<float> gridData = ReadbackGrid( state, 0, m_streamingManager.get() );
 
     uint32_t centerIdx = 5 + 5 * 10 + 5 * 100;
 
@@ -388,7 +388,7 @@ TEST_F( SimulationBuilderTest, Behaviour_PureDiffusion )
     SimulationState                state = builder.Build( blueprint );
 
     // 1. Readback the INITIAL state of the grid before any compute dispatches
-    std::vector<float> initialGridData = ReadbackGrid( state, 0, m_resourceManager.get(), m_device.get(), m_streamingManager.get() );
+    std::vector<float> initialGridData = ReadbackGrid( state, 0, m_streamingManager.get() );
 
     // Center is at 5,5,5. We will also track a voxel slightly off-center (e.g., 2,2,2)
     // to observe the mass flowing from the peak into the valleys.
@@ -420,7 +420,7 @@ TEST_F( SimulationBuilderTest, Behaviour_PureDiffusion )
     m_device->GetComputeQueue()->WaitIdle();
 
     // 3. Readback the FINAL state of the grid after diffusion
-    std::vector<float> finalGridData = ReadbackGrid( state, 0, m_resourceManager.get(), m_device.get(), m_streamingManager.get() );
+    std::vector<float> finalGridData = ReadbackGrid( state, 0, m_streamingManager.get() );
 
     float finalCenterValue = finalGridData[ centerIdx ];
     float finalEdgeValue   = finalGridData[ edgeIdx ];

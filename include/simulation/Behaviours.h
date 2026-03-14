@@ -36,70 +36,26 @@ namespace DigitalTwin::Behaviours
         float maxRadius          = 1.5f;  // The interaction radius for collision detection
     };
 
-    // Future mechanisms: Chemotaxis, Proliferate, etc.
+    /**
+     * @brief Raw data structure for the GPU Compute Compiler.
+     * Contains highly optimized rates (per second) pre-calculated from biological hours/days.
+     */
+    struct CellCycle
+    {
+        float growthRatePerSec;    // Fraction of biomass gained per second
+        float targetO2;            // Required O2 for optimal proliferation
+        float arrestPressure;      // Threshold for Contact Inhibition (Quiescence)
+        float necrosisO2;          // Threshold for starvation death
+        float apoptosisProbPerSec; // Base probability of death per second
+    };
+
 } // namespace DigitalTwin::Behaviours
 
 namespace DigitalTwin
 {
-
-    /**
-     * @brief Factory class to generate pre-calculated GPU parameters
-     * from real-world biological and physical units.
-     */
-    class BiomechanicsGenerator
-    {
-    public:
-        class JKRBuilder
-        {
-        public:
-            JKRBuilder& SetYoungsModulus( float e )
-            {
-                m_youngsModulus = e;
-                return *this;
-            }
-            JKRBuilder& SetPoissonRatio( float nu )
-            {
-                m_poissonRatio = nu;
-                return *this;
-            }
-            JKRBuilder& SetAdhesionEnergy( float w )
-            {
-                m_adhesionEnergy = w;
-                return *this;
-            }
-            JKRBuilder& SetMaxInteractionRadius( float r )
-            {
-                m_maxRadius = r;
-                return *this;
-            }
-
-            Behaviours::Biomechanics Build() const
-            {
-                Behaviours::Biomechanics b;
-
-                // Calculate Effective Young's Modulus for two interacting identical spheres
-                // E* = E / (2 * (1 - nu^2))
-                float effectiveStiffness = m_youngsModulus / ( 2.0f * ( 1.0f - m_poissonRatio * m_poissonRatio ) );
-
-                b.repulsionStiffness = effectiveStiffness;
-                b.adhesionStrength   = m_adhesionEnergy;
-                b.maxRadius          = m_maxRadius;
-
-                return b;
-            }
-
-        private:
-            float m_youngsModulus  = 15.0f; // kPa (Stiffness)
-            float m_poissonRatio   = 0.4f;  // Dimensionless (Compressibility)
-            float m_adhesionEnergy = 2.0f;  // Adhesion strength
-            float m_maxRadius      = 1.5f;  // micrometers
-        };
-
-        static JKRBuilder JKR() { return JKRBuilder(); }
-    };
-
     // A variant holding all possible behaviours the engine understands
-    using BehaviourVariant = std::variant<Behaviours::BrownianMotion, Behaviours::ConsumeField, Behaviours::SecreteField, Behaviours::Biomechanics>;
+    using BehaviourVariant =
+        std::variant<Behaviours::BrownianMotion, Behaviours::ConsumeField, Behaviours::SecreteField, Behaviours::Biomechanics, Behaviours::CellCycle>;
 
     // Wrapper to attach execution parameters (like frequency) to a behaviour
     struct BehaviourRecord
@@ -114,4 +70,5 @@ namespace DigitalTwin
             return *this;
         }
     };
+
 } // namespace DigitalTwin

@@ -25,21 +25,25 @@ namespace Gaudi
 
         m_blueprint.ConfigureSpatialPartitioning()
             .SetMethod( DigitalTwin::SpatialPartitioningMethod::HashGrid )
-            .SetCellSize( 3.0f )     // Matches 2x max interaction radius (1.5 * 2)
-            .SetMaxDensity( 64 )     // Prevents buffer overflows in dense regions (For future use)
-            .SetComputeHz( 120.0f ); // Physics runs at 120Hz for stability (For future use)
+            .SetCellSize( 3.0f )    // Matches 2x max interaction radius (1.5 * 2)
+            .SetMaxDensity( 64 )    // Prevents buffer overflows in dense regions (For future use)
+            .SetComputeHz( 30.0f ); // Spatial grid building runs at 120Hz for stability
 
         // 2A. Add Oxygen Field (O2) - Blood vessels network
-        std::vector<glm::vec3>                bloodVessels;
-        std::mt19937                          rng( 42 );
-        std::uniform_real_distribution<float> dist( -60.0f, 60.0f );
+        std::vector<glm::vec3> bloodVessels;
+        std::mt19937           rng( 42 );
+
+        // Tumor starts with a radius of 10.0f, so vessels spanning [-20.0, 20.0]
+        // will intimately wrap around and penetrate the initial cell mass.
+        std::uniform_real_distribution<float> dist( -20.0f, 20.0f );
         for( int i = 0; i < 8; ++i )
         {
             bloodVessels.push_back( glm::vec3( dist( rng ), dist( rng ), dist( rng ) ) );
         }
 
+        // Decreased Gaussian sigma (from 15.0f to 10.0f) to make the initial oxygen clouds sharper
         m_blueprint.AddGridField( "Oxygen" )
-            .SetInitializer( DigitalTwin::GridInitializer::MultiGaussian( bloodVessels, 15.0f, 100.0f ) )
+            .SetInitializer( DigitalTwin::GridInitializer::MultiGaussian( bloodVessels, 10.0f, 100.0f ) )
             .SetDiffusionCoefficient( 2.5f )
             .SetDecayRate( 0.01f )
             .SetComputeHz( 60.0f );
@@ -75,9 +79,6 @@ namespace Gaudi
                                .SetMaxInteractionRadius( 1.5f ) // Maximum cell radius
                                .Build() )
             .SetHz( 120.0f );
-
-        // Add Contact Inhibition
-        // tumorCells.AddBehaviour( DigitalTwin::Behaviours::ContactInhibition{ 2.5f } ).SetHz( 10.0f );
 
         m_engine.SetBlueprint( m_blueprint );
     }

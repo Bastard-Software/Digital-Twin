@@ -1,3 +1,4 @@
+#include "SetupHelpers.h"
 #include "core/FileSystem.h"
 #include "core/jobs/JobSystem.h"
 #include "core/memory/MemorySystem.h"
@@ -29,8 +30,24 @@ protected:
         m_memory = CreateScope<MemorySystem>();
         m_memory->Initialize();
 
+        std::filesystem::path projectRoot = std::filesystem::current_path();
+        std::filesystem::path engineRoot  = Helpers::FindEngineRoot();
+        std::filesystem::path internalAssets;
+
+        if( !engineRoot.empty() )
+        {
+            internalAssets = engineRoot / "assets";
+        }
+        else
+        {
+            // Last ditch effort: check if assets are next to the executable
+            if( std::filesystem::exists( std::filesystem::current_path() / "assets" ) )
+            {
+                internalAssets = std::filesystem::current_path() / "assets";
+            }
+        }
         m_fileSystem = CreateScope<FileSystem>( m_memory.get() );
-        m_fileSystem->Initialize( std::filesystem::current_path(), std::filesystem::current_path() );
+        m_fileSystem->Initialize( projectRoot, internalAssets );
 
         m_rhi = CreateScope<RHI>();
         RHIConfig config;
@@ -63,6 +80,7 @@ protected:
     }
 };
 
+// 1. Tests immediate data upload to a buffer and its immediate readback to verify data integrity
 TEST_F( StreamingTest, ImmediateUploadReadback )
 {
     if( !m_device )
@@ -83,6 +101,7 @@ TEST_F( StreamingTest, ImmediateUploadReadback )
     EXPECT_EQ( srcData, dstData );
 }
 
+// 2. Verifies concurrent buffer upload operations across multiple threads using the JobSystem
 TEST_F( StreamingTest, MultithreadedUpload )
 {
     if( !m_device )
@@ -120,6 +139,7 @@ TEST_F( StreamingTest, MultithreadedUpload )
     jobs.Shutdown();
 }
 
+// 3. Tests immediate data upload to a single texture
 TEST_F( StreamingTest, TextureUploadImmediate )
 {
     if( !m_device )
@@ -139,6 +159,7 @@ TEST_F( StreamingTest, TextureUploadImmediate )
     m_rm->DestroyTexture( tex );
 }
 
+// 4. Tests deferred buffer readback by queuing the transfer and sync
 TEST_F( StreamingTest, DeferredReadback )
 {
     if( !m_device )
@@ -170,6 +191,7 @@ TEST_F( StreamingTest, DeferredReadback )
     EXPECT_EQ( initData, result );
 }
 
+// 5. Tests deferred texture readback by queuing the transfer and waiting for completion
 TEST_F( StreamingTest, DeferredTextureReadback )
 {
     if( !m_device )
@@ -208,6 +230,7 @@ TEST_F( StreamingTest, DeferredTextureReadback )
     EXPECT_EQ( initData, result );
 }
 
+// 6. Verifies the immediate batched upload of multiple buffers in a single request list
 TEST_F( StreamingTest, BatchedUploadImmediate )
 {
     if( !m_device )
@@ -246,6 +269,7 @@ TEST_F( StreamingTest, BatchedUploadImmediate )
     m_rm->DestroyBuffer( dst2 );
 }
 
+// 7. Verifies the immediate batched readback of multiple buffers simultaneously
 TEST_F( StreamingTest, BatchedReadbackImmediate )
 {
     if( !m_device )
@@ -279,4 +303,92 @@ TEST_F( StreamingTest, BatchedReadbackImmediate )
 
     m_rm->DestroyBuffer( srcA );
     m_rm->DestroyBuffer( srcB );
+}
+
+// 8. Tests immediate data readback from a single texture directly to CPU memory
+TEST_F( StreamingTest, SingleTextureUploadAndReadbackImmediate )
+{
+    if( !m_device )
+        GTEST_SKIP();
+
+    // Setup dimensions for a standard 2D slice (e.g., biological field data)
+    const uint32_t width     = 64;
+    const uint32_t height    = 64;
+    const size_t   numPixels = width * height;
+    const size_t   dataSize  = numPixels * sizeof( uint32_t );
+
+    // Initialize mock data (e.g., specific biological marker concentrations)
+    std::vector<uint32_t> uploadData( numPixels, 0x1A2B3C4D );
+    std::vector<uint32_t> readbackData( numPixels, 0 );
+
+    TextureDesc desc = {};
+    desc.width       = width;
+    desc.height      = height;
+    desc.depth       = 1;
+    desc.format      = VK_FORMAT_R8G8B8A8_UNORM;
+    desc.usage       = TextureUsage::TRANSFER_SRC | TextureUsage::TRANSFER_DST | TextureUsage::SAMPLED;
+
+    TextureHandle texture = m_rm->CreateTexture( desc );
+
+    // 1. Upload the data immediately
+    m_stream->UploadTextureImmediate( texture, uploadData.data(), dataSize );
+
+    // 2. Readback the data immediately
+    m_stream->ReadbackTextureImmediate( texture, readbackData.data(), dataSize );
+
+    // 3. Verify data integrity
+    EXPECT_EQ( uploadData, readbackData ) << "Texture readback data does not match the uploaded data!";
+
+    // Cleanup
+    m_rm->DestroyTexture( texture );
+}
+
+// 9. Verifies the immediate batched upload and readback of multiple textures simultaneously
+TEST_F( StreamingTest, BatchedTextureUploadAndReadbackImmediate )
+{
+    if( !m_device )
+        GTEST_SKIP();
+
+    // Create asymmetrical dimensions to ensure pitch/strides are handled correctly internally
+    const uint32_t widthA = 32, heightA = 32;
+    const uint32_t widthB = 128, heightB = 64;
+
+    const size_t sizeA = widthA * heightA * sizeof( uint32_t );
+    const size_t sizeB = widthB * heightB * sizeof( uint32_t );
+
+    std::vector<uint32_t> uploadDataA( widthA * heightA, 0xAAAAAAAA );
+    std::vector<uint32_t> uploadDataB( widthB * heightB, 0xBBBBBBBB );
+
+    std::vector<uint32_t> readbackDataA( widthA * heightA, 0 );
+    std::vector<uint32_t> readbackDataB( widthB * heightB, 0 );
+
+    TextureDesc descA = {};
+    descA.width       = widthA;
+    descA.height      = heightA;
+    descA.depth       = 1;
+    descA.format      = VK_FORMAT_R8G8B8A8_UNORM;
+    descA.usage       = TextureUsage::TRANSFER_SRC | TextureUsage::TRANSFER_DST | TextureUsage::SAMPLED;
+
+    TextureDesc descB = descA;
+    descB.width       = widthB;
+    descB.height      = heightB;
+
+    TextureHandle texA = m_rm->CreateTexture( descA );
+    TextureHandle texB = m_rm->CreateTexture( descB );
+
+    // 1. Batched Upload
+    std::vector<TextureUploadRequest> uploads = { { texA, uploadDataA.data(), sizeA }, { texB, uploadDataB.data(), sizeB } };
+    m_stream->UploadTextureImmediate( uploads );
+
+    // 2. Batched Readback
+    std::vector<TextureReadbackRequest> readbacks = { { texA, readbackDataA.data(), sizeA }, { texB, readbackDataB.data(), sizeB } };
+    m_stream->ReadbackTextureImmediate( readbacks );
+
+    // 3. Verify memory
+    EXPECT_EQ( uploadDataA, readbackDataA ) << "Batched readback failed for Texture A";
+    EXPECT_EQ( uploadDataB, readbackDataB ) << "Batched readback failed for Texture B";
+
+    // Cleanup
+    m_rm->DestroyTexture( texA );
+    m_rm->DestroyTexture( texB );
 }

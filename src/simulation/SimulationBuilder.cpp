@@ -39,6 +39,8 @@ namespace DigitalTwin
             resourceManager->DestroyBuffer( offsetBuffer );
         if( pressureBuffer.IsValid() )
             resourceManager->DestroyBuffer( pressureBuffer );
+        if( agentCountBuffer.IsValid() )
+            resourceManager->DestroyBuffer( agentCountBuffer );
 
         for( auto& field: gridFields )
         {
@@ -60,6 +62,7 @@ namespace DigitalTwin
         pressureBuffer    = {};
         agentBuffers[ 0 ] = {};
         agentBuffers[ 1 ] = {};
+        agentCountBuffer  = {};
     }
 
     SimulationState SimulationBuilder::Build( const SimulationBlueprint& blueprint )
@@ -193,6 +196,8 @@ namespace DigitalTwin
         BufferDesc agentDesc{ megaPositions.size() * sizeof( glm::vec4 ), BufferType::STORAGE, "SimulationAgentBuffer" };
         outState.agentBuffers[ 0 ] = m_resourceManager->CreateBuffer( agentDesc );
         outState.agentBuffers[ 1 ] = m_resourceManager->CreateBuffer( agentDesc );
+        outState.agentCountBuffer =
+            m_resourceManager->CreateBuffer( { outState.groupCount * sizeof( uint32_t ), BufferType::INDIRECT, "AgentCountBuffer" } );
 
         // 5. Upload Data to VRAM synchronously
         std::vector<BufferUploadRequest> uploads;
@@ -213,6 +218,12 @@ namespace DigitalTwin
         // Always upload agents
         uploads.push_back( { outState.agentBuffers[ 0 ], megaPositions.data(), megaPositions.size() * sizeof( glm::vec4 ) } );
         uploads.push_back( { outState.agentBuffers[ 1 ], megaPositions.data(), megaPositions.size() * sizeof( glm::vec4 ) } );
+        std::vector<uint32_t> initialCounts;
+        for( const auto& group: blueprint.GetGroups() )
+        {
+            initialCounts.push_back( group.GetCount() );
+        }
+        uploads.push_back( { outState.agentCountBuffer, initialCounts.data(), initialCounts.size() * sizeof( uint32_t ), 0 } );
 
         m_streamingManager->UploadBufferImmediate( uploads );
 
@@ -312,15 +323,15 @@ namespace DigitalTwin
 
         // 6. Base Push Constants
         ComputePushConstants basePC{};
-        basePC.offset = 0; // Processing all agents globally, offset is always 0
-        basePC.count  = totalAgents;
+        basePC.offset      = 0; // Processing all agents globally, offset is always 0
+        basePC.maxCapacity = totalAgents;
         // w component acts as padding here since maxRadius is not needed for pure hashing
         basePC.domainSize = glm::vec4( blueprint.GetDomainSize(), 0.0f );
         basePC.gridSize   = glm::uvec4( 0 );
 
         // --- TASK A: HASH AGENTS ---
         ComputePushConstants hashPC = basePC;
-        hashPC.fParam1              = cellSize;
+        hashPC.fParam0              = cellSize;
         glm::uvec3 hashDispatch( ( totalAgents + 255 ) / 256, 1, 1 );
         outState.computeGraph.AddTask( ComputeTask( hashPipe, bgHash0, bgHash1, computeHz, hashPC, hashDispatch ) );
 
@@ -331,16 +342,16 @@ namespace DigitalTwin
             for( uint32_t j = k >> 1; j > 0; j >>= 1 )
             {
                 ComputePushConstants sortPC = basePC;
-                sortPC.count                = paddedCount; // Sort operates on the padded size
-                sortPC.uParam1              = j;
-                sortPC.uParam2              = k;
+                sortPC.maxCapacity          = paddedCount; // Sort operates on the padded size
+                sortPC.uParam0              = j;
+                sortPC.uParam1              = k;
                 outState.computeGraph.AddTask( ComputeTask( sortPipe, bgSort, bgSort, computeHz, sortPC, sortDispatch ) );
             }
         }
 
         // --- TASK C: BUILD OFFSETS ---
         ComputePushConstants offsetPC = basePC;
-        offsetPC.count                = paddedCount;
+        offsetPC.maxCapacity          = paddedCount;
         glm::uvec3 offsetDispatch( ( paddedCount + 255 ) / 256, 1, 1 );
         outState.computeGraph.AddTask( ComputeTask( offsetPipe, bgOffset, bgOffset, computeHz, offsetPC, offsetDispatch ) );
 
@@ -459,8 +470,8 @@ namespace DigitalTwin
             bg1->Build();
 
             ComputePushConstants pc{};
-            pc.fParam1 = fieldDef.GetDiffusionCoefficient();
-            pc.fParam2 = fieldDef.GetDecayRate();
+            pc.fParam0 = fieldDef.GetDiffusionCoefficient();
+            pc.fParam1 = fieldDef.GetDecayRate();
 
             glm::uvec3 dispatchSize( ( gridWidth + 7 ) / 8, ( gridHeight + 7 ) / 8, ( gridDepth + 7 ) / 8 );
             outState.computeGraph.AddTask( ComputeTask( pipe, bg0, bg1, fieldDef.GetComputeHz(), pc, dispatchSize ) );
@@ -471,6 +482,7 @@ namespace DigitalTwin
     void SimulationBuilder::CompileBehaviours( const SimulationBlueprint& blueprint, SimulationState& outState )
     {
         uint32_t currentOffset = 0;
+        uint32_t groupIndex    = 0;
 
         for( const auto& group: blueprint.GetGroups() )
         {
@@ -496,6 +508,7 @@ namespace DigitalTwin
                     BindingGroup*      bg0       = m_resourceManager->GetBindingGroup( bgHandle0 );
                     bg0->Bind( 0, m_resourceManager->GetBuffer( outState.agentBuffers[ 0 ] ) ); // readonly
                     bg0->Bind( 1, m_resourceManager->GetBuffer( outState.agentBuffers[ 1 ] ) ); // writeonly
+                    bg0->Bind( 2, m_resourceManager->GetBuffer( outState.agentCountBuffer ) );
                     bg0->Build();
 
                     // 2. Create Binding Group 1 (Read from 1, Write to 0)
@@ -503,12 +516,14 @@ namespace DigitalTwin
                     BindingGroup*      bg1       = m_resourceManager->GetBindingGroup( bgHandle1 );
                     bg1->Bind( 0, m_resourceManager->GetBuffer( outState.agentBuffers[ 1 ] ) ); // readonly
                     bg1->Bind( 1, m_resourceManager->GetBuffer( outState.agentBuffers[ 0 ] ) ); // writeonly
+                    bg1->Bind( 2, m_resourceManager->GetBuffer( outState.agentCountBuffer ) );
                     bg1->Build();
 
                     ComputePushConstants pc{};
-                    pc.fParam1 = brownian.speed;
-                    pc.offset  = currentOffset;
-                    pc.count   = group.GetCount();
+                    pc.fParam0     = brownian.speed;
+                    pc.offset      = currentOffset;
+                    pc.maxCapacity = group.GetCount();
+                    pc.uParam1     = groupIndex;
 
                     glm::uvec3 agentDispatch( ( group.GetCount() + 255 ) / 256, 1, 1 );
                     outState.computeGraph.AddTask( ComputeTask( pipe, bg0, bg1, record.targetHz, pc, agentDispatch ) );
@@ -549,6 +564,7 @@ namespace DigitalTwin
                         BindingGroup*      bg0       = m_resourceManager->GetBindingGroup( bgHandle0 );
                         bg0->Bind( 0, m_resourceManager->GetBuffer( outState.agentBuffers[ 0 ] ) );
                         bg0->Bind( 1, m_resourceManager->GetBuffer( targetGrid->interactionDeltaBuffer ) );
+                        bg0->Bind( 2, m_resourceManager->GetBuffer( outState.agentCountBuffer ) );
                         bg0->Build();
 
                         // Read agents[1], write to DeltaBuffer
@@ -556,14 +572,16 @@ namespace DigitalTwin
                         BindingGroup*      bg1       = m_resourceManager->GetBindingGroup( bgHandle1 );
                         bg1->Bind( 0, m_resourceManager->GetBuffer( outState.agentBuffers[ 1 ] ) );
                         bg1->Bind( 1, m_resourceManager->GetBuffer( targetGrid->interactionDeltaBuffer ) );
+                        bg1->Bind( 2, m_resourceManager->GetBuffer( outState.agentCountBuffer ) );
                         bg1->Build();
 
                         ComputePushConstants pc{};
-                        pc.fParam1    = rate;
-                        pc.offset     = currentOffset;
-                        pc.count      = group.GetCount();
-                        pc.domainSize = glm::vec4( blueprint.GetDomainSize(), 0.0f );
-                        pc.gridSize   = glm::uvec4( targetGrid->width, targetGrid->height, targetGrid->depth, 0 );
+                        pc.fParam0     = rate;
+                        pc.offset      = currentOffset;
+                        pc.maxCapacity = group.GetCount();
+                        pc.uParam1     = groupIndex;
+                        pc.domainSize  = glm::vec4( blueprint.GetDomainSize(), 0.0f );
+                        pc.gridSize    = glm::uvec4( targetGrid->width, targetGrid->height, targetGrid->depth, 0 );
 
                         glm::uvec3 agentDispatch( ( group.GetCount() + 255 ) / 256, 1, 1 );
                         outState.computeGraph.AddTask( ComputeTask( pipe, bg0, bg1, record.targetHz, pc, agentDispatch ) );
@@ -598,6 +616,7 @@ namespace DigitalTwin
                     bgJkr0->Bind( 2, m_resourceManager->GetBuffer( outState.pressureBuffer ) );
                     bgJkr0->Bind( 3, m_resourceManager->GetBuffer( outState.hashBuffer ) );
                     bgJkr0->Bind( 4, m_resourceManager->GetBuffer( outState.offsetBuffer ) );
+                    bgJkr0->Bind( 5, m_resourceManager->GetBuffer( outState.agentCountBuffer ) );
                     bgJkr0->Build();
 
                     BindingGroup* bgJkr1 = m_resourceManager->GetBindingGroup( m_resourceManager->CreateBindingGroup( jkrPipeHandle, 0 ) );
@@ -606,21 +625,23 @@ namespace DigitalTwin
                     bgJkr1->Bind( 2, m_resourceManager->GetBuffer( outState.pressureBuffer ) );
                     bgJkr1->Bind( 3, m_resourceManager->GetBuffer( outState.hashBuffer ) );
                     bgJkr1->Bind( 4, m_resourceManager->GetBuffer( outState.offsetBuffer ) );
+                    bgJkr1->Bind( 5, m_resourceManager->GetBuffer( outState.agentCountBuffer ) );
                     bgJkr1->Build();
 
                     // 3. Base Push Constants
                     ComputePushConstants basePC{};
-                    basePC.offset = currentOffset;
-                    basePC.count  = agentCount;
+                    basePC.offset      = currentOffset;
+                    basePC.maxCapacity = agentCount;
                     // Embed interaction radius in the W component of domainSize
                     basePC.domainSize = glm::vec4( blueprint.GetDomainSize(), biomechanics.maxRadius );
                     basePC.gridSize   = glm::uvec4( 0 ); // Unused for particle physics
 
                     // 4. Configure Task specific parameters
                     ComputePushConstants jkrPC = basePC;
-                    jkrPC.fParam1              = biomechanics.repulsionStiffness;
-                    jkrPC.fParam2              = biomechanics.adhesionStrength;
-                    jkrPC.uParam1              = offsetArraySize;
+                    jkrPC.fParam0              = biomechanics.repulsionStiffness;
+                    jkrPC.fParam1              = biomechanics.adhesionStrength;
+                    jkrPC.uParam0              = offsetArraySize;
+                    jkrPC.uParam1              = groupIndex;
 
                     // 5. Append Task to Compute Graph
                     glm::uvec3 jkrDispatch( ( agentCount + 255 ) / 256, 1, 1 );
@@ -632,6 +653,7 @@ namespace DigitalTwin
                 }
             }
             currentOffset += group.GetCount();
+            groupIndex++;
         }
     }
 

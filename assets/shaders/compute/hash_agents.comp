@@ -4,12 +4,16 @@ layout(local_size_x = 256) in;
 layout(push_constant) uniform PushConstants {
     float dt;
     float totalTime;
-    float fParam1;    // cellSize
-    float fParam2;    // Unused
+    float cellSize;
+    float fParam1;
+    float fParam2;
+    float fParam3;
+    float fParam4;
+    float fParam5;
     uint  offset;
-    uint  count;
-    uint  uParam1;    // Unused
-    uint  uParam2;    // Unused
+    uint  maxCapacity;
+    uint  uParam0;
+    uint  uParam1;
     vec4  domainSize;
     uvec4 gridSize;
 } pc;
@@ -29,13 +33,18 @@ uint hashPos(ivec3 cell) {
 
 void main() {
     uint idx = gl_GlobalInvocationID.x;
-    if(idx >= pc.count) return;
+    if(idx >= pc.maxCapacity) return;
 
     uint globalIdx = pc.offset + idx;
-    vec3 pos = inAgents.positions[globalIdx].xyz;
-    
-    // fParam1 acts as the cellSize
-    ivec3 cellCoord = ivec3(floor(pos / pc.fParam1));
+
+    if(inAgents.positions[globalIdx].w == 0.0) {
+        outHashes.data[globalIdx].hash = 0xFFFFFFFF;
+        outHashes.data[globalIdx].agentIndex = 0xFFFFFFFF;
+        return;
+    }
+
+    vec3 pos = inAgents.positions[globalIdx].xyz;    
+    ivec3 cellCoord = ivec3(floor(pos / pc.cellSize));
     
     outHashes.data[idx].hash = hashPos(cellCoord);
     outHashes.data[idx].agentIndex = globalIdx;

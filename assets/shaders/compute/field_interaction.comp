@@ -4,13 +4,17 @@ layout(local_size_x = 256) in;
 layout(push_constant) uniform PushConstants {
     float dt;
     float totalTime;
-    float fParam1; // rate of consumption/secretion
+    float rate;
+    float fParam1;
     float fParam2;
-    uint offset;
-    uint count;
-    uint uParam1;
-    uint uParam2;
-    vec4 domainSize;
+    float fParam3;
+    float fParam4;
+    float fParam5;
+    uint  offset;
+    uint  maxCapacity;
+    uint  uParam0;
+    uint  grpNdx;
+    vec4  domainSize;
     uvec4 gridSize;
 } pc;
 
@@ -23,9 +27,13 @@ layout(std430, binding = 1) buffer DeltaBuffer {
     int deltas[];
 };
 
+// Binding 2: Count buffer
+layout(std430, binding = 2) readonly buffer CounterBuffer { uint counts[]; } counters;
+
 void main() {
     uint idx = gl_GlobalInvocationID.x;
-    if(idx >= pc.count) return;
+    if(idx >= pc.maxCapacity) return;
+    if(idx >= counters.counts[pc.grpNdx]) return;
 
     uint globalIdx = pc.offset + idx;
     vec3 pos = agents.positions[globalIdx].xyz;
@@ -46,7 +54,7 @@ void main() {
     uint flatIdx = coord.x + coord.y * pc.gridSize.x + coord.z * pc.gridSize.x * pc.gridSize.y;
 
     // Scale float delta to integer to allow atomic additions across multiple agents
-    int intDelta = int(pc.fParam1 * pc.dt * 100000.0);
+    int intDelta = int(pc.rate * pc.dt * 100000.0);
     
     atomicAdd(deltas[flatIdx], intDelta);
 }

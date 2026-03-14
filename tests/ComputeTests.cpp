@@ -112,9 +112,10 @@ TEST_F( ComputeTest, GraphExecution )
     out << "#version 450\n"
         << "layout(local_size_x=256) in;\n"
         << "layout(set=0, binding=0) buffer P { float pos[]; };\n"
-        << "layout(push_constant) uniform PC { float dt; float totalTime; float fParam1; float fParam2; uint offset; uint count; uint "
-           "uParam1; uint uParam2; vec4 domainSize; uvec4 gridSize; } pc;\n"
-        << "void main() { if(gl_GlobalInvocationID.x < pc.count) { pos[pc.offset + gl_GlobalInvocationID.x] += pc.fParam1; } }";
+        << "layout(push_constant) uniform PC { float dt; float totalTime; float fParam0; float fParam1; float fParam2; float fParam3; float fParam4; "
+           "float fParam5; float fParam6; float fParam7; uint offset; uint maxCapacity; uint "
+           "uParam0; uint uParam1; vec4 domainSize; uvec4 gridSize; } pc;\n"
+        << "void main() { if(gl_GlobalInvocationID.x < pc.maxCapacity) { pos[pc.offset + gl_GlobalInvocationID.x] += pc.fParam0; } }";
     out.close();
     ShaderHandle shaderHandle = m_rm->CreateShader( testShader );
 
@@ -175,8 +176,10 @@ TEST_F( ComputeTest, Shader_FieldInteraction_AtomicAdd )
         GTEST_SKIP();
 
     // 1. Prepare raw data for 1 Agent
-    std::vector<glm::vec4> agents     = { glm::vec4( 0.0f, 0.0f, 0.0f, 1.0f ) };
-    size_t                 agentsSize = agents.size() * sizeof( glm::vec4 );
+    std::vector<glm::vec4> agents        = { glm::vec4( 0.0f, 0.0f, 0.0f, 1.0f ) };
+    uint32_t               currentAgents = static_cast<uint32_t>( agents.size() );
+    size_t                 agentsSize    = agents.size() * sizeof( glm::vec4 );
+    size_t                 countSize     = currentAgents * sizeof( uint32_t );
 
     // Grid: 10x10x10 = 1000 voxels (Atomic Target)
     uint32_t         voxelCount = 1000;
@@ -186,8 +189,11 @@ TEST_F( ComputeTest, Shader_FieldInteraction_AtomicAdd )
     // 2. Allocate & Upload Buffers directly
     BufferHandle agentBuffer = m_rm->CreateBuffer( { agentsSize, BufferType::STORAGE, "TestAgentBuffer" } );
     BufferHandle deltaBuffer = m_rm->CreateBuffer( { deltasSize, BufferType::STORAGE, "TestDeltaBuffer" } );
+    BufferHandle countBuf    = m_rm->CreateBuffer( { countSize, BufferType::STORAGE, "TestCountBuffer" } );
 
-    std::vector<BufferUploadRequest> uploads = { { agentBuffer, agents.data(), agentsSize, 0 }, { deltaBuffer, deltas.data(), deltasSize, 0 } };
+    std::vector<BufferUploadRequest> uploads = { { agentBuffer, agents.data(), agentsSize, 0 },
+                                                 { deltaBuffer, deltas.data(), deltasSize, 0 },
+                                                 { countBuf, &currentAgents, countSize, 0 } };
     m_stream->UploadBufferImmediate( uploads );
 
     // 3. Setup Pipeline & BindingGroup directly via RHI
@@ -201,16 +207,18 @@ TEST_F( ComputeTest, Shader_FieldInteraction_AtomicAdd )
     BindingGroup*      bg       = m_rm->GetBindingGroup( bgHandle );
     bg->Bind( 0, m_rm->GetBuffer( agentBuffer ) );
     bg->Bind( 1, m_rm->GetBuffer( deltaBuffer ) );
+    bg->Bind( 2, m_rm->GetBuffer( countBuf ) );
     bg->Build();
 
     // 4. Setup Push Constants
     ComputePushConstants pc{};
-    pc.dt         = 1.0f;
-    pc.fParam1    = 15.0f; // Simulate 15.0 units of interaction
-    pc.count      = 1;
-    pc.offset     = 0;
-    pc.domainSize = glm::vec4( 10.0f );
-    pc.gridSize   = glm::uvec4( 10, 10, 10, 0 );
+    pc.dt          = 1.0f;
+    pc.fParam0     = 15.0f; // Simulate 15.0 units of interaction
+    pc.maxCapacity = 1;
+    pc.offset      = 0;
+    pc.uParam1     = 0;
+    pc.domainSize  = glm::vec4( 10.0f );
+    pc.gridSize    = glm::uvec4( 10, 10, 10, 0 );
 
     // 5. Dispatch Manually
     auto compCtxHandle = m_device->CreateThreadContext( QueueType::COMPUTE );
@@ -242,6 +250,7 @@ TEST_F( ComputeTest, Shader_FieldInteraction_AtomicAdd )
 
     m_rm->DestroyBuffer( agentBuffer );
     m_rm->DestroyBuffer( deltaBuffer );
+    m_rm->DestroyBuffer( countBuf );
 }
 
 // 2. Compute diffusion and decay test
@@ -316,13 +325,13 @@ TEST_F( ComputeTest, Shader_Diffusion_Integration )
 
     // 4. Setup Push Constants
     ComputePushConstants pc{};
-    pc.dt         = 1.0f;
-    pc.fParam1    = 0.0f; // No diffusion (isolation test)
-    pc.fParam2    = 0.0f; // No decay
-    pc.count      = 0;
-    pc.offset     = 0;
-    pc.domainSize = glm::vec4( 10.0f );
-    pc.gridSize   = glm::uvec4( width, height, depth, 0 );
+    pc.dt          = 1.0f;
+    pc.fParam0     = 0.0f; // No diffusion
+    pc.fParam1     = 0.0f; // No decay
+    pc.maxCapacity = 0;
+    pc.offset      = 0;
+    pc.domainSize  = glm::vec4( 10.0f );
+    pc.gridSize    = glm::uvec4( width, height, depth, 0 );
 
     // 5. Dispatch Manually
     auto compCtxHandle = m_device->CreateThreadContext( QueueType::COMPUTE );
@@ -392,7 +401,9 @@ TEST_F( ComputeTest, Shader_HashAgents_Logic )
     BufferHandle agentBuffer = m_rm->CreateBuffer( { agentsSize, BufferType::STORAGE, "TestAgentBuffer" } );
     BufferHandle hashBuffer  = m_rm->CreateBuffer( { hashesSize, BufferType::STORAGE, "TestHashBuffer" } );
 
-    std::vector<BufferUploadRequest> uploads = { { agentBuffer, agents.data(), agentsSize, 0 }, { hashBuffer, initialHashes.data(), hashesSize, 0 } };
+    std::vector<BufferUploadRequest> uploads = { { agentBuffer, agents.data(), agentsSize, 0 },
+                                                 { hashBuffer, initialHashes.data(), hashesSize, 0 }
+                                                 };
     m_stream->UploadBufferImmediate( uploads );
 
     // 3. Setup Pipeline & BindingGroup directly via RHI
@@ -411,10 +422,10 @@ TEST_F( ComputeTest, Shader_HashAgents_Logic )
     // 4. Setup Push Constants
     float                cellSize = 2.0f; // Each virtual bounding box is 2.0 x 2.0 x 2.0 units
     ComputePushConstants pc{};
-    pc.dt      = 1.0f;
-    pc.fParam1 = cellSize;
-    pc.count   = agentCount;
-    pc.offset  = 0;
+    pc.dt          = 1.0f;
+    pc.fParam0     = cellSize;
+    pc.maxCapacity = agentCount;
+    pc.offset      = 0;
 
     // 5. Dispatch Manually
     auto compCtxHandle = m_device->CreateThreadContext( QueueType::COMPUTE );
@@ -520,9 +531,9 @@ TEST_F( ComputeTest, Shader_BuildOffsets_Logic )
 
     // 4. Setup Push Constants
     ComputePushConstants pc{};
-    pc.dt     = 1.0f;
-    pc.count  = agentCount;
-    pc.offset = 0;
+    pc.dt          = 1.0f;
+    pc.maxCapacity = agentCount;
+    pc.offset      = 0;
 
     // 5. Dispatch Manually
     auto compCtxHandle = m_device->CreateThreadContext( QueueType::COMPUTE );
@@ -603,9 +614,9 @@ TEST_F( ComputeTest, Shader_BitonicSort_Logic )
 
     // 4. Setup Push Constants (Base)
     ComputePushConstants pc{};
-    pc.dt     = 1.0f;
-    pc.count  = count;
-    pc.offset = 0;
+    pc.dt          = 1.0f;
+    pc.maxCapacity = count;
+    pc.offset      = 0;
 
     // 5. Dispatch Manually (The Bitonic Sort Execution Loop)
     auto compCtxHandle = m_device->CreateThreadContext( QueueType::COMPUTE );
@@ -632,8 +643,8 @@ TEST_F( ComputeTest, Shader_BitonicSort_Logic )
     {
         for( uint32_t j = k >> 1; j > 0; j >>= 1 )
         {
-            pc.uParam1 = j;
-            pc.uParam2 = k;
+            pc.uParam0 = j;
+            pc.uParam1 = k;
 
             compCmd->PushConstants( pipeline->GetLayout(), VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof( pc ), &pc );
 
@@ -679,6 +690,7 @@ TEST_F( ComputeTest, Shader_JKRForces_Logic )
 
     uint32_t agentCount = static_cast<uint32_t>( inAgents.size() );
     size_t   agentsSize = agentCount * sizeof( glm::vec4 );
+    size_t   countSize  = agentCount * sizeof( uint32_t );
 
     // Output buffers for positions and pressures
     std::vector<glm::vec4> outAgents( agentCount, glm::vec4( 0.0f ) );
@@ -711,10 +723,12 @@ TEST_F( ComputeTest, Shader_JKRForces_Logic )
     BufferHandle pressuresBuf = m_rm->CreateBuffer( { pressuresSize, BufferType::STORAGE, "TestPressures" } );
     BufferHandle hashesBuf    = m_rm->CreateBuffer( { hashesSize, BufferType::STORAGE, "TestSortedHashes" } );
     BufferHandle offsetsBuf   = m_rm->CreateBuffer( { offsetsSize, BufferType::STORAGE, "TestOffsets" } );
+    BufferHandle countBuf     = m_rm->CreateBuffer( { countSize, BufferType::STORAGE, "TestCountBuffer" } );
 
     std::vector<BufferUploadRequest> uploads = { { inAgentsBuf, inAgents.data(), agentsSize, 0 },
                                                  { hashesBuf, sortedHashes.data(), hashesSize, 0 },
-                                                 { offsetsBuf, cellOffsets.data(), offsetsSize, 0 } };
+                                                 { offsetsBuf, cellOffsets.data(), offsetsSize, 0 },
+                                                 { countBuf, &agentCount, countSize, 0 } };
     m_stream->UploadBufferImmediate( uploads );
 
     // 3. Setup Pipeline & BindingGroup directly via RHI
@@ -731,16 +745,18 @@ TEST_F( ComputeTest, Shader_JKRForces_Logic )
     bg->Bind( 2, m_rm->GetBuffer( pressuresBuf ) );
     bg->Bind( 3, m_rm->GetBuffer( hashesBuf ) );
     bg->Bind( 4, m_rm->GetBuffer( offsetsBuf ) );
+    bg->Bind( 5, m_rm->GetBuffer( countBuf ) );
     bg->Build();
 
     // 4. Setup Push Constants (Packed exactly as in SimulationBuilder)
     ComputePushConstants pc{};
-    pc.dt      = 0.016f; // Standard 60Hz frame time
-    pc.count   = agentCount;
-    pc.offset  = 0;
-    pc.fParam1 = 50.0f; // Repulsion Stiffness
-    pc.fParam2 = 0.0f;  // Adhesion Strength (ignore for this test)
-    pc.uParam1 = offsetArraySize;
+    pc.dt          = 0.016f; // Standard 60Hz frame time
+    pc.maxCapacity = agentCount;
+    pc.offset      = 0;
+    pc.fParam0     = 50.0f; // Repulsion Stiffness
+    pc.fParam1     = 0.0f;  // Adhesion Strength (ignore for this test)
+    pc.uParam0     = offsetArraySize;
+    pc.uParam1     = 0;
     // Pack maxRadius into domainSize.w
     pc.domainSize = glm::vec4( 100.0f, 100.0f, 100.0f, 1.5f );
 
@@ -784,4 +800,5 @@ TEST_F( ComputeTest, Shader_JKRForces_Logic )
     m_rm->DestroyBuffer( pressuresBuf );
     m_rm->DestroyBuffer( hashesBuf );
     m_rm->DestroyBuffer( offsetsBuf );
+    m_rm->DestroyBuffer( countBuf );
 }

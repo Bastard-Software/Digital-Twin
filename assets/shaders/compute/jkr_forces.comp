@@ -4,13 +4,17 @@ layout(local_size_x = 256) in;
 layout(push_constant) uniform PushConstants {
     float dt;
     float totalTime;
-    float fParam1;    // Repulsion Stiffness
-    float fParam2;    // Adhesion Strength
+    float repulsion;
+    float adhesion;
+    float fParam2;
+    float fParam3;
+    float fParam4;
+    float fParam5;
     uint  offset;
-    uint  count;
-    uint  uParam1;    // Offset Array Size (e.g. 262144)
-    uint  uParam2;    // Unused
-    vec4  domainSize; // .xyz = bounds, .w = maxRadius!
+    uint  maxCapacity;
+    uint  arrayOffset;
+    uint  groupNdx;
+    vec4  domainSize;
     uvec4 gridSize;
 } pc;
 
@@ -21,6 +25,7 @@ layout(std430, binding = 2) writeonly buffer Pressures { float pressure[]; } out
 struct AgentHash { uint hash; uint agentIndex; };
 layout(std430, binding = 3) readonly buffer Hashes { AgentHash data[]; } sortedHashes;
 layout(std430, binding = 4) readonly buffer Offsets { uint startIndices[]; } cellOffsets;
+layout(std430, binding = 5) readonly buffer CounterBuffer { uint counts[]; } counters;
 
 uint hashPos(ivec3 cell) {
     const uint p1 = 73856093; const uint p2 = 19349663; const uint p3 = 83492791;
@@ -29,7 +34,8 @@ uint hashPos(ivec3 cell) {
 
 void main() {
     uint idx = gl_GlobalInvocationID.x;
-    if(idx >= pc.count) return;
+    if(idx >= pc.maxCapacity) return;
+    if(idx >= counters.counts[pc.groupNdx]) return;
 
     // Iterate sequentially through the sorted array to maximize cache hits
     uint originalAgentIdx = sortedHashes.data[idx].agentIndex;
@@ -39,11 +45,11 @@ void main() {
     float totalPressure = 0.0;
     
     // Extract packed parameters
-    float repulsion = pc.fParam1;
-    float adhesion = pc.fParam2;
+    float repulsion = pc.repulsion;
+    float adhesion = pc.adhesion;
     float maxRadius = pc.domainSize.w; 
     float cellSize = maxRadius * 2.0;
-    uint offsetArraySize = pc.uParam1;
+    uint offsetArraySize = pc.arrayOffset;
 
     ivec3 myCell = ivec3(floor(myPos / cellSize));
 
@@ -58,7 +64,7 @@ void main() {
                 if(startIdx == 0xFFFFFFFF) continue; // Empty cell
                 
                 // Iterate through agents in this neighbor cell
-                for(uint i = startIdx; i < pc.count; i++) {
+                for(uint i = startIdx; i < pc.maxCapacity; i++) {
                     // Stop if we crossed into a different cell
                     if(sortedHashes.data[i].hash != neighborHash) break; 
                     

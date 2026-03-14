@@ -17,12 +17,12 @@ namespace DigitalTwin
     {
         float      dt;
         float      totalTime;
-        float      param1;     // Usage depends on shader (e.g. speed, diffusion)
-        float      param2;     // Usage depends on shader (e.g. decay, radius)
+        float      fParam1;    // Usage depends on shader - float
+        float      fParam2;    // Usage depends on shader - float
         uint32_t   offset;     // For agent buffers
         uint32_t   count;      // For agent buffers
-        uint32_t   padding1;   // 4 bytes, offset 24
-        uint32_t   padding2;   // 4 bytes, offset 28
+        uint32_t   uParam1;    // Usage depends on shader - uint
+        uint32_t   uParam2;    // Usage depends on shader - uint
         glm::vec4  domainSize; // Physical size of the simulation
         glm::uvec4 gridSize;   // Voxel dimensions of the grid
     };

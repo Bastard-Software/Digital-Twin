@@ -1,0 +1,32 @@
+#version 460
+layout(local_size_x = 256) in;
+
+layout(push_constant) uniform PushConstants {
+    float dt;
+    float totalTime;
+    float fParam1;    // Unused
+    float fParam2;    // Unused
+    uint  offset;
+    uint  count;
+    uint  uParam1;    // Unused
+    uint  uParam2;    // Unused
+    vec4  domainSize;
+    uvec4 gridSize;
+} pc;
+
+struct AgentHash { uint hash; uint agentIndex; };
+layout(std430, binding = 0) readonly buffer Hashes { AgentHash data[]; } hashes;
+layout(std430, binding = 1) buffer Offsets { uint startIndices[]; } cellOffsets;
+
+void main() {
+    uint idx = gl_GlobalInvocationID.x;
+    if(idx >= pc.count) return;
+
+    uint currentHash = hashes.data[idx].hash;
+    
+    // If it's the first agent in a cell, write its index to the offsets buffer
+    if(idx == 0 || hashes.data[idx - 1].hash != currentHash) {
+        uint arraySize = cellOffsets.startIndices.length();
+        cellOffsets.startIndices[currentHash % arraySize] = idx;
+    }
+}

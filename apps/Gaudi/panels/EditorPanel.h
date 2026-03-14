@@ -10,7 +10,7 @@ namespace Gaudi
 
         virtual void OnAttach() {}
         virtual void OnDetach() {}
-        virtual void OnUpdate( float deltaTime ) {}
+        virtual void OnUpdate( float /* deltaTime */ ) {}
         virtual void OnUIRender() = 0;
 
         const std::string& GetName() const { return m_name; }

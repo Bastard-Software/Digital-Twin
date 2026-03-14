@@ -4,12 +4,12 @@ layout(local_size_x = 256) in;
 layout(push_constant) uniform PushConstants {
     float dt;
     float totalTime;
-    float param1; // rate of consumption/secretion
-    float param2;
+    float fParam1; // rate of consumption/secretion
+    float fParam2;
     uint offset;
     uint count;
-    uint padding1;
-    uint padding2;
+    uint uParam1;
+    uint uParam2;
     vec4 domainSize;
     uvec4 gridSize;
 } pc;
@@ -46,7 +46,7 @@ void main() {
     uint flatIdx = coord.x + coord.y * pc.gridSize.x + coord.z * pc.gridSize.x * pc.gridSize.y;
 
     // Scale float delta to integer to allow atomic additions across multiple agents
-    int intDelta = int(pc.param1 * pc.dt * 100000.0);
+    int intDelta = int(pc.fParam1 * pc.dt * 100000.0);
     
     atomicAdd(deltas[flatIdx], intDelta);
 }

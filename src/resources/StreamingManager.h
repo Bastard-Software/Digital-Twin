@@ -51,6 +51,24 @@ namespace DigitalTwin
         size_t       srcOffset = 0;
     };
 
+    struct TextureUploadRequest
+    {
+        TextureHandle dstTexture;
+        const void*   data;
+        size_t        size;
+        uint32_t      mipLevel   = 0;
+        uint32_t      arrayLayer = 0;
+    };
+
+    struct TextureReadbackRequest
+    {
+        TextureHandle srcTexture;
+        void*         outData;
+        size_t        size;
+        uint32_t      mipLevel   = 0;
+        uint32_t      arrayLayer = 0;
+    };
+
     /**
      * @brief Manages data transfer between CPU and GPU.
      * Supports deferred uploads (batched at EndFrame) and immediate blocking uploads.
@@ -96,18 +114,12 @@ namespace DigitalTwin
         void UploadBufferImmediate( BufferHandle dstBuffer, const void* data, size_t size, size_t dstOffset = 0 );
         void UploadTextureImmediate( TextureHandle dstTexture, const void* data, size_t size );
         void ReadbackBufferImmediate( BufferHandle srcBuffer, void* outData, size_t size, size_t srcOffset = 0 );
+        void ReadbackTextureImmediate( TextureHandle srcTexture, void* outData, size_t size );
 
-        /**
-         * @brief Batches multiple buffer uploads into a single command buffer submission.
-         * Extremely efficient for initial simulation setups.
-         */
         void UploadBufferImmediate( const std::vector<BufferUploadRequest>& requests );
-
-        /**
-         * @brief Batches multiple buffer readbacks into a single command buffer submission.
-         * Efficient for downloading full simulation states (e.g., for serialization).
-         */
         void ReadbackBufferImmediate( const std::vector<BufferReadbackRequest>& requests );
+        void UploadTextureImmediate( const std::vector<TextureUploadRequest>& requests );
+        void ReadbackTextureImmediate( const std::vector<TextureReadbackRequest>& requests );
 
     private:
         // Helper to execute commands immediately on a transient context

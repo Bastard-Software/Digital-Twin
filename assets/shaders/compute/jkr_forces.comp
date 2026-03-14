@@ -1,0 +1,97 @@
+#version 460
+layout(local_size_x = 256) in;
+
+layout(push_constant) uniform PushConstants {
+    float dt;
+    float totalTime;
+    float fParam1;    // Repulsion Stiffness
+    float fParam2;    // Adhesion Strength
+    uint  offset;
+    uint  count;
+    uint  uParam1;    // Offset Array Size (e.g. 262144)
+    uint  uParam2;    // Unused
+    vec4  domainSize; // .xyz = bounds, .w = maxRadius!
+    uvec4 gridSize;
+} pc;
+
+layout(std140, binding = 0) readonly buffer InputAgents { vec4 positions[]; } inAgents;
+layout(std140, binding = 1) writeonly buffer OutputAgents { vec4 positions[]; } outAgents;
+layout(std430, binding = 2) writeonly buffer Pressures { float pressure[]; } outPressures;
+
+struct AgentHash { uint hash; uint agentIndex; };
+layout(std430, binding = 3) readonly buffer Hashes { AgentHash data[]; } sortedHashes;
+layout(std430, binding = 4) readonly buffer Offsets { uint startIndices[]; } cellOffsets;
+
+uint hashPos(ivec3 cell) {
+    const uint p1 = 73856093; const uint p2 = 19349663; const uint p3 = 83492791;
+    return (uint(cell.x) * p1) ^ (uint(cell.y) * p2) ^ (uint(cell.z) * p3);
+}
+
+void main() {
+    uint idx = gl_GlobalInvocationID.x;
+    if(idx >= pc.count) return;
+
+    // Iterate sequentially through the sorted array to maximize cache hits
+    uint originalAgentIdx = sortedHashes.data[idx].agentIndex;
+    vec3 myPos = inAgents.positions[originalAgentIdx].xyz;
+    
+    vec3 force = vec3(0.0);
+    float totalPressure = 0.0;
+    
+    // Extract packed parameters
+    float repulsion = pc.fParam1;
+    float adhesion = pc.fParam2;
+    float maxRadius = pc.domainSize.w; 
+    float cellSize = maxRadius * 2.0;
+    uint offsetArraySize = pc.uParam1;
+
+    ivec3 myCell = ivec3(floor(myPos / cellSize));
+
+    // Check 27 neighboring cells (3x3x3 grid)
+    for(int z = -1; z <= 1; z++) {
+        for(int y = -1; y <= 1; y++) {
+            for(int x = -1; x <= 1; x++) {
+                uint neighborHash = hashPos(myCell + ivec3(x, y, z));
+                uint offsetIdx = neighborHash % offsetArraySize;
+                
+                uint startIdx = cellOffsets.startIndices[offsetIdx];
+                if(startIdx == 0xFFFFFFFF) continue; // Empty cell
+                
+                // Iterate through agents in this neighbor cell
+                for(uint i = startIdx; i < pc.count; i++) {
+                    // Stop if we crossed into a different cell
+                    if(sortedHashes.data[i].hash != neighborHash) break; 
+                    
+                    uint neighborAgentIdx = sortedHashes.data[i].agentIndex;
+                    if(originalAgentIdx == neighborAgentIdx) continue; // Skip self
+                    
+                    vec3 otherPos = inAgents.positions[neighborAgentIdx].xyz;
+                    vec3 diff = myPos - otherPos;
+                    float dist = length(diff);
+                    float interactDist = maxRadius * 2.0;
+                    
+                    if(dist > 0.0 && dist < interactDist) {
+                        float overlap = interactDist - dist;
+                        vec3 dir = diff / dist;
+                        
+                        // Hertzian Repulsion
+                        float repForce = repulsion * pow(overlap, 1.5);
+                        // JKR Adhesion
+                        float adhForce = adhesion * overlap; 
+                        
+                        float netForce = repForce - adhForce;
+                        force += dir * netForce;
+                        totalPressure += repForce;
+                    }
+                }
+            }
+        }
+    }
+    
+    // Euler Integration
+    vec3 displacement = force * pc.dt;
+    vec4 newPos = vec4(myPos + displacement, inAgents.positions[originalAgentIdx].w);
+    
+    outAgents.positions[originalAgentIdx] = newPos;
+    outPressures.pressure[originalAgentIdx] = totalPressure;
+}

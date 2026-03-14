@@ -1,0 +1,75 @@
+#version 460
+layout(local_size_x = 256) in;
+
+layout(push_constant) uniform PushConstants {
+    float dt;
+    float totalTime;
+    float fParam0; float fParam1; float fParam2; float fParam3; float fParam4; float fParam5;
+    uint  offset;
+    uint  maxCapacity; 
+    uint  uParam1;
+    uint  grpNdx;
+    vec4  domainSize;
+    uvec4 gridSize;
+} pc;
+
+layout(std140, binding = 0) buffer Agents { vec4 positions[]; } inOutAgents;
+
+struct PhenotypeData {
+    uint  state;
+    float biomass;
+    float timer;
+    uint  padding;
+};
+layout(std430, binding = 1) buffer Phenotypes { PhenotypeData data[]; } inOutPhenotypes;
+layout(std430, binding = 2) buffer CounterBuffer { uint counts[]; } counters;
+
+float rand(vec2 co) { return fract(sin(dot(co, vec2(12.9898, 78.233))) * 43758.5453); }
+
+void main() 
+{
+    uint idx = gl_GlobalInvocationID.x;
+    if(idx >= pc.maxCapacity) return;
+    
+    uint globalIdx = pc.offset + idx;
+
+    // Check if slot is active
+    if(inOutAgents.positions[globalIdx].w == 0.0) return;
+
+    // Check if cell is Live and ready to divide (Biomass >= 1.0)
+    if(inOutPhenotypes.data[globalIdx].state == 0 && inOutPhenotypes.data[globalIdx].biomass >= 1.0) 
+    {
+        // 1. Reset Mother Cell
+        inOutPhenotypes.data[globalIdx].biomass = 0.5; // Split mass
+        
+        // 2. Atomically request a new slot for the Daughter Cell
+        uint childIdx = atomicAdd(counters.counts[pc.grpNdx], 1);
+        
+        // 3. Safety Check: Did we exceed VRAM capacity?
+        if(childIdx < pc.maxCapacity) 
+        {
+            uint globalChildIdx = pc.offset + childIdx;
+            vec3 motherPos = inOutAgents.positions[globalIdx].xyz;
+            
+            // Slight random offset to trigger Hertzian repulsion in the next frame
+            vec3 spawnOffset = vec3(
+                rand(motherPos.xy * pc.totalTime) - 0.5,
+                rand(motherPos.yz * pc.totalTime) - 0.5,
+                rand(motherPos.zx * pc.totalTime) - 0.5
+            ) * 0.1;
+            
+            // Write Daughter Cell Data (w = 1.0 makes her ALIVE for spatial grid!)
+            inOutAgents.positions[globalChildIdx] = vec4(motherPos + spawnOffset, 1.0);
+            
+            inOutPhenotypes.data[globalChildIdx].state   = 0;   // Live
+            inOutPhenotypes.data[globalChildIdx].biomass = 0.5; // Starts at 50% mass
+            inOutPhenotypes.data[globalChildIdx].timer   = 0.0;
+        } 
+        else 
+        {
+            // Revert counter if buffer is full (cell fails to divide)
+            atomicAdd(counters.counts[pc.grpNdx], -1);
+            inOutPhenotypes.data[globalIdx].biomass = 1.0; // Give mass back
+        }
+    }
+}

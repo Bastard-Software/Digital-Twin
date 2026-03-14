@@ -13,7 +13,7 @@ layout(push_constant) uniform PushConstants {
     uint  offset;
     uint  maxCapacity;
     uint  arrayOffset;
-    uint  groupNdx;
+    uint  grpNdx;
     vec4  domainSize;
     uvec4 gridSize;
 } pc;
@@ -35,7 +35,7 @@ uint hashPos(ivec3 cell) {
 void main() {
     uint idx = gl_GlobalInvocationID.x;
     if(idx >= pc.maxCapacity) return;
-    if(idx >= counters.counts[pc.groupNdx]) return;
+    if(idx >= counters.counts[pc.grpNdx]) return;
 
     // Iterate sequentially through the sorted array to maximize cache hits
     uint originalAgentIdx = sortedHashes.data[idx].agentIndex;

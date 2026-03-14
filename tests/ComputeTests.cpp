@@ -401,9 +401,7 @@ TEST_F( ComputeTest, Shader_HashAgents_Logic )
     BufferHandle agentBuffer = m_rm->CreateBuffer( { agentsSize, BufferType::STORAGE, "TestAgentBuffer" } );
     BufferHandle hashBuffer  = m_rm->CreateBuffer( { hashesSize, BufferType::STORAGE, "TestHashBuffer" } );
 
-    std::vector<BufferUploadRequest> uploads = { { agentBuffer, agents.data(), agentsSize, 0 },
-                                                 { hashBuffer, initialHashes.data(), hashesSize, 0 }
-                                                 };
+    std::vector<BufferUploadRequest> uploads = { { agentBuffer, agents.data(), agentsSize, 0 }, { hashBuffer, initialHashes.data(), hashesSize, 0 } };
     m_stream->UploadBufferImmediate( uploads );
 
     // 3. Setup Pipeline & BindingGroup directly via RHI
@@ -800,5 +798,212 @@ TEST_F( ComputeTest, Shader_JKRForces_Logic )
     m_rm->DestroyBuffer( pressuresBuf );
     m_rm->DestroyBuffer( hashesBuf );
     m_rm->DestroyBuffer( offsetsBuf );
+    m_rm->DestroyBuffer( countBuf );
+}
+
+// 7. Compute fenotype update test
+TEST_F( ComputeTest, Shader_Biology_UpdatePhenotype )
+{
+    if( !m_device )
+        GTEST_SKIP();
+
+    // 1. Setup 3 agents
+    // Agent 0: High pressure (Should become Quiescent)
+    // Agent 1: Low O2 (Should become Necrotic)
+    // Agent 2: Perfect conditions (Should Grow)
+    uint32_t agentCount = 3;
+    size_t   agentsSize = agentCount * sizeof( glm::vec4 );
+    size_t   countSize  = sizeof( uint32_t );
+
+    std::vector<glm::vec4> agents = { glm::vec4( 0.0f, 0.0f, 0.0f, 1.0f ), glm::vec4( 1.0f, 0.0f, 0.0f, 1.0f ), glm::vec4( 2.0f, 0.0f, 0.0f, 1.0f ) };
+
+    std::vector<float> pressures     = { 5.0f, 0.0f, 0.0f }; // Agent 0 has 5.0 MPa pressure
+    size_t             pressuresSize = agentCount * sizeof( float );
+
+    struct PhenotypeData
+    {
+        uint32_t state;
+        float    biomass;
+        float    timer;
+        uint32_t padding;
+    };
+    std::vector<PhenotypeData> phenotypes     = { { 0, 0.5f, 0.0f, 0 }, { 0, 0.5f, 0.0f, 0 }, { 0, 0.5f, 0.0f, 0 } };
+    size_t                     phenotypesSize = agentCount * sizeof( PhenotypeData );
+
+    // 2. Allocate & Upload Buffers
+    BufferHandle agentsBuf    = m_rm->CreateBuffer( { agentsSize, BufferType::STORAGE, "TestAgents" } );
+    BufferHandle pressuresBuf = m_rm->CreateBuffer( { pressuresSize, BufferType::STORAGE, "TestPressures" } );
+    BufferHandle phenotypeBuf = m_rm->CreateBuffer( { phenotypesSize, BufferType::STORAGE, "TestPhenotypes" } );
+    BufferHandle countBuf     = m_rm->CreateBuffer( { countSize, BufferType::INDIRECT, "TestCounter" } );
+
+    m_stream->UploadBufferImmediate( { { agentsBuf, agents.data(), agentsSize, 0 },
+                                       { pressuresBuf, pressures.data(), pressuresSize, 0 },
+                                       { phenotypeBuf, phenotypes.data(), phenotypesSize, 0 },
+                                       { countBuf, &agentCount, countSize, 0 } } );
+
+    DigitalTwin::SimulationBlueprint dummyBp;
+    dummyBp.SetDomainSize( glm::vec3( 10.0f ), 1.0f );
+    dummyBp.AddGridField( "Oxygen" );
+    DigitalTwin::SimulationBuilder dummyBuilder( m_rm.get(), m_stream.get() );
+    DigitalTwin::SimulationState   dummyState = dummyBuilder.Build( dummyBp );
+
+    // 3. Setup Pipeline & BindingGroup
+    ComputePipelineDesc   pipeDesc{ m_rm->CreateShader( "shaders/compute/biology/update_phenotype.comp" ), "UpdatePhenotype" };
+    ComputePipelineHandle pipelineHandle = m_rm->CreatePipeline( pipeDesc );
+    ComputePipeline*      pipeline       = m_rm->GetPipeline( pipelineHandle );
+
+    BindingGroup* bg = m_rm->GetBindingGroup( m_rm->CreateBindingGroup( pipelineHandle, 0 ) );
+    bg->Bind( 0, m_rm->GetBuffer( agentsBuf ) );
+    bg->Bind( 1, m_rm->GetBuffer( pressuresBuf ) );
+    bg->Bind( 2, m_rm->GetTexture( dummyState.gridFields[ 0 ].textures[ 0 ] ), VK_IMAGE_LAYOUT_GENERAL );
+    bg->Bind( 3, m_rm->GetBuffer( phenotypeBuf ) );
+    bg->Bind( 4, m_rm->GetBuffer( countBuf ) );
+    bg->Build();
+
+    // 4. Dispatch Pass 1: Perfect O2 (Tests Pressure and Growth)
+    ComputePushConstants pc{};
+    pc.dt          = 1.0f;
+    pc.fParam0     = 0.2f;  // growthRate: 0.2
+    pc.fParam1     = 38.0f; // targetO2: 38 mmHg (Fallback value used)
+    pc.fParam2     = 2.5f;  // arrestPressure: 2.5 MPa
+    pc.fParam3     = 5.0f;  // necrosisO2: 5.0 mmHg
+    pc.maxCapacity = agentCount;
+    pc.uParam1     = 0;
+    pc.gridSize    = glm::uvec4( 0 ); // Disable texture read
+
+    auto compCtxHandle = m_device->CreateThreadContext( QueueType::COMPUTE );
+    auto compCtx       = m_device->GetThreadContext( compCtxHandle );
+    auto compCmd       = compCtx->GetCommandBuffer( compCtx->CreateCommandBuffer() );
+
+    // Barrier between passes
+    compCmd->Begin();
+    compCmd->SetPipeline( pipeline );
+    compCmd->SetBindingGroup( bg, pipeline->GetLayout(), VK_PIPELINE_BIND_POINT_COMPUTE );
+    compCmd->PushConstants( pipeline->GetLayout(), VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof( pc ), &pc );
+    compCmd->Dispatch( 1, 1, 1 );
+    compCmd->End();
+
+    m_device->GetComputeQueue()->Submit( { compCmd } );
+    m_device->GetComputeQueue()->WaitIdle();
+
+    std::vector<PhenotypeData> pass1Result( agentCount );
+    m_stream->ReadbackBufferImmediate( phenotypeBuf, pass1Result.data(), phenotypesSize );
+
+    EXPECT_EQ( pass1Result[ 0 ].state, 1 ) << "Agent 0 should be Quiescent (1) due to pressure!";
+    EXPECT_EQ( pass1Result[ 1 ].state, 0 ) << "Agent 1 should remain Live (0)!";
+    EXPECT_FLOAT_EQ( pass1Result[ 2 ].biomass, 0.7f ) << "Agent 2 should have grown by 0.2!";
+
+    // Dispatch Pass 2: Hypoxia (Tests Necrosis on Agent 1)
+    pc.fParam1 = 2.0f; // Mock local O2 to deadly levels globally
+
+    compCmd->Begin();
+    compCmd->SetPipeline( pipeline );
+    compCmd->SetBindingGroup( bg, pipeline->GetLayout(), VK_PIPELINE_BIND_POINT_COMPUTE );
+    compCmd->PushConstants( pipeline->GetLayout(), VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof( pc ), &pc );
+    compCmd->Dispatch( 1, 1, 1 );
+    compCmd->End();
+
+    m_device->GetComputeQueue()->Submit( { compCmd } );
+    m_device->GetComputeQueue()->WaitIdle();
+
+    std::vector<PhenotypeData> pass2Result( agentCount );
+    m_stream->ReadbackBufferImmediate( phenotypeBuf, pass2Result.data(), phenotypesSize );
+
+    EXPECT_EQ( pass2Result[ 1 ].state, 3 ) << "Agent 1 should be Necrotic (3) due to Hypoxia!";
+
+    // 6. Cleanup
+    m_rm->DestroyBuffer( agentsBuf );
+    m_rm->DestroyBuffer( pressuresBuf );
+    m_rm->DestroyBuffer( phenotypeBuf );
+    m_rm->DestroyBuffer( countBuf );
+
+    dummyState.Destroy( m_rm.get() );
+}
+
+// 8. Mitosis shader test
+TEST_F( ComputeTest, Shader_Biology_MitosisAppend )
+{
+    if( !m_device )
+        GTEST_SKIP();
+
+    // 1. Prepare data for Mitosis (Buffer capacity = 4, starting count = 1)
+    uint32_t maxCapacity = 4;
+    size_t   agentsSize  = maxCapacity * sizeof( glm::vec4 );
+
+    // Fill with empty slots (w = 0.0), set Mother Cell at index 0
+    std::vector<glm::vec4> agents( maxCapacity, glm::vec4( 0.0f ) );
+    agents[ 0 ] = glm::vec4( 10.0f, 10.0f, 10.0f, 1.0f ); // Mother (w=1.0)
+
+    struct PhenotypeData
+    {
+        uint32_t state;
+        float    biomass;
+        float    timer;
+        uint32_t padding;
+    };
+    size_t                     phenotypesSize = maxCapacity * sizeof( PhenotypeData );
+    std::vector<PhenotypeData> phenotypes( maxCapacity, { 0, 0.0f, 0.0f, 0 } );
+    phenotypes[ 0 ] = { 0, 1.1f, 0.0f, 0 }; // Mother is Live and ready to divide (biomass > 1.0)
+
+    uint32_t agentCount = 1; // Counter starts at 1
+    size_t   countSize  = sizeof( uint32_t );
+
+    // 2. Allocate & Upload Buffers
+    BufferHandle agentsBuf    = m_rm->CreateBuffer( { agentsSize, BufferType::STORAGE, "TestAgents" } );
+    BufferHandle phenotypeBuf = m_rm->CreateBuffer( { phenotypesSize, BufferType::STORAGE, "TestPhenotypes" } );
+    BufferHandle countBuf     = m_rm->CreateBuffer( { countSize, BufferType::STORAGE, "TestCounter" } );
+
+    m_stream->UploadBufferImmediate( { { agentsBuf, agents.data(), agentsSize, 0 },
+                                       { phenotypeBuf, phenotypes.data(), phenotypesSize, 0 },
+                                       { countBuf, &agentCount, countSize, 0 } } );
+
+    // 3. Setup Pipeline & BindingGroup
+    ComputePipelineDesc   pipeDesc{ m_rm->CreateShader( "shaders/compute/biology/mitosis_append.comp" ), "MitosisAppend" };
+    ComputePipelineHandle pipelineHandle = m_rm->CreatePipeline( pipeDesc );
+    ComputePipeline*      pipeline       = m_rm->GetPipeline( m_rm->CreatePipeline( pipeDesc ) );
+
+    BindingGroup* bg = m_rm->GetBindingGroup( m_rm->CreateBindingGroup( pipelineHandle, 0 ) );
+    bg->Bind( 0, m_rm->GetBuffer( agentsBuf ) );
+    bg->Bind( 1, m_rm->GetBuffer( phenotypeBuf ) );
+    bg->Bind( 2, m_rm->GetBuffer( countBuf ) );
+    bg->Build();
+
+    // 4. Dispatch
+    ComputePushConstants pc{};
+    pc.totalTime   = 1.0f; // Used for RNG
+    pc.maxCapacity = maxCapacity;
+    pc.uParam1     = 0; // Group index 0
+
+    auto compCtxHandle = m_device->CreateThreadContext( QueueType::COMPUTE );
+    auto compCtx       = m_device->GetThreadContext( compCtxHandle );
+    auto compCmd       = compCtx->GetCommandBuffer( compCtx->CreateCommandBuffer() );
+
+    compCmd->Begin();
+    compCmd->SetPipeline( pipeline );
+    compCmd->SetBindingGroup( bg, pipeline->GetLayout(), VK_PIPELINE_BIND_POINT_COMPUTE );
+    compCmd->PushConstants( pipeline->GetLayout(), VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof( pc ), &pc );
+    compCmd->Dispatch( 1, 1, 1 );
+    compCmd->End();
+
+    m_device->GetComputeQueue()->Submit( { compCmd } );
+    m_device->GetComputeQueue()->WaitIdle();
+
+    // 5. Assertions
+    std::vector<glm::vec4>     resAgents( maxCapacity );
+    std::vector<PhenotypeData> resPheno( maxCapacity );
+    uint32_t                   resCount = 0;
+
+    m_stream->ReadbackBufferImmediate( agentsBuf, resAgents.data(), agentsSize );
+    m_stream->ReadbackBufferImmediate( phenotypeBuf, resPheno.data(), phenotypesSize );
+    m_stream->ReadbackBufferImmediate( countBuf, &resCount, countSize );
+
+    EXPECT_EQ( resCount, 2 ) << "Atomic counter should have incremented to 2!";
+
+    EXPECT_FLOAT_EQ( resPheno[ 0 ].biomass, 0.5f ) << "Mother biomass should split to 0.5!";
+    EXPECT_FLOAT_EQ( resPheno[ 1 ].biomass, 0.5f ) << "Daughter biomass should start at 0.5!";
+    EXPECT_FLOAT_EQ( resAgents[ 1 ].w, 1.0f ) << "Daughter w-component must be 1.0 (Alive)!";
+
+    m_rm->DestroyBuffer( agentsBuf );
+    m_rm->DestroyBuffer( phenotypeBuf );
     m_rm->DestroyBuffer( countBuf );
 }

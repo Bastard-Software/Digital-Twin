@@ -1,3 +1,4 @@
+#include "simulation/BiologyGenerator.h"
 #include "simulation/BiomechanicsGenerator.h"
 #include "simulation/MorphologyGenerator.h"
 #include "simulation/SimulationBlueprint.h"
@@ -622,6 +623,91 @@ TEST_F( SimulationBuilderTest, Behaviour_Biomechanics_Integration )
     EXPECT_GT( resultPressures[ 0 ], 0.0f ) << "Agent 0 did not register collision pressure!";
     EXPECT_GT( resultPressures[ 1 ], 0.0f ) << "Agent 1 did not register collision pressure!";
     EXPECT_FLOAT_EQ( resultPressures[ 0 ], resultPressures[ 1 ] ) << "Newton's Third Law violated: Pressures unequal!";
+
+    state.Destroy( m_resourceManager.get() );
+}
+
+// 8. Tests cell cycle behaviour
+TEST_F( SimulationBuilderTest, Behaviour_CellCycle_Integration )
+{
+    if( !m_device )
+        GTEST_SKIP();
+
+    DigitalTwin::SimulationBlueprint blueprint;
+    blueprint.SetDomainSize( glm::vec3( 100.0f ), 2.0f );
+
+    // Add dummy Oxygen Field to satisfy Vulkan Validation Layers in Phenotype shader
+    blueprint.AddGridField( "Oxygen" ).SetInitializer( DigitalTwin::GridInitializer::Constant( 38.0f ) ).SetComputeHz( 60.0f );
+
+    // Place a single agent. We will test if it grows and divides.
+    // Ensure 'w' component is 1.0f (Active)
+    std::vector<glm::vec4> initialCells = { glm::vec4( 0.0f, 0.0f, 0.0f, 1.0f ) };
+
+    blueprint.AddAgentGroup( "TumorCells" )
+        .SetCount( 1 )
+        .SetDistribution( initialCells )
+        .AddBehaviour( DigitalTwin::BiologyGenerator::StandardCellCycle()
+                           .SetBaseDoublingTime( 1.0f / 3600.0f ) // Extremely fast! Doubles in 1 second
+                           .SetProliferationOxygenTarget( 38.0f )
+                           .SetArrestPressureThreshold( 10.0f )
+                           .SetNecrosisOxygenThreshold( 5.0f )
+                           .SetApoptosisRate( 0.0f )
+                           .Build() )
+        .SetHz( 60.0f ); // Run fast for test
+
+    DigitalTwin::SimulationBuilder builder( m_resourceManager.get(), m_streamingManager.get() );
+    DigitalTwin::SimulationState   state = builder.Build( blueprint );
+
+    auto compCtxHandle = m_device->CreateThreadContext( QueueType::COMPUTE );
+    auto compCtx       = m_device->GetThreadContext( compCtxHandle );
+    auto compCmd       = compCtx->GetCommandBuffer( compCtx->CreateCommandBuffer() );
+
+    DigitalTwin::GraphDispatcher dispatcher;
+
+    // Simulate EXACTLY 30 frames.
+    // Growth per frame = 1.0 (per sec) / 60.0 = 0.01666...
+    // 0.5 (initial) + 31 * 0.01666... > 1.0.
+    // At exactly frame 31, biomass hits more than 1.0, mitosis fires, and splits it to 0.5 and 0.5.
+    compCmd->Begin();
+    for( int i = 0; i < 31; ++i )
+    {
+        dispatcher.Dispatch( &state.computeGraph, compCmd, nullptr, 1.0f / 60.0f, static_cast<float>( i ), 0 );
+    }
+    compCmd->End();
+
+    m_device->GetComputeQueue()->Submit( { compCmd } );
+    m_device->GetComputeQueue()->WaitIdle();
+
+    // Readback the GPU-Driven Atomic Counter to see if mitosis actually fired
+    uint32_t resultAgentCount = 0;
+    m_streamingManager->ReadbackBufferImmediate( state.agentCountBuffer, &resultAgentCount, sizeof( uint32_t ) );
+
+    // Readback Phenotypes
+    struct PhenotypeData
+    {
+        uint32_t state;
+        float    biomass;
+        float    timer;
+        uint32_t padding;
+    };
+    std::vector<PhenotypeData> resultPhenotypes( 2 ); // Check up to 2 cells
+    m_streamingManager->ReadbackBufferImmediate( state.phenotypeBuffer, resultPhenotypes.data(), 2 * sizeof( PhenotypeData ) );
+
+    // Readback Agent Positions
+    std::vector<glm::vec4> resultPositions( 2 );
+    m_streamingManager->ReadbackBufferImmediate( state.agentBuffers[ 0 ], resultPositions.data(), 2 * sizeof( glm::vec4 ) );
+
+    // --- Assertions ---
+    // 1. Counter should increment because biomass exceeded 1.0!
+    EXPECT_EQ( resultAgentCount, 2 ) << "Mitosis Append failed to increment GPU-driven counter!";
+
+    // 2. Mother cell (idx 0) should have halved its biomass back to 0.5
+    EXPECT_NEAR( resultPhenotypes[ 0 ].biomass, 0.5f, 0.001f ) << "Mother cell did not reset its biomass after division!";
+
+    // 3. Daughter cell (idx 1) should be initialized properly
+    EXPECT_NEAR( resultPhenotypes[ 1 ].biomass, 0.5f, 0.001f ) << "Daughter cell was not initialized with 0.5 biomass!";
+    EXPECT_EQ( resultPhenotypes[ 1 ].state, 0 ) << "Daughter cell is not in 'Live' state!";
+    EXPECT_FLOAT_EQ( resultPositions[ 1 ].w, 1.0f ) << "Daughter cell did not receive w=1.0 (Alive flag)!";
 
     state.Destroy( m_resourceManager.get() );
 }

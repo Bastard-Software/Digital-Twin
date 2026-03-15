@@ -4,12 +4,16 @@ layout(local_size_x = 256) in;
 layout(push_constant) uniform PushConstants {
     float dt;
     float totalTime;
-    float fParam1;    // Unused
-    float fParam2;    // Unused
+    float fParam0;
+    float fParam1;
+    float fParam2;
+    float fParam3;
+    float fParam4;
+    float fParam5;
     uint  offset;
-    uint  count;
-    uint  uParam1;    // Unused
-    uint  uParam2;    // Unused
+    uint  maxCapacity;
+    uint  uParam0;
+    uint  uParam1;
     vec4  domainSize;
     uvec4 gridSize;
 } pc;
@@ -20,9 +24,10 @@ layout(std430, binding = 1) buffer Offsets { uint startIndices[]; } cellOffsets;
 
 void main() {
     uint idx = gl_GlobalInvocationID.x;
-    if(idx >= pc.count) return;
+    if(idx >= pc.maxCapacity) return;
 
     uint currentHash = hashes.data[idx].hash;
+    if(currentHash == 0xFFFFFFFF) return;
     
     // If it's the first agent in a cell, write its index to the offsets buffer
     if(idx == 0 || hashes.data[idx - 1].hash != currentHash) {

@@ -7,8 +7,6 @@ namespace DigitalTwin
 {
     void ComputeGraph::Execute( CommandBuffer* cmd, float dt, float totalTime, uint32_t activeIndex )
     {
-        bool didExecuteAny = false;
-
         for( auto& task: m_tasks )
         {
             if( task.ShouldExecute( dt ) )

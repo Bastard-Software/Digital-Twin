@@ -27,7 +27,10 @@ namespace Gaudi
         }
 
         // Main toggle for visualization overlay
-        ImGui::Checkbox( "Enable Grid Visualization", &m_settings.active );
+        if (ImGui::Checkbox("Enable Grid Visualization", &m_settings.active))
+        {
+            m_engine.SetGridVisualization( m_settings );
+        }
 
         if( m_settings.active )
         {

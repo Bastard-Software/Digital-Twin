@@ -3,6 +3,8 @@
 #include <core/Log.h>
 #include <imgui.h>
 #include <random>
+#include <simulation/BiologyGenerator.h>
+#include <simulation/BiomechanicsGenerator.h>
 #include <simulation/MorphologyGenerator.h>
 #include <simulation/SpatialDistribution.h>
 
@@ -20,65 +22,72 @@ namespace Gaudi
 
     void Editor::SetupInitialBlueprint()
     {
-        // 1. Define physical simulation domain (200x200x200 micrometers)
-        m_blueprint.SetDomainSize( glm::vec3( 200.0f ), 2.0f );
+        // ==========================================================================================
+        // 1. Domain & Spatial Partitioning Setup
+        // ==========================================================================================
+        m_blueprint.SetDomainSize( glm::vec3( 50.0f ), 2.0f );
 
         m_blueprint.ConfigureSpatialPartitioning()
             .SetMethod( DigitalTwin::SpatialPartitioningMethod::HashGrid )
-            .SetCellSize( 3.0f )    // Matches 2x max interaction radius (1.5 * 2)
-            .SetMaxDensity( 64 )    // Prevents buffer overflows in dense regions (For future use)
-            .SetComputeHz( 30.0f ); // Spatial grid building runs at 120Hz for stability
+            .SetCellSize( 3.0f )
+            .SetMaxDensity( 64 )
+            .SetComputeHz( 60.0f );
 
-        // 2A. Add Oxygen Field (O2) - Blood vessels network
-        std::vector<glm::vec3> bloodVessels;
-        std::mt19937           rng( 42 );
-
-        // Tumor starts with a radius of 10.0f, so vessels spanning [-20.0, 20.0]
-        // will intimately wrap around and penetrate the initial cell mass.
-        std::uniform_real_distribution<float> dist( -20.0f, 20.0f );
-        for( int i = 0; i < 8; ++i )
-        {
-            bloodVessels.push_back( glm::vec3( dist( rng ), dist( rng ), dist( rng ) ) );
-        }
-
-        // Decreased Gaussian sigma (from 15.0f to 10.0f) to make the initial oxygen clouds sharper
+        // ==========================================================================================
+        // 2. Environmental Fields (PDEs)
+        // ==========================================================================================
+        // "In Vitro" approach: Infinite, uniform oxygen supply everywhere in the domain.
+        // This guarantees cells will not die of hypoxia for a very long time, allowing us
+        // to clearly observe multiple generations of cell division.
         m_blueprint.AddGridField( "Oxygen" )
-            .SetInitializer( DigitalTwin::GridInitializer::MultiGaussian( bloodVessels, 10.0f, 100.0f ) )
-            .SetDiffusionCoefficient( 2.5f )
-            .SetDecayRate( 0.01f )
+            .SetInitializer( DigitalTwin::GridInitializer::Gaussian( glm::vec3( 0.0f, 0.0f, 0.0f ), 10.0f, 80.0f ) )
+            .SetDiffusionCoefficient( 5.0f )
+            .SetDecayRate( 0.0f ) // No natural decay, only consumed by cells
             .SetComputeHz( 60.0f );
 
-        // 2B. Add Lactate Field (Waste product)
-        m_blueprint.AddGridField( "Lactate" )
-            .SetInitializer( DigitalTwin::GridInitializer::Constant( 0.0f ) )
-            .SetDiffusionCoefficient( 1.2f )
-            .SetDecayRate( 0.05f ) // Cleared by vasculature over time
-            .SetComputeHz( 60.0f );
+        // ==========================================================================================
+        // 3. Agent Groups (Patient Zero)
+        // ==========================================================================================
+        // Start with a SINGLE cell exactly at the origin (0,0,0).
+        std::vector<glm::vec4> patientZero = { glm::vec4( 0.0f, 0.0f, 0.0f, 1.0f ) };
 
-        // 3. Create initial tumor mass (Dense sphere of agents)
         auto& tumorCells = m_blueprint.AddAgentGroup( "TumorCells" )
-                               .SetCount( 8000 )
+                               .SetCount( 1 )
                                .SetMorphology( DigitalTwin::MorphologyGenerator::CreateSphere( 1.5f ) )
-                               .SetDistribution( DigitalTwin::SpatialDistribution::UniformInSphere( 8000, 10.0f ) )
-                               .SetColor( glm::vec4( 0.1f, 0.8f, 0.2f, 1.0f ) );
+                               .SetDistribution( patientZero )
+                               .SetColor( glm::vec4( 0.2f, 0.8f, 0.3f, 1.0f ) ); // Let's make them bright green this time!
 
-        // 4. Attach Behaviours
+        // ==========================================================================================
+        // 4. Behaviours (Physics & Biology)
+        // ==========================================================================================
 
-        // Consume Oxygen from the "Oxygen" grid
-        tumorCells.AddBehaviour( DigitalTwin::Behaviours::ConsumeField{ "Oxygen", 8.0f } ).SetHz( 60.0f );
+        // A. Brown motion for nice movement
+        tumorCells.AddBehaviour( DigitalTwin::Behaviours::BrownianMotion{ 0.5f } ).SetHz( 60.0f );
 
-        // Secrete Acid into the "Lactate" grid
-        tumorCells.AddBehaviour( DigitalTwin::Behaviours::SecreteField{ "Lactate", 15.0f } ).SetHz( 60.0f );
+        // B. Field Interaction: Slow oxygen consumption so the colony can grow large
+        tumorCells.AddBehaviour( DigitalTwin::Behaviours::ConsumeField{ "Oxygen", 2.0f } ).SetHz( 60.0f );
 
-        // Simulate mechanical forces using the scientific JKR Builder
+        // B. Biomechanics (JKR Model): Softer cells with less adhesion
+        // This allows daughter cells to visually "pop" and separate nicely after mitosis
         tumorCells
             .AddBehaviour( DigitalTwin::BiomechanicsGenerator::JKR()
-                               .SetYoungsModulus( 25.0f )       // Stiffness in kPa
-                               .SetPoissonRatio( 0.4f )         // Compressibility
-                               .SetAdhesionEnergy( 2.0f )       // Surface adhesion
-                               .SetMaxInteractionRadius( 1.5f ) // Maximum cell radius
+                               .SetYoungsModulus( 20.0f ) // Softer tissue
+                               .SetPoissonRatio( 0.4f )
+                               .SetAdhesionEnergy( 1.5f ) // Reduced stickiness (easier separation)
+                               .SetMaxInteractionRadius( 1.5f )
                                .Build() )
-            .SetHz( 120.0f );
+            .SetHz( 60.0f );
+
+        // C. Biology (Cell Cycle): Slow, observable proliferation
+        tumorCells
+            .AddBehaviour( DigitalTwin::BiologyGenerator::StandardCellCycle()
+                               .SetBaseDoublingTime( 5.0f/ 3600.0f ) // One division every 5 seconds!
+                               .SetProliferationOxygenTarget( 50.0f )
+                               .SetArrestPressureThreshold( 15.0f ) // High threshold: let them pack tightly before sleeping
+                               .SetNecrosisOxygenThreshold( 5.0f )
+                               .SetApoptosisRate( 0.0f )
+                               .Build() )
+            .SetHz( 60.0f );
 
         m_engine.SetBlueprint( m_blueprint );
     }

@@ -1,0 +1,116 @@
+#version 460
+layout(local_size_x = 256) in;
+
+layout(push_constant) uniform PushConstants {
+    float dt;
+    float totalTime;
+    float fParam0; float fParam1; float fParam2; float fParam3; float fParam4; float fParam5;
+    uint  offset;
+    uint  maxCapacity; 
+    uint  uParam0;
+    uint  grpNdx;
+    vec4  domainSize;
+    uvec4 gridSize;
+} pc;
+
+// Binding 0: Spatial data (xyz: position, w: alive/dead flag)
+layout(std140, binding = 0) buffer Agents { vec4 positions[]; } inOutAgents;
+
+// Binding 1: Biological state machine
+struct PhenotypeData {
+    uint  state;   // 0: Live, 1: Quiescent, 2: Apoptotic, 3: Necrotic
+    float biomass; // Grows from 0.5 to 1.0
+    float timer;
+    uint  padding;
+};
+layout(std430, binding = 1) buffer Phenotypes { PhenotypeData data[]; } inOutPhenotypes;
+
+// Binding 2: GPU-Driven Atomic Counters (tracks active instances per group)
+layout(std430, binding = 2) buffer CounterBuffer { uint counts[]; } counters;
+
+// RNG functions
+uint pcg_hash(uint seed) 
+{
+    uint state = seed * 747796405u + 2891336453u;
+    uint word = ((state >> ((state >> 28u) + 4u)) ^ state) * 277803737u;
+    return (word >> 22u) ^ word;
+}
+
+// Generates a normalized random float between 0.0 and 1.0
+float randomFloat(inout uint seed) 
+{
+    seed = pcg_hash(seed);
+    return float(seed) / 4294967295.0; // Divide by max uint32
+}
+
+// Generates a uniformly distributed random direction vector on a 3D sphere.
+// Represents the randomized mitotic spindle axis.
+vec3 randomDirection(inout uint seed) 
+{
+    float z = randomFloat(seed) * 2.0 - 1.0;
+    float a = randomFloat(seed) * 2.0 * 3.14159265359;
+    float r = sqrt(1.0 - z * z);
+    return vec3(r * cos(a), r * sin(a), z);
+}
+
+void main() 
+{
+    uint idx = gl_GlobalInvocationID.x;
+    
+    // Bounds check to prevent buffer overflow
+    if(idx >= pc.maxCapacity) return;
+    
+    // Calculate absolute global index within the mega-buffer
+    uint globalIdx = pc.offset + idx;
+
+    // Skip unallocated or strictly dead memory slots (w == 0.0)
+    if(inOutAgents.positions[globalIdx].w == 0.0) return;
+
+    // Check if the cell is alive and has accumulated enough biomass to divide
+    if(inOutPhenotypes.data[globalIdx].state == 0 && inOutPhenotypes.data[globalIdx].biomass >= 1.0) 
+    {
+        // 1. Instantly halve the mother cell's biomass
+        inOutPhenotypes.data[globalIdx].biomass = 0.5;
+        
+        // 2. Atomically request a new memory slot for the daughter cell
+        uint childIdx = atomicAdd(counters.counts[pc.grpNdx], 1);
+        
+        // 3. Safety Check: Did we exceed the physical VRAM capacity of this group?
+        if(childIdx < pc.maxCapacity) 
+        {
+            uint globalChildIdx = pc.offset + childIdx;
+            vec3 motherPos = inOutAgents.positions[globalIdx].xyz;
+            
+            // --- MITOTIC SPINDLE AXIS CALCULATION ---
+            // Create a completely unique seed using the cell's global ID and the current simulation time
+            uint seed = pcg_hash(globalIdx ^ floatBitsToUint(pc.totalTime));
+            
+            // Calculate a random displacement vector (0.1 micrometers length)
+            vec3 spawnOffset = randomDirection(seed) * 0.1;
+            
+            // --- CONSERVATION OF MOMENTUM ---
+            // Push both cells away from their shared center of mass. 
+            // This prevents them from occupying the exact same mathematical point
+            // and allows the JKR Biomechanics solver to smoothly push them apart.
+            inOutAgents.positions[globalIdx].xyz -= spawnOffset * 0.5;
+            
+            // Initialize Daughter Cell spatial data (w = 1.0 makes it ALIVE for the spatial grid)
+            inOutAgents.positions[globalChildIdx] = vec4(motherPos + (spawnOffset * 0.5), 1.0);
+            
+            // Initialize Daughter Cell biological data
+            inOutPhenotypes.data[globalChildIdx].state   = 0;   // Set to Live
+            inOutPhenotypes.data[globalChildIdx].biomass = 0.5; // Start with half the mother's mass
+            inOutPhenotypes.data[globalChildIdx].timer   = 0.0; // Reset internal clock
+        } 
+        else 
+        {
+            // VRAM Over-budget handling: 
+            // Roll back the atomic counter to prevent out-of-bounds rendering
+            atomicAdd(counters.counts[pc.grpNdx], -1);
+            
+            // Revert the mother cell's biomass back to max capacity 
+            // It will remain arrested until memory is freed (e.g., by apoptosis/necrosis stream compaction)
+            inOutPhenotypes.data[globalIdx].biomass = 1.0; 
+        }
+    }
+}

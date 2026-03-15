@@ -18,6 +18,7 @@
 #include "renderer/Camera.h"
 #include "renderer/RenderTarget.h"
 #include "renderer/Scene.h"
+#include "renderer/passes/BuildIndirectPass.h"
 #include "renderer/passes/GeometryPass.h"
 #include "renderer/passes/GridVisualizationPass.h"
 
@@ -139,6 +140,13 @@ namespace DigitalTwin
         }
 
         // 5. Initialize Render Passes
+        m_buildIndirectPass = CreateScope<BuildIndirectPass>( m_device, m_resourceManager );
+        if( m_buildIndirectPass->Initialize() != Result::SUCCESS )
+        {
+            DT_ERROR( "Failed to initialize BuildIndirectPass." );
+            return Result::FAIL;
+        }
+
         m_geometryPass = CreateScope<GeometryPass>( m_device, m_resourceManager );
         if( m_geometryPass->Initialize() != Result::SUCCESS )
         {
@@ -175,6 +183,8 @@ namespace DigitalTwin
         }
 
         // 2. Cleanup Passes
+        if( m_buildIndirectPass )
+            m_buildIndirectPass->Shutdown();
         if( m_geometryPass )
         {
             m_geometryPass->Shutdown();
@@ -314,9 +324,6 @@ namespace DigitalTwin
         renderInfo.pColorAttachments    = &colorAttachment;
         renderInfo.pDepthAttachment     = &depthAttachment;
 
-        // 4. Begin Dynamic Rendering
-        cmd->BeginRendering( renderInfo );
-
         cmd->SetViewport( 0.0f, 0.0f, ( float )m_renderTargets[ flightIndex ]->GetWidth(), ( float )m_renderTargets[ flightIndex ]->GetHeight() );
         cmd->SetScissor( 0, 0, m_renderTargets[ flightIndex ]->GetWidth(), m_renderTargets[ flightIndex ]->GetHeight() );
 
@@ -331,7 +338,16 @@ namespace DigitalTwin
             renderScene.groupDataBuffer   = state->groupDataBuffer;
             renderScene.agentBuffers[ 0 ] = state->agentBuffers[ 0 ];
             renderScene.agentBuffers[ 1 ] = state->agentBuffers[ 0 ];
+            renderScene.agentCountBuffer  = state->agentCountBuffer;
             renderScene.drawCount         = state->groupCount;
+
+            if( profiler )
+                profiler->BeginZone( cmd, flightIndex, "Build Indirect Pass" );
+            m_buildIndirectPass->Execute( cmd, &renderScene, flightIndex );
+            if( profiler )
+                profiler->EndZone( cmd, flightIndex, "Build Indirect Pass" );
+
+            cmd->BeginRendering( renderInfo );
 
             // Scene pass
             if( profiler )
@@ -352,9 +368,13 @@ namespace DigitalTwin
                 if( profiler )
                     profiler->EndZone( cmd, flightIndex, "Grid Visualization Pass" );
             }
+            cmd->EndRendering();
         }
-
-        cmd->EndRendering();
+        else
+        {
+            cmd->BeginRendering( renderInfo );
+            cmd->EndRendering();
+        }
 
         // 5. Prepare RenderTarget color texture for reading in ImGui
         m_renderTargets[ flightIndex ]->TransitionForSampling( cmd );

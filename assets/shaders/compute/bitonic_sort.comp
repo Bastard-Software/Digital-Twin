@@ -4,12 +4,16 @@ layout(local_size_x = 256) in;
 layout(push_constant) uniform PushConstants {
     float dt;
     float totalTime;
-    float fParam1;    // Unused
-    float fParam2;    // Unused
+    float fParam0;
+    float fParam1;
+    float fParam2;
+    float fParam3;
+    float fParam4;
+    float fParam5;
     uint  offset;
-    uint  count;
-    uint  uParam1;    // j parameter for Bitonic Sort
-    uint  uParam2;    // k parameter for Bitonic Sort
+    uint  maxCapacity;
+    uint  j;
+    uint  k;
     vec4  domainSize;
     uvec4 gridSize;
 } pc;
@@ -19,12 +23,12 @@ layout(std430, binding = 0) buffer Hashes { AgentHash data[]; } hashes;
 
 void main() {
     uint i = gl_GlobalInvocationID.x;
-    if(i >= pc.count) return;
+    if(i >= pc.maxCapacity) return;
 
     // Bitonic sort core logic
-    uint ixj = i ^ pc.uParam1;
-    if(ixj > i && ixj < pc.count) {
-        bool sortDir = ((i & pc.uParam2) == 0);
+    uint ixj = i ^ pc.j;
+    if(ixj > i && ixj < pc.maxCapacity) {
+        bool sortDir = ((i & pc.k) == 0);
         AgentHash a = hashes.data[i];
         AgentHash b = hashes.data[ixj];
         

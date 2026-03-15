@@ -39,6 +39,10 @@ namespace DigitalTwin
             resourceManager->DestroyBuffer( offsetBuffer );
         if( pressureBuffer.IsValid() )
             resourceManager->DestroyBuffer( pressureBuffer );
+        if( agentCountBuffer.IsValid() )
+            resourceManager->DestroyBuffer( agentCountBuffer );
+        if( phenotypeBuffer.IsValid() )
+            resourceManager->DestroyBuffer( phenotypeBuffer );
 
         for( auto& field: gridFields )
         {
@@ -60,6 +64,8 @@ namespace DigitalTwin
         pressureBuffer    = {};
         agentBuffers[ 0 ] = {};
         agentBuffers[ 1 ] = {};
+        agentCountBuffer  = {};
+        phenotypeBuffer   = {};
     }
 
     SimulationState SimulationBuilder::Build( const SimulationBlueprint& blueprint )
@@ -97,6 +103,7 @@ namespace DigitalTwin
         uint32_t totalAgents     = 0;
         uint32_t validGroupCount = 0;
 
+        std::vector<uint32_t> groupCapacities;
         for( const auto& group: groups )
         {
             if( group.GetCount() == 0 || group.GetPositions().empty() )
@@ -104,7 +111,19 @@ namespace DigitalTwin
 
             totalVertices += static_cast<uint32_t>( group.GetMorphology().vertices.size() );
             totalIndices += static_cast<uint32_t>( group.GetMorphology().indices.size() );
-            totalAgents += group.GetCount();
+
+            // TODO: Temp solution handle properly - full alocation at the beginning???
+            uint32_t targetCapacity = group.GetCount() * 2;
+            if( targetCapacity < 64 )
+                targetCapacity = 64;
+
+            // Round up to nearest power of two for Bitonic Sort compatibility
+            uint32_t paddedCount = 1;
+            while( paddedCount < targetCapacity )
+                paddedCount <<= 1;
+
+            groupCapacities.push_back( paddedCount );
+            totalAgents += paddedCount;
             validGroupCount++;
         }
 
@@ -133,13 +152,15 @@ namespace DigitalTwin
         uint32_t currentVertexOffset   = 0;
         uint32_t currentIndexOffset    = 0;
         uint32_t currentInstanceOffset = 0;
+        uint32_t groupIdx              = 0;
 
         for( const auto& group: groups )
         {
             if( group.GetCount() == 0 || group.GetPositions().empty() )
                 continue;
 
-            const auto& morph = group.GetMorphology();
+            uint32_t    capacity = groupCapacities[ groupIdx++ ];
+            const auto& morph    = group.GetMorphology();
 
             // Append Geometry
             megaVertices.insert( megaVertices.end(), morph.vertices.begin(), morph.vertices.end() );
@@ -150,9 +171,9 @@ namespace DigitalTwin
             megaPositions.insert( megaPositions.end(), group.GetPositions().begin(), group.GetPositions().begin() + copyCount );
 
             // Pad with zeros if the user provided fewer positions than the requested count
-            for( uint32_t i = copyCount; i < group.GetCount(); ++i )
+            for( uint32_t i = copyCount; i < capacity; ++i )
             {
-                megaPositions.push_back( glm::vec4( 0.0f, 0.0f, 0.0f, 1.0f ) );
+                megaPositions.push_back( glm::vec4( 0.0f, 0.0f, 0.0f, 0.0f ) );
             }
 
             // Create Indirect Draw Command for this specific group
@@ -169,7 +190,7 @@ namespace DigitalTwin
             // Advance offsets for the next group
             currentVertexOffset += static_cast<uint32_t>( morph.vertices.size() );
             currentIndexOffset += static_cast<uint32_t>( morph.indices.size() );
-            currentInstanceOffset += group.GetCount();
+            currentInstanceOffset += capacity;
         }
 
         // 4. Create core GPU Buffers via ResourceManager
@@ -193,6 +214,8 @@ namespace DigitalTwin
         BufferDesc agentDesc{ megaPositions.size() * sizeof( glm::vec4 ), BufferType::STORAGE, "SimulationAgentBuffer" };
         outState.agentBuffers[ 0 ] = m_resourceManager->CreateBuffer( agentDesc );
         outState.agentBuffers[ 1 ] = m_resourceManager->CreateBuffer( agentDesc );
+        outState.agentCountBuffer =
+            m_resourceManager->CreateBuffer( { outState.groupCount * sizeof( uint32_t ), BufferType::INDIRECT, "AgentCountBuffer" } );
 
         // 5. Upload Data to VRAM synchronously
         std::vector<BufferUploadRequest> uploads;
@@ -213,6 +236,12 @@ namespace DigitalTwin
         // Always upload agents
         uploads.push_back( { outState.agentBuffers[ 0 ], megaPositions.data(), megaPositions.size() * sizeof( glm::vec4 ) } );
         uploads.push_back( { outState.agentBuffers[ 1 ], megaPositions.data(), megaPositions.size() * sizeof( glm::vec4 ) } );
+        std::vector<uint32_t> initialCounts;
+        for( const auto& group: blueprint.GetGroups() )
+        {
+            initialCounts.push_back( group.GetCount() );
+        }
+        uploads.push_back( { outState.agentCountBuffer, initialCounts.data(), initialCounts.size() * sizeof( uint32_t ), 0 } );
 
         m_streamingManager->UploadBufferImmediate( uploads );
 
@@ -222,16 +251,25 @@ namespace DigitalTwin
     void SimulationBuilder::CompileSpatialGrid( const SimulationBlueprint& blueprint, SimulationState& outState )
     {
         // 1. Calculate total agents across all groups for the global grid
-        uint32_t totalAgents = 0;
+        uint32_t totalCapacity = 0;
         for( const auto& group: blueprint.GetGroups() )
         {
-            totalAgents += group.GetCount();
+            if( group.GetCount() == 0 )
+                continue;
+
+            uint32_t targetCapacity = group.GetCount() * 2;
+            if( targetCapacity < 64 )
+                targetCapacity = 64;
+
+            uint32_t paddedCount = 1;
+            while( paddedCount < targetCapacity )
+                paddedCount <<= 1;
+
+            totalCapacity += paddedCount;
         }
 
-        if( totalAgents == 0 )
-        {
-            return; // No agents, no grid needed
-        }
+        if( totalCapacity == 0 )
+            return;
 
         // 2. Fetch Spatial Configuration from Blueprint
         const auto& spatialConfig = blueprint.GetSpatialPartitioning();
@@ -239,21 +277,16 @@ namespace DigitalTwin
         float       cellSize      = spatialConfig.cellSize;
 
         // GPU Bitonic Sort requires the array size to be a power of two
-        uint32_t paddedCount = totalAgents;
-        paddedCount--;
-        paddedCount |= paddedCount >> 1;
-        paddedCount |= paddedCount >> 2;
-        paddedCount |= paddedCount >> 4;
-        paddedCount |= paddedCount >> 8;
-        paddedCount |= paddedCount >> 16;
-        paddedCount++;
+        uint32_t globalPaddedCount = 1;
+        while( globalPaddedCount < totalCapacity )
+            globalPaddedCount <<= 1;
 
         uint32_t offsetArraySize = 262144; // 64x64x64 hash grid slots
 
         // 3. Allocate Spatial & Physics Buffers (if not already allocated)
         if( !outState.hashBuffer.IsValid() )
         {
-            outState.hashBuffer = m_resourceManager->CreateBuffer( { paddedCount * 8, BufferType::STORAGE, "AgentHashes" } );
+            outState.hashBuffer = m_resourceManager->CreateBuffer( { globalPaddedCount * 8, BufferType::STORAGE, "AgentHashes" } );
         }
         if( !outState.offsetBuffer.IsValid() )
         {
@@ -268,7 +301,7 @@ namespace DigitalTwin
         {
             // We keep pressure buffer here since it's a global physics property
             // shared across potentially multiple mechanical behaviours.
-            outState.pressureBuffer = m_resourceManager->CreateBuffer( { totalAgents * 4, BufferType::STORAGE, "AgentPressures" } );
+            outState.pressureBuffer = m_resourceManager->CreateBuffer( { globalPaddedCount * 4, BufferType::STORAGE, "AgentPressures" } );
         }
 
         // 4. Load Shaders and Create Pipelines for Spatial Partitioning
@@ -312,39 +345,39 @@ namespace DigitalTwin
 
         // 6. Base Push Constants
         ComputePushConstants basePC{};
-        basePC.offset = 0; // Processing all agents globally, offset is always 0
-        basePC.count  = totalAgents;
+        basePC.offset      = 0; // Processing all agents globally, offset is always 0
+        basePC.maxCapacity = globalPaddedCount;
         // w component acts as padding here since maxRadius is not needed for pure hashing
         basePC.domainSize = glm::vec4( blueprint.GetDomainSize(), 0.0f );
         basePC.gridSize   = glm::uvec4( 0 );
 
         // --- TASK A: HASH AGENTS ---
         ComputePushConstants hashPC = basePC;
-        hashPC.fParam1              = cellSize;
-        glm::uvec3 hashDispatch( ( totalAgents + 255 ) / 256, 1, 1 );
+        hashPC.fParam0              = cellSize;
+        glm::uvec3 hashDispatch( ( globalPaddedCount + 255 ) / 256, 1, 1 );
         outState.computeGraph.AddTask( ComputeTask( hashPipe, bgHash0, bgHash1, computeHz, hashPC, hashDispatch ) );
 
         // --- TASK B: BITONIC SORT (The Magic GPU Loop) ---
-        glm::uvec3 sortDispatch( ( paddedCount + 255 ) / 256, 1, 1 );
-        for( uint32_t k = 2; k <= paddedCount; k <<= 1 )
+        glm::uvec3 sortDispatch( ( globalPaddedCount + 255 ) / 256, 1, 1 );
+        for( uint32_t k = 2; k <= globalPaddedCount; k <<= 1 )
         {
             for( uint32_t j = k >> 1; j > 0; j >>= 1 )
             {
                 ComputePushConstants sortPC = basePC;
-                sortPC.count                = paddedCount; // Sort operates on the padded size
-                sortPC.uParam1              = j;
-                sortPC.uParam2              = k;
+                sortPC.maxCapacity          = globalPaddedCount; // Sort operates on the padded size
+                sortPC.uParam0              = j;
+                sortPC.uParam1              = k;
                 outState.computeGraph.AddTask( ComputeTask( sortPipe, bgSort, bgSort, computeHz, sortPC, sortDispatch ) );
             }
         }
 
         // --- TASK C: BUILD OFFSETS ---
         ComputePushConstants offsetPC = basePC;
-        offsetPC.count                = paddedCount;
-        glm::uvec3 offsetDispatch( ( paddedCount + 255 ) / 256, 1, 1 );
+        offsetPC.maxCapacity          = globalPaddedCount;
+        glm::uvec3 offsetDispatch( ( globalPaddedCount + 255 ) / 256, 1, 1 );
         outState.computeGraph.AddTask( ComputeTask( offsetPipe, bgOffset, bgOffset, computeHz, offsetPC, offsetDispatch ) );
 
-        DT_INFO( "[SimulationBuilder] Compiled Global Spatial Grid. Total Agents: {}, Frequency: {}Hz", totalAgents, computeHz );
+        DT_INFO( "[SimulationBuilder] Compiled Global Spatial Grid. Total Agents: {}, Frequency: {}Hz", globalPaddedCount, computeHz );
     }
 
     void SimulationBuilder::CompileGridFields( const SimulationBlueprint& blueprint, SimulationState& outState )
@@ -459,8 +492,8 @@ namespace DigitalTwin
             bg1->Build();
 
             ComputePushConstants pc{};
-            pc.fParam1 = fieldDef.GetDiffusionCoefficient();
-            pc.fParam2 = fieldDef.GetDecayRate();
+            pc.fParam0 = fieldDef.GetDiffusionCoefficient();
+            pc.fParam1 = fieldDef.GetDecayRate();
 
             glm::uvec3 dispatchSize( ( gridWidth + 7 ) / 8, ( gridHeight + 7 ) / 8, ( gridDepth + 7 ) / 8 );
             outState.computeGraph.AddTask( ComputeTask( pipe, bg0, bg1, fieldDef.GetComputeHz(), pc, dispatchSize ) );
@@ -471,11 +504,34 @@ namespace DigitalTwin
     void SimulationBuilder::CompileBehaviours( const SimulationBlueprint& blueprint, SimulationState& outState )
     {
         uint32_t currentOffset = 0;
+        uint32_t groupIndex    = 0;
+
+        // Base Push Constants common to almost all agent behaviours
+        ComputePushConstants basePC{};
+        basePC.domainSize = glm::vec4( blueprint.GetDomainSize(), 0.0f ); // Radius will be injected later if needed
+        basePC.gridSize   = glm::uvec4( 0 );                              // Default to no grid interaction
+
+        // Pre-fetch the Oxygen Grid resolution IF it exists, otherwise use 0s
+        if( !outState.gridFields.empty() )
+        {
+            // outState.gridFields is a vector of SimulationState::GridFieldState (which HAS width/height/depth)
+            // We use the GPU-compiled state size, not the CPU blueprint!
+            basePC.gridSize = glm::uvec4( outState.gridFields[ 0 ].width, outState.gridFields[ 0 ].height, outState.gridFields[ 0 ].depth, 0 );
+        }
 
         for( const auto& group: blueprint.GetGroups() )
         {
             if( group.GetCount() == 0 )
                 continue;
+
+            // Recalculate capacity to match AllocateAgentBuffers
+            uint32_t targetCapacity = group.GetCount() * 2;
+            if( targetCapacity < 64 )
+                targetCapacity = 64;
+
+            uint32_t paddedCount = 1;
+            while( paddedCount < targetCapacity )
+                paddedCount <<= 1;
 
             for( const auto& record: group.GetBehaviours() )
             {
@@ -496,6 +552,7 @@ namespace DigitalTwin
                     BindingGroup*      bg0       = m_resourceManager->GetBindingGroup( bgHandle0 );
                     bg0->Bind( 0, m_resourceManager->GetBuffer( outState.agentBuffers[ 0 ] ) ); // readonly
                     bg0->Bind( 1, m_resourceManager->GetBuffer( outState.agentBuffers[ 1 ] ) ); // writeonly
+                    bg0->Bind( 2, m_resourceManager->GetBuffer( outState.agentCountBuffer ) );
                     bg0->Build();
 
                     // 2. Create Binding Group 1 (Read from 1, Write to 0)
@@ -503,14 +560,16 @@ namespace DigitalTwin
                     BindingGroup*      bg1       = m_resourceManager->GetBindingGroup( bgHandle1 );
                     bg1->Bind( 0, m_resourceManager->GetBuffer( outState.agentBuffers[ 1 ] ) ); // readonly
                     bg1->Bind( 1, m_resourceManager->GetBuffer( outState.agentBuffers[ 0 ] ) ); // writeonly
+                    bg1->Bind( 2, m_resourceManager->GetBuffer( outState.agentCountBuffer ) );
                     bg1->Build();
 
                     ComputePushConstants pc{};
-                    pc.fParam1 = brownian.speed;
-                    pc.offset  = currentOffset;
-                    pc.count   = group.GetCount();
+                    pc.fParam0     = brownian.speed;
+                    pc.offset      = currentOffset;
+                    pc.maxCapacity = paddedCount;
+                    pc.uParam1     = groupIndex;
 
-                    glm::uvec3 agentDispatch( ( group.GetCount() + 255 ) / 256, 1, 1 );
+                    glm::uvec3 agentDispatch( ( paddedCount + 255 ) / 256, 1, 1 );
                     outState.computeGraph.AddTask( ComputeTask( pipe, bg0, bg1, record.targetHz, pc, agentDispatch ) );
                     DT_INFO( "SimulationBuilder: Compiled BrownianMotion for group '{}' at {}Hz", group.GetName(), record.targetHz );
                 }
@@ -549,6 +608,7 @@ namespace DigitalTwin
                         BindingGroup*      bg0       = m_resourceManager->GetBindingGroup( bgHandle0 );
                         bg0->Bind( 0, m_resourceManager->GetBuffer( outState.agentBuffers[ 0 ] ) );
                         bg0->Bind( 1, m_resourceManager->GetBuffer( targetGrid->interactionDeltaBuffer ) );
+                        bg0->Bind( 2, m_resourceManager->GetBuffer( outState.agentCountBuffer ) );
                         bg0->Build();
 
                         // Read agents[1], write to DeltaBuffer
@@ -556,16 +616,18 @@ namespace DigitalTwin
                         BindingGroup*      bg1       = m_resourceManager->GetBindingGroup( bgHandle1 );
                         bg1->Bind( 0, m_resourceManager->GetBuffer( outState.agentBuffers[ 1 ] ) );
                         bg1->Bind( 1, m_resourceManager->GetBuffer( targetGrid->interactionDeltaBuffer ) );
+                        bg1->Bind( 2, m_resourceManager->GetBuffer( outState.agentCountBuffer ) );
                         bg1->Build();
 
                         ComputePushConstants pc{};
-                        pc.fParam1    = rate;
-                        pc.offset     = currentOffset;
-                        pc.count      = group.GetCount();
-                        pc.domainSize = glm::vec4( blueprint.GetDomainSize(), 0.0f );
-                        pc.gridSize   = glm::uvec4( targetGrid->width, targetGrid->height, targetGrid->depth, 0 );
+                        pc.fParam0     = rate;
+                        pc.offset      = currentOffset;
+                        pc.maxCapacity = paddedCount;
+                        pc.uParam1     = groupIndex;
+                        pc.domainSize  = glm::vec4( blueprint.GetDomainSize(), 0.0f );
+                        pc.gridSize    = glm::uvec4( targetGrid->width, targetGrid->height, targetGrid->depth, 0 );
 
-                        glm::uvec3 agentDispatch( ( group.GetCount() + 255 ) / 256, 1, 1 );
+                        glm::uvec3 agentDispatch( ( paddedCount + 255 ) / 256, 1, 1 );
                         outState.computeGraph.AddTask( ComputeTask( pipe, bg0, bg1, record.targetHz, pc, agentDispatch ) );
 
                         DT_INFO( "SimulationBuilder: Compiled {} for '{}' at {}Hz", isConsume ? "Consumption" : "Secretion", targetName,
@@ -580,7 +642,6 @@ namespace DigitalTwin
                 {
                     auto& biomechanics = std::get<Behaviours::Biomechanics>( record.behaviour );
 
-                    uint32_t agentCount      = group.GetCount();
                     uint32_t offsetArraySize = 262144; // 64x64x64 hash grid slots (must match CompileSpatialGrid)
 
                     // 1. Load Shaders and Create Pipeline for Biomechanics
@@ -598,6 +659,7 @@ namespace DigitalTwin
                     bgJkr0->Bind( 2, m_resourceManager->GetBuffer( outState.pressureBuffer ) );
                     bgJkr0->Bind( 3, m_resourceManager->GetBuffer( outState.hashBuffer ) );
                     bgJkr0->Bind( 4, m_resourceManager->GetBuffer( outState.offsetBuffer ) );
+                    bgJkr0->Bind( 5, m_resourceManager->GetBuffer( outState.agentCountBuffer ) );
                     bgJkr0->Build();
 
                     BindingGroup* bgJkr1 = m_resourceManager->GetBindingGroup( m_resourceManager->CreateBindingGroup( jkrPipeHandle, 0 ) );
@@ -606,32 +668,154 @@ namespace DigitalTwin
                     bgJkr1->Bind( 2, m_resourceManager->GetBuffer( outState.pressureBuffer ) );
                     bgJkr1->Bind( 3, m_resourceManager->GetBuffer( outState.hashBuffer ) );
                     bgJkr1->Bind( 4, m_resourceManager->GetBuffer( outState.offsetBuffer ) );
+                    bgJkr1->Bind( 5, m_resourceManager->GetBuffer( outState.agentCountBuffer ) );
                     bgJkr1->Build();
 
-                    // 3. Base Push Constants
-                    ComputePushConstants basePC{};
-                    basePC.offset = currentOffset;
-                    basePC.count  = agentCount;
-                    // Embed interaction radius in the W component of domainSize
-                    basePC.domainSize = glm::vec4( blueprint.GetDomainSize(), biomechanics.maxRadius );
-                    basePC.gridSize   = glm::uvec4( 0 ); // Unused for particle physics
-
-                    // 4. Configure Task specific parameters
+                    // 3. Configure Task specific parameters
                     ComputePushConstants jkrPC = basePC;
-                    jkrPC.fParam1              = biomechanics.repulsionStiffness;
-                    jkrPC.fParam2              = biomechanics.adhesionStrength;
-                    jkrPC.uParam1              = offsetArraySize;
+                    jkrPC.offset               = currentOffset;
+                    jkrPC.maxCapacity          = paddedCount;
+                    jkrPC.fParam0              = biomechanics.repulsionStiffness;
+                    jkrPC.fParam1              = biomechanics.adhesionStrength;
+                    jkrPC.uParam0              = offsetArraySize;
+                    jkrPC.uParam1              = groupIndex;
+                    jkrPC.domainSize           = glm::vec4( blueprint.GetDomainSize(), biomechanics.maxRadius );
 
-                    // 5. Append Task to Compute Graph
-                    glm::uvec3 jkrDispatch( ( agentCount + 255 ) / 256, 1, 1 );
+                    // 4. Append Task to Compute Graph
+                    glm::uvec3 jkrDispatch( ( paddedCount + 255 ) / 256, 1, 1 );
 
                     // Using Ping-Pong correctly based on activeIndex inside the graph
                     outState.computeGraph.AddTask( ComputeTask( jkrPipe, bgJkr0, bgJkr1, record.targetHz, jkrPC, jkrDispatch ) );
 
                     DT_INFO( "[SimulationBuilder] Compiled Biomechanics (JKR) for '{}' at {}Hz", group.GetName(), record.targetHz );
                 }
+                if( std::holds_alternative<Behaviours::CellCycle>( record.behaviour ) )
+                {
+                    const auto& cellCycle = std::get<Behaviours::CellCycle>( record.behaviour );
+
+                    // 1. Allocate Phenotype Buffer if it doesn't exist
+                    if( !outState.phenotypeBuffer.IsValid() )
+                    {
+                        uint32_t globalCapacity = 0;
+                        for( const auto& g: blueprint.GetGroups() )
+                        {
+                            uint32_t tc = g.GetCount() * 2;
+                            if( tc < 64 )
+                                tc = 64;
+                            uint32_t pc = 1;
+                            while( pc < tc )
+                                pc <<= 1;
+                            globalCapacity += pc;
+                        }
+
+                        size_t phenotypeSize     = globalCapacity * 4 * sizeof( uint32_t );
+                        outState.phenotypeBuffer = m_resourceManager->CreateBuffer( { phenotypeSize, BufferType::STORAGE, "PhenotypeBuffer" } );
+
+                        struct PhenotypeData
+                        {
+                            uint32_t state;
+                            float    biomass;
+                            float    timer;
+                            uint32_t padding;
+                        };
+                        std::vector<PhenotypeData> initialPhenotypes( paddedCount, { 0, 0.5f, 0.0f, 0 } );
+
+                        m_streamingManager->UploadBufferImmediate( { { outState.phenotypeBuffer, initialPhenotypes.data(), phenotypeSize, 0 } } );
+                    }
+
+                    // Pressure buffer is absolutely required for Contact Inhibition
+                    if( !outState.pressureBuffer.IsValid() )
+                    {
+                        uint32_t globalCapacity = 0;
+                        for( const auto& g: blueprint.GetGroups() )
+                        {
+                            uint32_t tc = g.GetCount() * 2;
+                            if( tc < 64 )
+                                tc = 64;
+                            uint32_t pc = 1;
+                            while( pc < tc )
+                                pc <<= 1;
+                            globalCapacity += pc;
+                        }
+
+                        size_t pressureSize     = globalCapacity * sizeof( float );
+                        outState.pressureBuffer = m_resourceManager->CreateBuffer( { pressureSize, BufferType::STORAGE, "PressureBuffer" } );
+
+                        std::vector<float> initialPressures( globalCapacity, 0.0f );
+                        m_streamingManager->UploadBufferImmediate( { { outState.pressureBuffer, initialPressures.data(), pressureSize, 0 } } );
+                    }
+
+                    // 2. Create Pipelines
+                    ComputePipelineDesc   phenoDesc{ m_resourceManager->CreateShader( "shaders/compute/biology/update_phenotype.comp" ),
+                                                   "UpdatePhenotype" };
+                    ComputePipelineHandle phenoPipeHandle = m_resourceManager->CreatePipeline( phenoDesc );
+                    ComputePipeline*      phenoPipe       = m_resourceManager->GetPipeline( phenoPipeHandle );
+
+                    ComputePipelineDesc   mitosisDesc{ m_resourceManager->CreateShader( "shaders/compute/biology/mitosis_append.comp" ),
+                                                     "MitosisAppend" };
+                    ComputePipelineHandle mitosisPipeHandle = m_resourceManager->CreatePipeline( mitosisDesc );
+                    ComputePipeline*      mitosisPipe       = m_resourceManager->GetPipeline( mitosisPipeHandle );
+
+                    // 3. Create Binding Groups (Update Phenotype)
+                    BindingGroup* bgPheno0 = m_resourceManager->GetBindingGroup( m_resourceManager->CreateBindingGroup( phenoPipeHandle, 0 ) );
+                    bgPheno0->Bind( 0, m_resourceManager->GetBuffer( outState.agentBuffers[ 0 ] ) );
+                    bgPheno0->Bind( 1, m_resourceManager->GetBuffer( outState.pressureBuffer ) );
+                    // Fallback to satisfy Vulkan Validation Layers if Oxygen Grid is missing
+                    if( !outState.gridFields.empty() && outState.gridFields[ 0 ].textures[ 0 ].IsValid() )
+                        bgPheno0->Bind( 2, m_resourceManager->GetTexture( outState.gridFields[ 0 ].textures[ 0 ] ), VK_IMAGE_LAYOUT_GENERAL );
+                    bgPheno0->Bind( 3, m_resourceManager->GetBuffer( outState.phenotypeBuffer ) );
+                    bgPheno0->Bind( 4, m_resourceManager->GetBuffer( outState.agentCountBuffer ) );
+                    bgPheno0->Build();
+
+                    BindingGroup* bgPheno1 = m_resourceManager->GetBindingGroup( m_resourceManager->CreateBindingGroup( phenoPipeHandle, 0 ) );
+                    bgPheno1->Bind( 0, m_resourceManager->GetBuffer( outState.agentBuffers[ 1 ] ) );
+                    bgPheno1->Bind( 1, m_resourceManager->GetBuffer( outState.pressureBuffer ) );
+                    if( !outState.gridFields.empty() && outState.gridFields[ 0 ].textures[ 0 ].IsValid() )
+                        bgPheno1->Bind( 2, m_resourceManager->GetTexture( outState.gridFields[ 0 ].textures[ 0 ] ), VK_IMAGE_LAYOUT_GENERAL );
+                    bgPheno1->Bind( 3, m_resourceManager->GetBuffer( outState.phenotypeBuffer ) );
+                    bgPheno1->Bind( 4, m_resourceManager->GetBuffer( outState.agentCountBuffer ) );
+                    bgPheno1->Build();
+
+                    // Create Binding Groups (Mitosis)
+                    BindingGroup* bgMitosis0 = m_resourceManager->GetBindingGroup( m_resourceManager->CreateBindingGroup( mitosisPipeHandle, 0 ) );
+                    bgMitosis0->Bind( 0, m_resourceManager->GetBuffer( outState.agentBuffers[ 0 ] ) );
+                    bgMitosis0->Bind( 1, m_resourceManager->GetBuffer( outState.phenotypeBuffer ) );
+                    bgMitosis0->Bind( 2, m_resourceManager->GetBuffer( outState.agentCountBuffer ) );
+                    bgMitosis0->Build();
+
+                    BindingGroup* bgMitosis1 = m_resourceManager->GetBindingGroup( m_resourceManager->CreateBindingGroup( mitosisPipeHandle, 0 ) );
+                    bgMitosis1->Bind( 0, m_resourceManager->GetBuffer( outState.agentBuffers[ 1 ] ) );
+                    bgMitosis1->Bind( 1, m_resourceManager->GetBuffer( outState.phenotypeBuffer ) );
+                    bgMitosis1->Bind( 2, m_resourceManager->GetBuffer( outState.agentCountBuffer ) );
+                    bgMitosis1->Build();
+
+                    // 4. Configure Push Constants
+                    ComputePushConstants phenoPC = basePC;
+                    phenoPC.offset               = currentOffset;
+                    phenoPC.maxCapacity          = paddedCount;
+                    phenoPC.fParam0              = cellCycle.growthRatePerSec;
+                    phenoPC.fParam1              = cellCycle.targetO2;
+                    phenoPC.fParam2              = cellCycle.arrestPressure;
+                    phenoPC.fParam3              = cellCycle.necrosisO2;
+                    phenoPC.fParam4              = cellCycle.apoptosisProbPerSec;
+                    phenoPC.uParam1              = groupIndex;
+
+                    ComputePushConstants mitosisPC = basePC;
+                    mitosisPC.offset               = currentOffset;
+                    mitosisPC.maxCapacity          = paddedCount;
+                    mitosisPC.uParam1              = groupIndex;
+
+                    // 5. Append Tasks to Compute Graph
+                    glm::uvec3 maxDispatch( ( paddedCount + 255 ) / 256, 1, 1 );
+
+                    outState.computeGraph.AddTask( ComputeTask( phenoPipe, bgPheno0, bgPheno1, record.targetHz, phenoPC, maxDispatch ) );
+                    outState.computeGraph.AddTask( ComputeTask( mitosisPipe, bgMitosis0, bgMitosis1, record.targetHz, mitosisPC, maxDispatch ) );
+
+                    DT_INFO( "[SimulationBuilder] Compiled Biology (Cell Cycle) for '{}' at {}Hz", group.GetName(), record.targetHz );
+                }
             }
-            currentOffset += group.GetCount();
+            currentOffset += paddedCount;
+            groupIndex++;
         }
     }
 

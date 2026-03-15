@@ -39,6 +39,9 @@ namespace DigitalTwin
         BufferHandle agentBuffers[ 2 ];
         uint32_t     currentReadIndex = 0;
 
+        BufferHandle agentCountBuffer;
+        BufferHandle phenotypeBuffer;
+
         // Biomechanics
         BufferHandle hashBuffer;
         BufferHandle offsetBuffer;

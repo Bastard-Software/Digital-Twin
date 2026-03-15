@@ -11,6 +11,7 @@ namespace DigitalTwin
     class ResourceManager;
     class StreamingManager;
     class RenderTarget;
+    class BuildIndirectPass;
     class GeometryPass;
     class GridVisualizationPass;
     class Scene;
@@ -84,6 +85,7 @@ namespace DigitalTwin
         GridVisualizationSettings m_gridVisSettings;
 
         // Sub-systems / Passes
+        Scope<BuildIndirectPass>     m_buildIndirectPass;
         Scope<GeometryPass>          m_geometryPass;
         Scope<GridVisualizationPass> m_gridVisPass;
 

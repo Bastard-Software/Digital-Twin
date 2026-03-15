@@ -6,6 +6,7 @@
 #include <simulation/BiologyGenerator.h>
 #include <simulation/BiomechanicsGenerator.h>
 #include <simulation/MorphologyGenerator.h>
+#include <simulation/Phenotype.h>
 #include <simulation/SpatialDistribution.h>
 
 namespace Gaudi
@@ -36,55 +37,66 @@ namespace Gaudi
         // ==========================================================================================
         // 2. Environmental Fields (PDEs)
         // ==========================================================================================
-        // "In Vitro" approach: Infinite, uniform oxygen supply everywhere in the domain.
-        // This guarantees cells will not die of hypoxia for a very long time, allowing us
-        // to clearly observe multiple generations of cell division.
+
+        // A. OXYGEN: Starts concentrated in the center, consumed by cells.
         m_blueprint.AddGridField( "Oxygen" )
-            .SetInitializer( DigitalTwin::GridInitializer::Gaussian( glm::vec3( 0.0f, 0.0f, 0.0f ), 10.0f, 80.0f ) )
+            .SetInitializer( DigitalTwin::GridInitializer::Gaussian( glm::vec3( 0.0f, 0.0f, 0.0f ), 15.0f, 80.0f ) )
             .SetDiffusionCoefficient( 5.0f )
             .SetDecayRate( 0.0f ) // No natural decay, only consumed by cells
+            .SetComputeHz( 60.0f );
+
+        // B. VEGF (Vascular Endothelial Growth Factor): The SOS signal!
+        // Starts completely empty (0.0). Diffuses slowly and decays over time.
+        m_blueprint.AddGridField( "VEGF" )
+            .SetInitializer( DigitalTwin::GridInitializer::Constant( 0.0f ) )
+            .SetDiffusionCoefficient( 2.0f )
+            .SetDecayRate( 0.05f )
             .SetComputeHz( 60.0f );
 
         // ==========================================================================================
         // 3. Agent Groups (Patient Zero)
         // ==========================================================================================
-        // Start with a SINGLE cell exactly at the origin (0,0,0).
         std::vector<glm::vec4> patientZero = { glm::vec4( 0.0f, 0.0f, 0.0f, 1.0f ) };
 
         auto& tumorCells = m_blueprint.AddAgentGroup( "TumorCells" )
                                .SetCount( 1 )
                                .SetMorphology( DigitalTwin::MorphologyGenerator::CreateSphere( 1.5f ) )
                                .SetDistribution( patientZero )
-                               .SetColor( glm::vec4( 0.2f, 0.8f, 0.3f, 1.0f ) ); // Let's make them bright green this time!
+                               .SetColor( glm::vec4( 0.2f, 0.8f, 0.3f, 1.0f ) ); // Bright green
 
         // ==========================================================================================
         // 4. Behaviours (Physics & Biology)
         // ==========================================================================================
 
-        // A. Brown motion for nice movement
+        // A. Brownian motion for organic, fluid-like movement
         tumorCells.AddBehaviour( DigitalTwin::Behaviours::BrownianMotion{ 0.5f } ).SetHz( 60.0f );
 
-        // B. Field Interaction: Slow oxygen consumption so the colony can grow large
-        tumorCells.AddBehaviour( DigitalTwin::Behaviours::ConsumeField{ "Oxygen", 2.0f } ).SetHz( 60.0f );
+        // B. Oxygen Consumption: Moderately high to ensure the core starves as the tumor grows
+        tumorCells.AddBehaviour( DigitalTwin::Behaviours::ConsumeField{ "Oxygen", 8.0f } ).SetHz( 60.0f );
 
-        // B. Biomechanics (JKR Model): Softer cells with less adhesion
-        // This allows daughter cells to visually "pop" and separate nicely after mitosis
+        // C. VEGF Secretion: Conditioned on State Hypoxic.
+        // Cells will only emit this field when they are starving for oxygen!
+        tumorCells.AddBehaviour( DigitalTwin::Behaviours::SecreteField{ "VEGF", 10000.0f, static_cast<int>( DigitalTwin::PhenotypeState::Hypoxic ) } )
+            .SetHz( 60.0f );
+
+        // D. Biomechanics (JKR Model): Softer cells with less adhesion
         tumorCells
             .AddBehaviour( DigitalTwin::BiomechanicsGenerator::JKR()
-                               .SetYoungsModulus( 20.0f ) // Softer tissue
+                               .SetYoungsModulus( 20.0f )
                                .SetPoissonRatio( 0.4f )
-                               .SetAdhesionEnergy( 1.5f ) // Reduced stickiness (easier separation)
+                               .SetAdhesionEnergy( 1.5f )
                                .SetMaxInteractionRadius( 1.5f )
                                .Build() )
             .SetHz( 60.0f );
 
-        // C. Biology (Cell Cycle): Slow, observable proliferation
+        // E. Biology (Cell Cycle): Oxygen-driven proliferation & Hypoxia trigger
         tumorCells
             .AddBehaviour( DigitalTwin::BiologyGenerator::StandardCellCycle()
-                               .SetBaseDoublingTime( 5.0f/ 3600.0f ) // One division every 5 seconds!
+                               .SetBaseDoublingTime( 5.0f / 3600.0f ) // Rapid division for demonstration
                                .SetProliferationOxygenTarget( 50.0f )
-                               .SetArrestPressureThreshold( 15.0f ) // High threshold: let them pack tightly before sleeping
-                               .SetNecrosisOxygenThreshold( 5.0f )
+                               .SetArrestPressureThreshold( 15.0f )
+                               .SetHypoxiaOxygenThreshold( 20.0f ) // If O2 < 20.0, cell becomes Hypoxic (State 4)
+                               .SetNecrosisOxygenThreshold( 5.0f ) // If O2 < 5.0, cell dies
                                .SetApoptosisRate( 0.0f )
                                .Build() )
             .SetHz( 60.0f );

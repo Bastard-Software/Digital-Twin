@@ -18,7 +18,7 @@ layout(std140, binding = 0) buffer Agents { vec4 positions[]; } inOutAgents;
 
 // Binding 1: Biological state machine
 struct PhenotypeData {
-    uint  state;   // 0: Live, 1: Quiescent, 2: Apoptotic, 3: Necrotic
+    uint  state;   // 0: Live, 1: Quiescent, 2: Hypoxic, 3: Apoptotic, 4: Necrotic
     float biomass; // Grows from 0.5 to 1.0
     float timer;
     uint  padding;

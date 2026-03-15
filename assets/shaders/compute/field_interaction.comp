@@ -5,7 +5,7 @@ layout(push_constant) uniform PushConstants {
     float dt;
     float totalTime;
     float rate;
-    float fParam1;
+    float reqState;
     float fParam2;
     float fParam3;
     float fParam4;
@@ -30,13 +30,32 @@ layout(std430, binding = 1) buffer DeltaBuffer {
 // Binding 2: Count buffer
 layout(std430, binding = 2) readonly buffer CounterBuffer { uint counts[]; } counters;
 
+struct PhenotypeData {
+    uint  state;
+    float biomass;
+    float timer;
+    uint  padding;
+};
+// Binding 3: Phenotype buffer
+layout(std430, binding = 3) readonly buffer Phenotypes { PhenotypeData data[]; } inPhenotypes;
+
 void main() {
     uint idx = gl_GlobalInvocationID.x;
     if(idx >= pc.maxCapacity) return;
     if(idx >= counters.counts[pc.grpNdx]) return;
 
     uint globalIdx = pc.offset + idx;
+    // Ignore non allocated
+    // if (agents.positions[globalIdx].w == 0.0) return; // TODO: Fails due to ping pong .w=0 bugs
+
+    // Interaction condition test
+    if (pc.reqState >= 0.0) {
+        if (inPhenotypes.data[globalIdx].state != uint(pc.reqState)) return;
+    }
+
     vec3 pos = agents.positions[globalIdx].xyz;
+    // Ignore nans (happens after JKF)
+    if (isnan(pos.x) || isnan(pos.y) || isnan(pos.z)) return;
 
     vec3 boxMin = -pc.domainSize.xyz * 0.5;
     vec3 boxMax =  pc.domainSize.xyz * 0.5;
@@ -44,14 +63,18 @@ void main() {
     // Skip if agent is completely out of grid bounds
     if(any(lessThan(pos, boxMin)) || any(greaterThanEqual(pos, boxMax))) return;
 
-    // Map physical [-domain/2, domain/2] to normalized [0, 1]
-    vec3 uvw = (pos - boxMin) / pc.domainSize.xyz;
-    
-    // Map to voxel coordinates
-    ivec3 coord = ivec3(uvw * vec3(pc.gridSize.xyz));
-    coord = clamp(coord, ivec3(0), ivec3(pc.gridSize.xyz) - ivec3(1));
+    uint flatIdx = 0;
+    if (pc.gridSize.x > 0) 
+    {
+        // Map physical [-domain/2, domain/2] to normalized [0, 1]
+        vec3 uvw = (pos - boxMin) / pc.domainSize.xyz;
+        
+        // Map to voxel coordinates
+        ivec3 coord = ivec3(uvw * vec3(pc.gridSize.xyz));
+        coord = clamp(coord, ivec3(0), ivec3(pc.gridSize.xyz) - ivec3(1));
 
-    uint flatIdx = coord.x + coord.y * pc.gridSize.x + coord.z * pc.gridSize.x * pc.gridSize.y;
+        flatIdx = coord.x + coord.y * pc.gridSize.x + coord.z * pc.gridSize.x * pc.gridSize.y;
+    }
 
     // Scale float delta to integer to allow atomic additions across multiple agents
     int intDelta = int(pc.rate * pc.dt * 100000.0);

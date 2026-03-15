@@ -4,6 +4,7 @@
 #include "simulation/SimulationBlueprint.h"
 #include "simulation/SimulationBuilder.h"
 #include "simulation/SpatialDistribution.h"
+#include "simulation/Phenotype.h"
 #include <gtest/gtest.h>
 
 // Core and Engine dependencies needed for the Builder
@@ -708,6 +709,62 @@ TEST_F( SimulationBuilderTest, Behaviour_CellCycle_Integration )
     EXPECT_NEAR( resultPhenotypes[ 1 ].biomass, 0.5f, 0.001f ) << "Daughter cell was not initialized with 0.5 biomass!";
     EXPECT_EQ( resultPhenotypes[ 1 ].state, 0 ) << "Daughter cell is not in 'Live' state!";
     EXPECT_FLOAT_EQ( resultPositions[ 1 ].w, 1.0f ) << "Daughter cell did not receive w=1.0 (Alive flag)!";
+
+    state.Destroy( m_resourceManager.get() );
+}
+
+// 9. Integration Test: Hypoxic Cell Secretes VEGF
+TEST_F( SimulationBuilderTest, Behaviour_Hypoxia_Secretion_Integration )
+{
+    if( !m_device )
+        GTEST_SKIP();
+
+    SimulationBlueprint blueprint;
+    blueprint.SetDomainSize( glm::vec3( 10.0f ), 1.0f );
+
+    // Setup Oxygen to be extremely low (10.0 mmHg)
+    blueprint.AddGridField( "Oxygen" ).SetInitializer( DigitalTwin::GridInitializer::Constant( 10.0f ) ).SetComputeHz( 60.0f );
+
+    // Setup VEGF (Empty initially)
+    blueprint.AddGridField( "VEGF" ).SetInitializer( DigitalTwin::GridInitializer::Constant( 0.0f ) ).SetComputeHz( 60.0f );
+
+    std::vector<glm::vec4> oneCell = { glm::vec4( 0.0f, 0.0f, 0.0f, 1.0f ) };
+
+    auto& agentGrp = blueprint.AddAgentGroup( "TestCell" ).SetCount( 1 ).SetDistribution( oneCell );
+    agentGrp
+        .AddBehaviour( DigitalTwin::BiologyGenerator::StandardCellCycle()
+                           .SetHypoxiaOxygenThreshold( 15.0f ) // Triggers hypoxia because O2 (10) < Threshold (15)
+                           .Build() )
+        .SetHz( 60.0f );
+    agentGrp
+        .AddBehaviour(
+            DigitalTwin::Behaviours::SecreteField{ "VEGF", 10.0f, static_cast<int>( DigitalTwin::PhenotypeState::Hypoxic ) } )
+        .SetHz( 60.0f );
+
+    DigitalTwin::SimulationBuilder builder( m_resourceManager.get(), m_streamingManager.get() );
+    SimulationState                state = builder.Build( blueprint );
+
+    auto compCtxHandle = m_device->CreateThreadContext( QueueType::COMPUTE );
+    auto compCtx       = m_device->GetThreadContext( compCtxHandle );
+    auto compCmd       = compCtx->GetCommandBuffer( compCtx->CreateCommandBuffer() );
+
+    DigitalTwin::GraphDispatcher dispatcher;
+
+    compCmd->Begin();
+    // Ping pass
+    dispatcher.Dispatch( &state.computeGraph, compCmd, nullptr, 1.0f, 1.0f, 0 );
+    // Pong pass
+    dispatcher.Dispatch( &state.computeGraph, compCmd, nullptr, 1.0f, 2.0f, 1 );
+    compCmd->End();
+
+    m_device->GetComputeQueue()->Submit( { compCmd } );
+    m_device->GetComputeQueue()->WaitIdle();
+
+    std::vector<float> vegfData  = ReadbackGrid( state, 1, m_streamingManager.get() ); // 1 is VEGF index
+    uint32_t           centerIdx = 5 + 5 * 10 + 5 * 100;
+
+    // Verify cell survived, went hypoxic, and secreted VEGF
+    EXPECT_NEAR( vegfData[ centerIdx ], 0.16666f, 0.001f ) << "Hypoxic cell failed to secrete correct physical amount of VEGF!";
 
     state.Destroy( m_resourceManager.get() );
 }

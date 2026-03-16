@@ -70,10 +70,20 @@ void main() {
                     
                     uint neighborAgentIdx = sortedHashes.data[i].agentIndex;
                     if(originalAgentIdx == neighborAgentIdx) continue; // Skip self
+
+                    vec4 neighborData = inAgents.positions[neighborAgentIdx];
+                    if(neighborData.w == 0.0) continue;
                     
                     vec3 otherPos = inAgents.positions[neighborAgentIdx].xyz;
                     vec3 diff = myPos - otherPos;
                     float dist = length(diff);
+                    
+                    // Discarding NaN's
+                    if(dist <= 0.00001) {
+                        dist = 0.00001;
+                        diff = vec3(0.00001, 0.0, 0.0);
+                    }
+
                     float interactDist = maxRadius * 2.0;
                     
                     if(dist > 0.0 && dist < interactDist) {

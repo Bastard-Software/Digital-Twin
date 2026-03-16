@@ -7,6 +7,7 @@
 #include "rhi/Pipeline.h"
 #include "rhi/Queue.h"
 #include "rhi/RHI.h"
+#include "rhi/Texture.h"
 #include "rhi/ThreadContext.h"
 #include "simulation/SimulationBlueprint.h"
 #include "simulation/SimulationBuilder.h"
@@ -208,6 +209,7 @@ TEST_F( ComputeTest, Shader_FieldInteraction_AtomicAdd )
     bg->Bind( 0, m_rm->GetBuffer( agentBuffer ) );
     bg->Bind( 1, m_rm->GetBuffer( deltaBuffer ) );
     bg->Bind( 2, m_rm->GetBuffer( countBuf ) );
+    bg->Bind( 3, m_rm->GetBuffer( agentBuffer ) ); // Temp for silencing validation
     bg->Build();
 
     // 4. Setup Push Constants
@@ -909,7 +911,7 @@ TEST_F( ComputeTest, Shader_Biology_UpdatePhenotype )
     std::vector<PhenotypeData> pass2Result( agentCount );
     m_stream->ReadbackBufferImmediate( phenotypeBuf, pass2Result.data(), phenotypesSize );
 
-    EXPECT_EQ( pass2Result[ 1 ].state, 3 ) << "Agent 1 should be Necrotic (3) due to Hypoxia!";
+    EXPECT_EQ( pass2Result[ 1 ].state, 4 ) << "Agent 1 should be Necrotic (4) due to Hypoxia!";
 
     // 6. Cleanup
     m_rm->DestroyBuffer( agentsBuf );
@@ -1006,4 +1008,144 @@ TEST_F( ComputeTest, Shader_Biology_MitosisAppend )
     m_rm->DestroyBuffer( agentsBuf );
     m_rm->DestroyBuffer( phenotypeBuf );
     m_rm->DestroyBuffer( countBuf );
+}
+
+// 9. Verify separation of concerns: Phenotype update triggers conditional Field Secretion
+TEST_F( ComputeTest, Shader_Biology_ConditionalSecretion )
+{
+    if( !m_device )
+        GTEST_SKIP();
+
+    uint32_t maxCapacity = 1;
+    size_t   agentsSize  = maxCapacity * sizeof( glm::vec4 );
+    size_t   phenoSize   = maxCapacity * 4 * sizeof( uint32_t );
+    size_t   countSize   = sizeof( uint32_t );
+    size_t   deltaSize   = sizeof( int ); // Simulating 1 voxel
+
+    std::vector<glm::vec4> agents( maxCapacity, glm::vec4( 0.0f, 0.0f, 0.0f, 1.0f ) );
+    std::vector<uint32_t>  phenoInit( maxCapacity * 4, 0 ); // state 0 (Live)
+    phenoInit[ 0 ]              = 0;                        // State
+    uint32_t         agentCount = 1;
+    std::vector<int> deltas( 1, 0 );
+
+    // We mock pressure to 0.0
+    std::vector<float> pressures( maxCapacity, 0.0f );
+
+    BufferHandle  agentsBuf    = m_rm->CreateBuffer( { agentsSize, BufferType::STORAGE, "TestAgents" } );
+    BufferHandle  phenoBuf     = m_rm->CreateBuffer( { phenoSize, BufferType::STORAGE, "TestPheno" } );
+    BufferHandle  countBuf     = m_rm->CreateBuffer( { countSize, BufferType::STORAGE, "TestCount" } );
+    BufferHandle  deltaBuf     = m_rm->CreateBuffer( { deltaSize, BufferType::STORAGE, "TestDelta" } );
+    BufferHandle  pressuresBuf = m_rm->CreateBuffer( { pressures.size() * sizeof( float ), BufferType::STORAGE, "TestPressures" } );
+    TextureHandle dummyTex     = m_rm->CreateTexture( { 1, 1, 1, TextureType::Texture3D, VK_FORMAT_R32_SFLOAT, TextureUsage::STORAGE, "Dummy" } );
+
+    m_stream->UploadBufferImmediate( { { agentsBuf, agents.data(), agentsSize, 0 },
+                                       { phenoBuf, phenoInit.data(), phenoSize, 0 },
+                                       { countBuf, &agentCount, countSize, 0 },
+                                       { deltaBuf, deltas.data(), deltaSize, 0 },
+                                       { pressuresBuf, pressures.data(), pressures.size() * sizeof( float ), 0 } } );
+
+    // Pipeline 1: Update Phenotype
+    ComputePipelineHandle pipePhenoHandle =
+        m_rm->CreatePipeline( { m_rm->CreateShader( "shaders/compute/biology/update_phenotype.comp" ), "Pheno" } );
+    ComputePipeline* pipePheno = m_rm->GetPipeline( pipePhenoHandle );
+    BindingGroup*    bgPheno   = m_rm->GetBindingGroup( m_rm->CreateBindingGroup( pipePhenoHandle, 0 ) );
+    bgPheno->Bind( 0, m_rm->GetBuffer( agentsBuf ) );
+    bgPheno->Bind( 1, m_rm->GetBuffer( pressuresBuf ) );
+    bgPheno->Bind( 2, m_rm->GetTexture( dummyTex ), VK_IMAGE_LAYOUT_GENERAL );
+    bgPheno->Bind( 3, m_rm->GetBuffer( phenoBuf ) );
+    bgPheno->Bind( 4, m_rm->GetBuffer( countBuf ) );
+    bgPheno->Build();
+
+    // Pipeline 2: Field Interaction (Secretion)
+    ComputePipelineHandle pipeInteractHandle = m_rm->CreatePipeline( { m_rm->CreateShader( "shaders/compute/field_interaction.comp" ), "Interact" } );
+    ComputePipeline*      pipeInteract       = m_rm->GetPipeline( pipeInteractHandle );
+    BindingGroup*         bgInteract         = m_rm->GetBindingGroup( m_rm->CreateBindingGroup( pipeInteractHandle, 0 ) );
+    bgInteract->Bind( 0, m_rm->GetBuffer( agentsBuf ) );
+    bgInteract->Bind( 1, m_rm->GetBuffer( deltaBuf ) );
+    bgInteract->Bind( 2, m_rm->GetBuffer( countBuf ) );
+    bgInteract->Bind( 3, m_rm->GetBuffer( phenoBuf ) );
+    bgInteract->Build();
+
+    auto compCtxHandle = m_device->CreateThreadContext( QueueType::COMPUTE );
+    auto compCtx       = m_device->GetThreadContext( compCtxHandle );
+    auto compCmd       = compCtx->GetCommandBuffer( compCtx->CreateCommandBuffer() );
+
+    // Step 1: Execute Phenotype Update to force Hypoxia (Local O2 is mocked via fallback)
+    ComputePushConstants pcPheno{};
+    pcPheno.maxCapacity = 1;
+    pcPheno.fParam1     = 10.0f;           // Target/Local O2
+    pcPheno.fParam2     = 20.0f;           // ArrestPressure
+    pcPheno.fParam3     = 5.0f;            // Necrosis threshold
+    pcPheno.fParam4     = 15.0f;           // Hypoxia threshold (O2 10.0 < 15.0 -> State should become 4)
+    pcPheno.fParam5     = 0.0f;            // ApoptosisProb
+    pcPheno.gridSize    = glm::uvec4( 0 ); // Bypass texture
+
+    // Step 2: Execute Secretion requiring State 4
+    ComputePushConstants pcInteract{};
+    pcInteract.dt          = 1.0f;
+    pcInteract.maxCapacity = 1;
+    pcInteract.fParam0     = 5.0f;            // Secrete 5.0 units/sec
+    pcInteract.fParam1     = 2.0f;            // ONLY if State == 2 (Hypoxic)
+    pcInteract.gridSize    = glm::uvec4( 0 ); // Force flatIdx = 0
+    pcInteract.domainSize  = glm::vec4( 10.0f, 10.0f, 10.0f, 0.0f );
+
+    compCmd->Begin();
+
+    VkImageMemoryBarrier2 imgBarrier = { VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2 };
+    imgBarrier.srcStageMask          = VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT;
+    imgBarrier.srcAccessMask         = 0;
+    imgBarrier.dstStageMask          = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT;
+    imgBarrier.dstAccessMask         = VK_ACCESS_2_SHADER_READ_BIT;
+    imgBarrier.oldLayout             = VK_IMAGE_LAYOUT_UNDEFINED;
+    imgBarrier.newLayout             = VK_IMAGE_LAYOUT_GENERAL;
+    imgBarrier.image                 = m_rm->GetTexture( dummyTex )->GetHandle();
+    imgBarrier.subresourceRange      = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1 };
+
+    VkDependencyInfo imgDepInfo        = { VK_STRUCTURE_TYPE_DEPENDENCY_INFO };
+    imgDepInfo.imageMemoryBarrierCount = 1;
+    imgDepInfo.pImageMemoryBarriers    = &imgBarrier;
+    compCmd->PipelineBarrier( &imgDepInfo );
+
+    compCmd->SetPipeline( pipePheno );
+    compCmd->SetBindingGroup( bgPheno, pipePheno->GetLayout(), VK_PIPELINE_BIND_POINT_COMPUTE );
+    compCmd->PushConstants( pipePheno->GetLayout(), VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof( pcPheno ), &pcPheno );
+    compCmd->Dispatch( 1, 1, 1 );
+
+    // Barrier
+    VkBufferMemoryBarrier2 barrier = { VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER_2 };
+    barrier.srcStageMask           = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT;
+    barrier.srcAccessMask          = VK_ACCESS_2_SHADER_WRITE_BIT;
+    barrier.dstStageMask           = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT;
+    barrier.dstAccessMask          = VK_ACCESS_2_SHADER_READ_BIT;
+    barrier.buffer                 = m_rm->GetBuffer( phenoBuf )->GetHandle();
+    barrier.offset                 = 0;
+    barrier.size                   = VK_WHOLE_SIZE;
+
+    VkDependencyInfo depInfo         = { VK_STRUCTURE_TYPE_DEPENDENCY_INFO };
+    depInfo.bufferMemoryBarrierCount = 1;
+    depInfo.pBufferMemoryBarriers    = &barrier;
+    compCmd->PipelineBarrier( &depInfo );
+
+    compCmd->SetPipeline( pipeInteract );
+    compCmd->SetBindingGroup( bgInteract, pipeInteract->GetLayout(), VK_PIPELINE_BIND_POINT_COMPUTE );
+    compCmd->PushConstants( pipeInteract->GetLayout(), VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof( pcInteract ), &pcInteract );
+    compCmd->Dispatch( 1, 1, 1 );
+    compCmd->End();
+
+    m_device->GetComputeQueue()->Submit( { compCmd } );
+    m_device->GetComputeQueue()->WaitIdle();
+
+    std::vector<uint32_t> resPheno( 4 );
+    std::vector<int>      resDelta( 1 );
+    m_stream->ReadbackBufferImmediate( phenoBuf, resPheno.data(), phenoSize );
+    m_stream->ReadbackBufferImmediate( deltaBuf, resDelta.data(), deltaSize );
+
+    EXPECT_EQ( resPheno[ 0 ], 2 ) << "Cell failed to transition to Hypoxic state (2)!";
+    EXPECT_EQ( resDelta[ 0 ], 500000 ) << "Conditional secretion failed! (Expected 5.0f * 100000)";
+
+    m_rm->DestroyBuffer( agentsBuf );
+    m_rm->DestroyBuffer( phenoBuf );
+    m_rm->DestroyBuffer( countBuf );
+    m_rm->DestroyBuffer( deltaBuf );
+    m_rm->DestroyBuffer( pressuresBuf );
 }

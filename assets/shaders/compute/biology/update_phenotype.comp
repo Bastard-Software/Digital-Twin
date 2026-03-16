@@ -8,8 +8,8 @@ layout(push_constant) uniform PushConstants {
     float targetO2;
     float arrestPressure;
     float necrosisO2;
+    float hypoxiaO2;
     float apoptosisProb;
-    float fParam6;
     uint  offset;
     uint  maxCapacity;
     uint  uParam0;
@@ -22,7 +22,7 @@ layout(std140, binding = 0) readonly buffer Agents { vec4 positions[]; } inAgent
 layout(std430, binding = 1) readonly buffer Pressures { float pressures[]; } inPressures;
 layout(set = 0, binding = 2, r32f) uniform readonly image3D u_OxygenGrid;
 
-// 0: Live, 1: Quiescent, 2: Apoptotic, 3: Necrotic, 4: Dead_PendingRemoval
+// 0: Live, 1: Quiescent, 2: Hypoxic, 3: Apoptotic, 4: Necrotic  5: Dead_PendingRemoval
 struct PhenotypeData {
     uint  state;   
     float biomass;
@@ -47,8 +47,8 @@ void main()
     float currentMass  = outPhenotypes.data[globalIdx].biomass;
     float pressure     = inPressures.pressures[globalIdx];
     
-    // If cell is already dying or dead (Apoptotic, Necrotic, PendingRemoval), stop processing lifecycle
-    if(currentState >= 2) return;
+    // If cell is already dying or dead, stop processing lifecycle
+    if(currentState > 2 ) return;
 
     // --- 1. Fetch Oxygen ---
     float localO2 = pc.targetO2; // Fallback value
@@ -61,15 +61,21 @@ void main()
     }
 
     // --- 2. Evaluate State Machine ---
-    
-    // Starvation / Hypoxia Check
+
+    // Necrosis
     if(localO2 < pc.necrosisO2) 
     {
-        outPhenotypes.data[globalIdx].state = 3; // Necrotic
+        outPhenotypes.data[globalIdx].state = 4; // Necrotic
         return;
     }
 
-    // Contact Inhibition (Quiescence) Check
+    // Starvation / Hypoxia Check
+    if(localO2 < pc.hypoxiaO2) {
+        outPhenotypes.data[globalIdx].state = 2; // Hypoxic
+        return;
+    }
+
+    // Contact Inhibition
     if(pressure >= pc.arrestPressure) 
     {
         outPhenotypes.data[globalIdx].state = 1; // Quiescent

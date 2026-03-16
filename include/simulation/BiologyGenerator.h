@@ -33,6 +33,11 @@ namespace DigitalTwin
                 m_necrosisO2 = o2_mmHg;
                 return *this;
             }
+            StandardCellCycleBuilder& SetHypoxiaOxygenThreshold( float o2_mmHg )
+            {
+                m_hypoxiaO2 = o2_mmHg;
+                return *this;
+            }
             StandardCellCycleBuilder& SetApoptosisRate( float rate_per_day )
             {
                 m_apoptosisRate = rate_per_day;
@@ -56,6 +61,7 @@ namespace DigitalTwin
                 cycle.targetO2       = m_prolifO2;
                 cycle.arrestPressure = m_arrestPressure;
                 cycle.necrosisO2     = m_necrosisO2;
+                cycle.hypoxiaO2      = m_hypoxiaO2;
 
                 return cycle;
             }
@@ -65,6 +71,7 @@ namespace DigitalTwin
             float m_prolifO2          = 38.0f; // mmHg
             float m_arrestPressure    = 2.5f;  // MPa
             float m_necrosisO2        = 5.0f;  // mmHg
+            float m_hypoxiaO2         = 15.0f; // mmHg
             float m_apoptosisRate     = 0.05f; // 5% chance per day
         };
 

@@ -573,71 +573,6 @@ namespace DigitalTwin
                     outState.computeGraph.AddTask( ComputeTask( pipe, bg0, bg1, record.targetHz, pc, agentDispatch ) );
                     DT_INFO( "SimulationBuilder: Compiled BrownianMotion for group '{}' at {}Hz", group.GetName(), record.targetHz );
                 }
-                if( std::holds_alternative<Behaviours::ConsumeField>( record.behaviour ) ||
-                    std::holds_alternative<Behaviours::SecreteField>( record.behaviour ) )
-                {
-                    bool        isConsume  = std::holds_alternative<Behaviours::ConsumeField>( record.behaviour );
-                    std::string targetName = isConsume ? std::get<Behaviours::ConsumeField>( record.behaviour ).fieldName
-                                                       : std::get<Behaviours::SecreteField>( record.behaviour ).fieldName;
-
-                    // Consume translates to negative rate, secrete to positive
-                    float rate = isConsume ? -std::get<Behaviours::ConsumeField>( record.behaviour ).rate
-                                           : std::get<Behaviours::SecreteField>( record.behaviour ).rate;
-
-                    // Find target grid
-                    GridFieldState* targetGrid = nullptr;
-                    for( auto& grid: outState.gridFields )
-                    {
-                        if( grid.name == targetName )
-                        {
-                            targetGrid = &grid;
-                            break;
-                        }
-                    }
-
-                    if( targetGrid )
-                    {
-                        ShaderHandle        shaderHandle = m_resourceManager->CreateShader( "shaders/compute/field_interaction.comp" );
-                        ComputePipelineDesc compDesc{};
-                        compDesc.shader                  = shaderHandle;
-                        ComputePipelineHandle pipeHandle = m_resourceManager->CreatePipeline( compDesc );
-                        ComputePipeline*      pipe       = m_resourceManager->GetPipeline( pipeHandle );
-
-                        // Read agents[0], write to DeltaBuffer
-                        BindingGroupHandle bgHandle0 = m_resourceManager->CreateBindingGroup( pipeHandle, 0 );
-                        BindingGroup*      bg0       = m_resourceManager->GetBindingGroup( bgHandle0 );
-                        bg0->Bind( 0, m_resourceManager->GetBuffer( outState.agentBuffers[ 0 ] ) );
-                        bg0->Bind( 1, m_resourceManager->GetBuffer( targetGrid->interactionDeltaBuffer ) );
-                        bg0->Bind( 2, m_resourceManager->GetBuffer( outState.agentCountBuffer ) );
-                        bg0->Build();
-
-                        // Read agents[1], write to DeltaBuffer
-                        BindingGroupHandle bgHandle1 = m_resourceManager->CreateBindingGroup( pipeHandle, 0 );
-                        BindingGroup*      bg1       = m_resourceManager->GetBindingGroup( bgHandle1 );
-                        bg1->Bind( 0, m_resourceManager->GetBuffer( outState.agentBuffers[ 1 ] ) );
-                        bg1->Bind( 1, m_resourceManager->GetBuffer( targetGrid->interactionDeltaBuffer ) );
-                        bg1->Bind( 2, m_resourceManager->GetBuffer( outState.agentCountBuffer ) );
-                        bg1->Build();
-
-                        ComputePushConstants pc{};
-                        pc.fParam0     = rate;
-                        pc.offset      = currentOffset;
-                        pc.maxCapacity = paddedCount;
-                        pc.uParam1     = groupIndex;
-                        pc.domainSize  = glm::vec4( blueprint.GetDomainSize(), 0.0f );
-                        pc.gridSize    = glm::uvec4( targetGrid->width, targetGrid->height, targetGrid->depth, 0 );
-
-                        glm::uvec3 agentDispatch( ( paddedCount + 255 ) / 256, 1, 1 );
-                        outState.computeGraph.AddTask( ComputeTask( pipe, bg0, bg1, record.targetHz, pc, agentDispatch ) );
-
-                        DT_INFO( "SimulationBuilder: Compiled {} for '{}' at {}Hz", isConsume ? "Consumption" : "Secretion", targetName,
-                                 record.targetHz );
-                    }
-                    else
-                    {
-                        DT_WARN( "SimulationBuilder: Target grid '{}' not found for agent interaction!", targetName );
-                    }
-                }
                 if( std::holds_alternative<Behaviours::Biomechanics>( record.behaviour ) )
                 {
                     auto& biomechanics = std::get<Behaviours::Biomechanics>( record.behaviour );
@@ -797,7 +732,8 @@ namespace DigitalTwin
                     phenoPC.fParam1              = cellCycle.targetO2;
                     phenoPC.fParam2              = cellCycle.arrestPressure;
                     phenoPC.fParam3              = cellCycle.necrosisO2;
-                    phenoPC.fParam4              = cellCycle.apoptosisProbPerSec;
+                    phenoPC.fParam4              = cellCycle.hypoxiaO2;
+                    phenoPC.fParam5              = cellCycle.apoptosisProbPerSec;
                     phenoPC.uParam1              = groupIndex;
 
                     ComputePushConstants mitosisPC = basePC;
@@ -812,6 +748,110 @@ namespace DigitalTwin
                     outState.computeGraph.AddTask( ComputeTask( mitosisPipe, bgMitosis0, bgMitosis1, record.targetHz, mitosisPC, maxDispatch ) );
 
                     DT_INFO( "[SimulationBuilder] Compiled Biology (Cell Cycle) for '{}' at {}Hz", group.GetName(), record.targetHz );
+                }
+                if( std::holds_alternative<Behaviours::ConsumeField>( record.behaviour ) ||
+                    std::holds_alternative<Behaviours::SecreteField>( record.behaviour ) )
+                {
+                    bool        isConsume  = std::holds_alternative<Behaviours::ConsumeField>( record.behaviour );
+                    std::string targetName = isConsume ? std::get<Behaviours::ConsumeField>( record.behaviour ).fieldName
+                                                       : std::get<Behaviours::SecreteField>( record.behaviour ).fieldName;
+
+                    // Consume translates to negative rate, secrete to positive
+                    float rate = isConsume ? -std::get<Behaviours::ConsumeField>( record.behaviour ).rate
+                                           : std::get<Behaviours::SecreteField>( record.behaviour ).rate;
+
+                    // Require state
+                    int requiredState = isConsume ? std::get<Behaviours::ConsumeField>( record.behaviour ).requiredState
+                                                  : std::get<Behaviours::SecreteField>( record.behaviour ).requiredState;
+
+                    // Find target grid
+                    GridFieldState* targetGrid = nullptr;
+                    for( auto& grid: outState.gridFields )
+                    {
+                        if( grid.name == targetName )
+                        {
+                            targetGrid = &grid;
+                            break;
+                        }
+                    }
+
+                    if( targetGrid )
+                    {
+                        if( requiredState != -1 && !outState.phenotypeBuffer.IsValid() )
+                        {
+                            uint32_t globalCapacity = 0;
+                            for( const auto& g: blueprint.GetGroups() )
+                            {
+                                uint32_t tc = g.GetCount() * 2;
+                                if( tc < 64 )
+                                    tc = 64;
+                                uint32_t pc = 1;
+                                while( pc < tc )
+                                    pc <<= 1;
+                                globalCapacity += pc;
+                            }
+                            size_t phenotypeSize     = globalCapacity * 4 * sizeof( uint32_t );
+                            outState.phenotypeBuffer = m_resourceManager->CreateBuffer( { phenotypeSize, BufferType::STORAGE, "PhenotypeBuffer" } );
+                            struct PhenotypeData
+                            {
+                                uint32_t state;
+                                float    biomass;
+                                float    timer;
+                                uint32_t padding;
+                            };
+                            std::vector<PhenotypeData> initialPhenotypes( globalCapacity, { 0, 0.5f, 0.0f, 0 } );
+                            m_streamingManager->UploadBufferImmediate( { { outState.phenotypeBuffer, initialPhenotypes.data(), phenotypeSize, 0 } } );
+                        }
+
+                        ShaderHandle        shaderHandle = m_resourceManager->CreateShader( "shaders/compute/field_interaction.comp" );
+                        ComputePipelineDesc compDesc{};
+                        compDesc.shader                  = shaderHandle;
+                        ComputePipelineHandle pipeHandle = m_resourceManager->CreatePipeline( compDesc );
+                        ComputePipeline*      pipe       = m_resourceManager->GetPipeline( pipeHandle );
+
+                        // Read agents[0], write to DeltaBuffer
+                        BindingGroupHandle bgHandle0 = m_resourceManager->CreateBindingGroup( pipeHandle, 0 );
+                        BindingGroup*      bg0       = m_resourceManager->GetBindingGroup( bgHandle0 );
+                        bg0->Bind( 0, m_resourceManager->GetBuffer( outState.agentBuffers[ 0 ] ) );
+                        bg0->Bind( 1, m_resourceManager->GetBuffer( targetGrid->interactionDeltaBuffer ) );
+                        bg0->Bind( 2, m_resourceManager->GetBuffer( outState.agentCountBuffer ) );
+                        if( outState.phenotypeBuffer.IsValid() )
+                            bg0->Bind( 3, m_resourceManager->GetBuffer( outState.phenotypeBuffer ) );
+                        else
+                            bg0->Bind( 3, m_resourceManager->GetBuffer( outState.agentBuffers[ 0 ] ) );
+                        bg0->Build();
+
+                        // Read agents[1], write to DeltaBuffer
+                        BindingGroupHandle bgHandle1 = m_resourceManager->CreateBindingGroup( pipeHandle, 0 );
+                        BindingGroup*      bg1       = m_resourceManager->GetBindingGroup( bgHandle1 );
+                        bg1->Bind( 0, m_resourceManager->GetBuffer( outState.agentBuffers[ 1 ] ) );
+                        bg1->Bind( 1, m_resourceManager->GetBuffer( targetGrid->interactionDeltaBuffer ) );
+                        bg1->Bind( 2, m_resourceManager->GetBuffer( outState.agentCountBuffer ) );
+                        if( outState.phenotypeBuffer.IsValid() )
+                            bg1->Bind( 3, m_resourceManager->GetBuffer( outState.phenotypeBuffer ) );
+                        else
+                            bg1->Bind( 3, m_resourceManager->GetBuffer( outState.agentBuffers[ 1 ] ) );
+                        bg1->Build();
+
+                        ComputePushConstants pc{};
+                        pc.fParam0     = rate;
+                        pc.fParam1     = static_cast<float>( requiredState );
+                        pc.offset      = currentOffset;
+                        pc.maxCapacity = paddedCount;
+                        pc.uParam1     = groupIndex;
+                        pc.domainSize  = glm::vec4( blueprint.GetDomainSize(), 0.0f );
+                        pc.gridSize    = glm::uvec4( targetGrid->width, targetGrid->height, targetGrid->depth, 0 );
+
+                        glm::uvec3 agentDispatch( ( paddedCount + 255 ) / 256, 1, 1 );
+                        outState.computeGraph.AddTask( ComputeTask( pipe, bg0, bg1, record.targetHz, pc, agentDispatch ) );
+
+                        DT_INFO( "SimulationBuilder: Compiled {} for '{}' at {}Hz", isConsume ? "Consumption" : "Secretion", targetName,
+                                 record.targetHz );
+                    }
+                    else
+                    {
+                        DT_WARN( "SimulationBuilder: Target grid '{}' not found for agent interaction!", targetName );
+                    }
                 }
             }
             currentOffset += paddedCount;

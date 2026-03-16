@@ -16,13 +16,15 @@ namespace DigitalTwin::Behaviours
     struct ConsumeField
     {
         std::string fieldName;
-        float       rate = 1.0f;
+        float       rate          = 1.0f;
+        int         requiredState = -1; // -1 no requirements
     };
 
     struct SecreteField
     {
         std::string fieldName;
-        float       rate = 1.0f;
+        float       rate          = 1.0f;
+        int         requiredState = -1; // -1 no requirements
     };
 
     /**
@@ -46,6 +48,7 @@ namespace DigitalTwin::Behaviours
         float targetO2;            // Required O2 for optimal proliferation
         float arrestPressure;      // Threshold for Contact Inhibition (Quiescence)
         float necrosisO2;          // Threshold for starvation death
+        float hypoxiaO2;           // Threshold for starvation
         float apoptosisProbPerSec; // Base probability of death per second
     };
 

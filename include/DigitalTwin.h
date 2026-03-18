@@ -31,6 +31,12 @@ namespace DigitalTwin
         void Pause();
         void Stop();
 
+        /**
+         * @brief Updates behaviour parameters on a live simulation without rebuilding GPU buffers.
+         * No-op when in RESET state.
+         */
+        void HotReload( const SimulationBlueprint& blueprint );
+
         EngineState GetState() const;
 
         bool IsWindowClosed();

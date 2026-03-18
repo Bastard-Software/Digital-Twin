@@ -2,6 +2,7 @@
 #include "rhi/RHITypes.h"
 
 #include <glm/glm.hpp>
+#include <string>
 
 namespace DigitalTwin
 {
@@ -50,12 +51,23 @@ namespace DigitalTwin
          */
         void Record( CommandBuffer* cmd, float totalTime, uint32_t activeIndex );
 
+        void               SetTag( const std::string& tag ) { m_tag = tag; }
+        const std::string& GetTag() const { return m_tag; }
+
+        const ComputePushConstants& GetPushConstants() const { return m_pc; }
+
+        /**
+         * @brief Replaces the stored push constants (behaviour params). dt/totalTime are still overwritten per-frame.
+         */
+        void UpdatePushConstants( const ComputePushConstants& pc ) { m_pc = pc; }
+
     private:
         ComputePipeline* m_pipeline;
         BindingGroup*    m_bindings[ 2 ]; // Array holding Ping and Pong binding groups
         float            m_targetHz;
         float            m_timeAccumulator = 0.0f;
 
+        std::string          m_tag;
         ComputePushConstants m_pc;
         glm::uvec3           m_dispatchSize;
     };

@@ -412,6 +412,7 @@ namespace DigitalTwin
             DT_ERROR( "SimulationBuilder: CRITICAL! Failed to load 'diffusion.comp'. PDE solver will not work!" );
         }
 
+        uint32_t fieldIndex = 0;
         for( const auto& fieldDef: fields )
         {
             GridFieldState fieldState;
@@ -493,9 +494,12 @@ namespace DigitalTwin
             pc.fParam0 = fieldDef.GetDiffusionCoefficient();
             pc.fParam1 = fieldDef.GetDecayRate();
 
-            glm::uvec3 dispatchSize( ( gridWidth + 7 ) / 8, ( gridHeight + 7 ) / 8, ( gridDepth + 7 ) / 8 );
-            outState.computeGraph.AddTask( ComputeTask( pipe, bg0, bg1, fieldDef.GetComputeHz(), pc, dispatchSize ) );
+            glm::uvec3  dispatchSize( ( gridWidth + 7 ) / 8, ( gridHeight + 7 ) / 8, ( gridDepth + 7 ) / 8 );
+            ComputeTask diffTask( pipe, bg0, bg1, fieldDef.GetComputeHz(), pc, dispatchSize );
+            diffTask.SetTag( "diffusion_" + std::to_string( fieldIndex ) );
+            outState.computeGraph.AddTask( diffTask );
             DT_INFO( "SimulationBuilder: Compiled PDE task for '{}' at {}Hz", fieldDef.GetName(), fieldDef.GetComputeHz() );
+            fieldIndex++;
         }
     }
 
@@ -521,13 +525,18 @@ namespace DigitalTwin
         uint32_t paddedCount     = 131072;
         uint32_t offsetArraySize = 262144;
 
+        uint32_t behaviourIndex = 0;
+
         for( const auto& group: blueprint.GetGroups() )
         {
             if( group.GetCount() == 0 )
                 continue;
 
+            behaviourIndex = 0;
             for( const auto& record: group.GetBehaviours() )
             {
+                std::string tagBase = "_" + std::to_string( groupIndex ) + "_" + std::to_string( behaviourIndex );
+
                 if( std::holds_alternative<Behaviours::BrownianMotion>( record.behaviour ) )
                 {
                     const auto&  brownian     = std::get<Behaviours::BrownianMotion>( record.behaviour );
@@ -563,7 +572,9 @@ namespace DigitalTwin
                     pc.uParam1     = groupIndex;
 
                     glm::uvec3 agentDispatch( ( paddedCount + 255 ) / 256, 1, 1 );
-                    outState.computeGraph.AddTask( ComputeTask( pipe, bg0, bg1, record.targetHz, pc, agentDispatch ) );
+                    ComputeTask brownianTask( pipe, bg0, bg1, record.targetHz, pc, agentDispatch );
+                    brownianTask.SetTag( "brownian" + tagBase );
+                    outState.computeGraph.AddTask( brownianTask );
                     DT_INFO( "SimulationBuilder: Compiled BrownianMotion for group '{}' at {}Hz", group.GetName(), record.targetHz );
                 }
                 if( std::holds_alternative<Behaviours::Biomechanics>( record.behaviour ) )
@@ -612,8 +623,9 @@ namespace DigitalTwin
                     // 4. Append Task to Compute Graph
                     glm::uvec3 jkrDispatch( ( paddedCount + 255 ) / 256, 1, 1 );
 
-                    // Using Ping-Pong correctly based on activeIndex inside the graph
-                    outState.computeGraph.AddTask( ComputeTask( jkrPipe, bgJkr0, bgJkr1, record.targetHz, jkrPC, jkrDispatch ) );
+                    ComputeTask jkrTask( jkrPipe, bgJkr0, bgJkr1, record.targetHz, jkrPC, jkrDispatch );
+                    jkrTask.SetTag( "jkr" + tagBase );
+                    outState.computeGraph.AddTask( jkrTask );
 
                     DT_INFO( "[SimulationBuilder] Compiled Biomechanics (JKR) for '{}' at {}Hz", group.GetName(), record.targetHz );
                 }
@@ -739,8 +751,13 @@ namespace DigitalTwin
                     // 5. Append Tasks to Compute Graph
                     glm::uvec3 maxDispatch( ( paddedCount + 255 ) / 256, 1, 1 );
 
-                    outState.computeGraph.AddTask( ComputeTask( phenoPipe, bgPheno0, bgPheno1, record.targetHz, phenoPC, maxDispatch ) );
-                    outState.computeGraph.AddTask( ComputeTask( mitosisPipe, bgMitosis0, bgMitosis1, record.targetHz, mitosisPC, maxDispatch ) );
+                    ComputeTask phenoTask( phenoPipe, bgPheno0, bgPheno1, record.targetHz, phenoPC, maxDispatch );
+                    phenoTask.SetTag( "phenotype" + tagBase );
+                    outState.computeGraph.AddTask( phenoTask );
+
+                    ComputeTask mitosisTask( mitosisPipe, bgMitosis0, bgMitosis1, record.targetHz, mitosisPC, maxDispatch );
+                    mitosisTask.SetTag( "mitosis" + tagBase );
+                    outState.computeGraph.AddTask( mitosisTask );
 
                     DT_INFO( "[SimulationBuilder] Compiled Biology (Cell Cycle) for '{}' at {}Hz", group.GetName(), record.targetHz );
                 }
@@ -838,7 +855,9 @@ namespace DigitalTwin
                         pc.gridSize    = glm::uvec4( targetGrid->width, targetGrid->height, targetGrid->depth, 0 );
 
                         glm::uvec3 agentDispatch( ( paddedCount + 255 ) / 256, 1, 1 );
-                        outState.computeGraph.AddTask( ComputeTask( pipe, bg0, bg1, record.targetHz, pc, agentDispatch ) );
+                        ComputeTask chemTask( pipe, bg0, bg1, record.targetHz, pc, agentDispatch );
+                        chemTask.SetTag( "chemfield" + tagBase );
+                        outState.computeGraph.AddTask( chemTask );
 
                         DT_INFO( "SimulationBuilder: Compiled {} for '{}' at {}Hz", isConsume ? "Consumption" : "Secretion", targetName,
                                  record.targetHz );
@@ -848,8 +867,102 @@ namespace DigitalTwin
                         DT_WARN( "SimulationBuilder: Target grid '{}' not found for agent interaction!", targetName );
                     }
                 }
+                behaviourIndex++;
             }
             currentOffset += paddedCount;
+            groupIndex++;
+        }
+    }
+
+    void SimulationBuilder::UpdateParameters( const SimulationBlueprint& blueprint, SimulationState& state )
+    {
+        // ── Grid Fields ───────────────────────────────────────────────────────
+        const auto& fields = blueprint.GetGridFields();
+        for( uint32_t i = 0; i < static_cast<uint32_t>( fields.size() ); ++i )
+        {
+            ComputeTask* task = state.computeGraph.FindTask( "diffusion_" + std::to_string( i ) );
+            if( task )
+            {
+                ComputePushConstants pc = task->GetPushConstants();
+                pc.fParam0              = fields[ i ].GetDiffusionCoefficient();
+                pc.fParam1              = fields[ i ].GetDecayRate();
+                task->UpdatePushConstants( pc );
+            }
+        }
+
+        // ── Agent Behaviours ──────────────────────────────────────────────────
+        uint32_t groupIndex = 0;
+
+        for( const auto& group: blueprint.GetGroups() )
+        {
+            if( group.GetCount() == 0 )
+                continue;
+
+            uint32_t behaviourIndex = 0;
+            for( const auto& record: group.GetBehaviours() )
+            {
+                std::string tagBase = "_" + std::to_string( groupIndex ) + "_" + std::to_string( behaviourIndex );
+
+                if( std::holds_alternative<Behaviours::BrownianMotion>( record.behaviour ) )
+                {
+                    ComputeTask* task = state.computeGraph.FindTask( "brownian" + tagBase );
+                    if( task )
+                    {
+                        ComputePushConstants pc    = task->GetPushConstants();
+                        pc.fParam0                 = std::get<Behaviours::BrownianMotion>( record.behaviour ).speed;
+                        task->UpdatePushConstants( pc );
+                    }
+                }
+                else if( std::holds_alternative<Behaviours::Biomechanics>( record.behaviour ) )
+                {
+                    ComputeTask* task = state.computeGraph.FindTask( "jkr" + tagBase );
+                    if( task )
+                    {
+                        const auto&          bio = std::get<Behaviours::Biomechanics>( record.behaviour );
+                        ComputePushConstants pc   = task->GetPushConstants();
+                        pc.fParam0                = bio.repulsionStiffness;
+                        pc.fParam1                = bio.adhesionStrength;
+                        pc.domainSize.w           = bio.maxRadius; // w holds maxRadius for JKR
+                        task->UpdatePushConstants( pc );
+                    }
+                }
+                else if( std::holds_alternative<Behaviours::CellCycle>( record.behaviour ) )
+                {
+                    ComputeTask* task = state.computeGraph.FindTask( "phenotype" + tagBase );
+                    if( task )
+                    {
+                        const auto&          cc = std::get<Behaviours::CellCycle>( record.behaviour );
+                        ComputePushConstants pc  = task->GetPushConstants();
+                        pc.fParam0               = cc.growthRatePerSec;
+                        pc.fParam1               = cc.targetO2;
+                        pc.fParam2               = cc.arrestPressure;
+                        pc.fParam3               = cc.necrosisO2;
+                        pc.fParam4               = cc.hypoxiaO2;
+                        pc.fParam5               = cc.apoptosisProbPerSec;
+                        task->UpdatePushConstants( pc );
+                    }
+                }
+                else if( std::holds_alternative<Behaviours::ConsumeField>( record.behaviour ) ||
+                         std::holds_alternative<Behaviours::SecreteField>( record.behaviour ) )
+                {
+                    ComputeTask* task = state.computeGraph.FindTask( "chemfield" + tagBase );
+                    if( task )
+                    {
+                        bool  isConsume = std::holds_alternative<Behaviours::ConsumeField>( record.behaviour );
+                        float rate      = isConsume ? -std::get<Behaviours::ConsumeField>( record.behaviour ).rate
+                                                    : std::get<Behaviours::SecreteField>( record.behaviour ).rate;
+                        int reqState    = isConsume ? std::get<Behaviours::ConsumeField>( record.behaviour ).requiredState
+                                                    : std::get<Behaviours::SecreteField>( record.behaviour ).requiredState;
+
+                        ComputePushConstants pc = task->GetPushConstants();
+                        pc.fParam0              = rate;
+                        pc.fParam1              = static_cast<float>( reqState );
+                        task->UpdatePushConstants( pc );
+                    }
+                }
+
+                behaviourIndex++;
+            }
             groupIndex++;
         }
     }

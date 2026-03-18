@@ -940,6 +940,15 @@ namespace DigitalTwin
         }
     }
 
+    void DigitalTwin::HotReload( const SimulationBlueprint& blueprint )
+    {
+        if( m_impl->m_state == EngineState::RESET )
+            return;
+
+        SimulationBuilder builder( m_impl->m_resourceManager.get(), m_impl->m_streamingManager.get() );
+        builder.UpdateParameters( blueprint, m_impl->m_simulationState );
+    }
+
     EngineState DigitalTwin::GetState() const
     {
         return m_impl->m_state;

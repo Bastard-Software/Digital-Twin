@@ -23,6 +23,12 @@ namespace DigitalTwin
          */
         SimulationState Build( const SimulationBlueprint& blueprint );
 
+        /**
+         * @brief Updates behaviour push constants on a live simulation without rebuilding GPU buffers.
+         * Only call while PLAYING or PAUSED. Structural parameters (offsets, buffer sizes) are unchanged.
+         */
+        void UpdateParameters( const SimulationBlueprint& blueprint, SimulationState& state );
+
     private:
         void AllocateAgentBuffers( const SimulationBlueprint& blueprint, SimulationState& outState );
         void CompileSpatialGrid( const SimulationBlueprint& blueprint, SimulationState& outState );

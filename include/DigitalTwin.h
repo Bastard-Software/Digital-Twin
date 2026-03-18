@@ -4,6 +4,7 @@
 #include "core/Core.h"
 #include "platform/Window.h"
 #include "simulation/SimulationBlueprint.h"
+#include "simulation/SimulationValidator.h"
 #include <string>
 
 namespace DigitalTwin
@@ -37,7 +38,8 @@ namespace DigitalTwin
          */
         void HotReload( const SimulationBlueprint& blueprint );
 
-        EngineState GetState() const;
+        EngineState             GetState() const;
+        const ValidationResult& GetLastValidationResult() const;
 
         bool IsWindowClosed();
 

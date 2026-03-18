@@ -64,7 +64,7 @@ namespace DigitalTwin
         Scope<Camera>           m_camera;
         SimulationBlueprint     m_blueprint;
         SimulationState         m_simulationState;
-        EngineState             m_state = EngineState::STOPPED;
+        EngineState             m_state = EngineState::RESET;
 
         // Frame Data
         static const uint32_t FRAMES_IN_FLIGHT = 2;
@@ -702,7 +702,7 @@ namespace DigitalTwin
             if( !m_config.headless && m_renderer )
             {
                 SimulationState* stateToRender = nullptr;
-                if( m_state != EngineState::STOPPED && m_simulationState.IsValid() )
+                if( m_state != EngineState::RESET && m_simulationState.IsValid() )
                 {
                     stateToRender = &m_simulationState;
                 }
@@ -748,7 +748,7 @@ namespace DigitalTwin
                     waitValues.push_back( graphicsSimSyncValue );
                 }
 
-                // Wait D: If simulation is STOPPED but a transfer occurred, render must wait for it
+                // Wait D: If simulation is RESET but a transfer occurred, render must wait for it
                 if( m_state != EngineState::PLAYING && transferSyncValue > 0 )
                 {
                     waitSemas.push_back( m_device->GetTransferQueue()->GetTimelineSemaphore() );
@@ -888,7 +888,7 @@ namespace DigitalTwin
 
     void DigitalTwin::Play()
     {
-        if( m_impl->m_state == EngineState::STOPPED )
+        if( m_impl->m_state == EngineState::RESET )
         {
             if( m_impl->m_device )
                 m_impl->m_device->WaitIdle();
@@ -917,7 +917,7 @@ namespace DigitalTwin
 
     void DigitalTwin::Stop()
     {
-        if( m_impl->m_state != EngineState::STOPPED )
+        if( m_impl->m_state != EngineState::RESET )
         {
             if( m_impl->m_device )
                 m_impl->m_device->WaitIdle();
@@ -935,9 +935,18 @@ namespace DigitalTwin
                 m_impl->m_simulationState.Destroy( m_impl->m_resourceManager.get() );
             }
 
-            m_impl->m_state = EngineState::STOPPED;
-            DT_INFO( "Simulation State: STOPPED (Memory freed)" );
+            m_impl->m_state = EngineState::RESET;
+            DT_INFO( "Simulation State: RESET (Memory freed)" );
         }
+    }
+
+    void DigitalTwin::HotReload( const SimulationBlueprint& blueprint )
+    {
+        if( m_impl->m_state == EngineState::RESET )
+            return;
+
+        SimulationBuilder builder( m_impl->m_resourceManager.get(), m_impl->m_streamingManager.get() );
+        builder.UpdateParameters( blueprint, m_impl->m_simulationState );
     }
 
     EngineState DigitalTwin::GetState() const

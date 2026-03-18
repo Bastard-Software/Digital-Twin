@@ -86,6 +86,44 @@ TEST( SimulationBlueprintTest, MultipleGroups )
     EXPECT_EQ( groups[ 1 ].GetCount(), 20 );
 }
 
+TEST( SimulationBlueprintTest, BlueprintSetName )
+{
+    SimulationBlueprint blueprint;
+    blueprint.SetName( "My Simulation" );
+    EXPECT_EQ( blueprint.GetName(), "My Simulation" );
+}
+
+TEST( SimulationBlueprintTest, MutableGroupAccess )
+{
+    SimulationBlueprint blueprint;
+    blueprint.AddAgentGroup( "Cells" ).SetCount( 5 );
+    blueprint.GetGroupsMutable()[ 0 ].SetCount( 99 );
+    EXPECT_EQ( blueprint.GetGroups()[ 0 ].GetCount(), 99 );
+}
+
+TEST( SimulationBlueprintTest, MutableGridFieldAccess )
+{
+    SimulationBlueprint blueprint;
+    blueprint.AddGridField( "Oxygen" ).SetDiffusionCoefficient( 1.0f );
+    blueprint.GetGridFieldsMutable()[ 0 ].SetDiffusionCoefficient( 7.5f );
+    EXPECT_FLOAT_EQ( blueprint.GetGridFields()[ 0 ].GetDiffusionCoefficient(), 7.5f );
+}
+
+TEST( SimulationBlueprintTest, MutableBehaviourAccess )
+{
+    SimulationBlueprint blueprint;
+    blueprint.AddAgentGroup( "Cells" )
+        .SetCount( 1 )
+        .AddBehaviour( DigitalTwin::Behaviours::BrownianMotion{ 1.0f } )
+        .SetHz( 60.0f );
+
+    auto& b  = std::get<DigitalTwin::Behaviours::BrownianMotion>( blueprint.GetGroupsMutable()[ 0 ].GetBehavioursMutable()[ 0 ].behaviour );
+    b.speed  = 5.0f;
+
+    const auto& readback = std::get<DigitalTwin::Behaviours::BrownianMotion>( blueprint.GetGroups()[ 0 ].GetBehaviours()[ 0 ].behaviour );
+    EXPECT_FLOAT_EQ( readback.speed, 5.0f );
+}
+
 // =================================================================================================
 // 2. Simulation Builder & GPU Integration Tests
 // =================================================================================================

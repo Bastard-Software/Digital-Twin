@@ -1,5 +1,7 @@
 #include "Editor.h"
 
+#include "IconsFontAwesome5.h"
+#include <core/FileSystem.h>
 #include <core/Log.h>
 #include <imgui.h>
 #include <random>
@@ -18,6 +20,19 @@ namespace Gaudi
         config.windowDesc.mode = DigitalTwin::WindowMode::FULLSCREEN_WINDOWED;
         m_engine.Initialize( config );
 
+        ImGui::SetCurrentContext( static_cast<ImGuiContext*>( m_engine.GetImGuiContext() ) );
+        ImGuiIO&    io      = ImGui::GetIO();
+        auto*       fs      = m_engine.GetFileSystem();
+        std::string roboto  = fs->ResolvePath( "fonts/Roboto-Medium.ttf" ).string();
+        std::string faSolid = fs->ResolvePath( "fonts/fa-solid-900.ttf" ).string();
+        io.Fonts->AddFontFromFileTTF( roboto.c_str(), 16.0f );
+        ImFontConfig iconCfg;
+        iconCfg.MergeMode                 = true;
+        iconCfg.GlyphMinAdvanceX          = 16.0f;
+        iconCfg.PixelSnapH                = true;
+        static const ImWchar iconRanges[] = { ICON_MIN_FA, ICON_MAX_FA, 0 };
+        io.Fonts->AddFontFromFileTTF( faSolid.c_str(), 16.0f, &iconCfg, iconRanges );
+
         SetupInitialBlueprint();
     }
 
@@ -26,6 +41,7 @@ namespace Gaudi
         // ==========================================================================================
         // 1. Domain & Spatial Partitioning Setup
         // ==========================================================================================
+        m_blueprint.SetName( "Tumor Growth" );
         m_blueprint.SetDomainSize( glm::vec3( 50.0f ), 2.0f );
 
         m_blueprint.ConfigureSpatialPartitioning()

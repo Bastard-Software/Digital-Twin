@@ -50,6 +50,14 @@ namespace DigitalTwin
     class DT_API SimulationBlueprint
     {
     public:
+        // --- Identity ---
+        SimulationBlueprint& SetName( const std::string& name )
+        {
+            m_name = name;
+            return *this;
+        }
+        const std::string& GetName() const { return m_name; }
+
         // --- Domain & Grid Fields API ---
         SimulationBlueprint& SetDomainSize( glm::vec3 size, float voxelSize )
         {
@@ -76,10 +84,13 @@ namespace DigitalTwin
         float                            GetVoxelSize() const { return m_voxelSize; }
         const std::vector<GridField>&    GetGridFields() const { return m_gridFields; }
         const std::vector<AgentGroup>&   GetGroups() const { return m_groups; }
+        std::vector<AgentGroup>&         GetGroupsMutable() { return m_groups; }
+        std::vector<GridField>&          GetGridFieldsMutable() { return m_gridFields; }
         const SpatialPartitioningConfig& GetSpatialPartitioning() const { return m_spatialConfig; }
         SpatialPartitioningConfig&       ConfigureSpatialPartitioning() { return m_spatialConfig; }
 
     private:
+        std::string               m_name       = "Untitled Simulation";
         glm::vec3                 m_domainSize = glm::vec3( 1000.0f );
         float                     m_voxelSize  = 10.0f;
         SpatialPartitioningConfig m_spatialConfig;

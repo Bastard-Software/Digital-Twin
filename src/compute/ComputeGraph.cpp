@@ -27,4 +27,13 @@ namespace DigitalTwin
             }
         }
     }
+    ComputeTask* ComputeGraph::FindTask( const std::string& tag )
+    {
+        for( auto& task: m_tasks )
+        {
+            if( task.GetTag() == tag )
+                return &task;
+        }
+        return nullptr;
+    }
 } // namespace DigitalTwin

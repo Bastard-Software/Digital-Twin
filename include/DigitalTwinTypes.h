@@ -39,7 +39,7 @@ namespace DigitalTwin
 
     enum class EngineState
     {
-        STOPPED, // Editor mode. GPU buffers are freed. Blueprint is being edited.
+        RESET,   // Editor mode. GPU buffers are freed. Blueprint is being edited.
         PLAYING, // Simulation is running. Compute and Graphics are active.
         PAUSED,  // Simulation is paused. Compute is halted, Graphics are active.
     };

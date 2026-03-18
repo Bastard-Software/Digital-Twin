@@ -337,8 +337,9 @@ namespace DigitalTwin
             renderScene.indirectCmdBuffer = state->indirectCmdBuffer;
             renderScene.groupDataBuffer   = state->groupDataBuffer;
             renderScene.agentBuffers[ 0 ] = state->agentBuffers[ 0 ];
-            renderScene.agentBuffers[ 1 ] = state->agentBuffers[ 0 ];
+            renderScene.agentBuffers[ 1 ] = state->agentBuffers[ 1 ];
             renderScene.agentCountBuffer  = state->agentCountBuffer;
+            renderScene.phenotypeBuffer   = state->phenotypeBuffer;
             renderScene.drawCount         = state->groupCount;
 
             if( profiler )

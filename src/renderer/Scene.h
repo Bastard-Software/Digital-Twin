@@ -16,6 +16,7 @@ namespace DigitalTwin
         BufferHandle groupDataBuffer;
         BufferHandle agentBuffers[ 2 ];
         BufferHandle agentCountBuffer;
+        BufferHandle phenotypeBuffer;
         uint32_t     drawCount = 0;
 
         /**

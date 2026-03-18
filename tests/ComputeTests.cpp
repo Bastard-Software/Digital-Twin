@@ -951,11 +951,13 @@ TEST_F( ComputeTest, Shader_Biology_MitosisAppend )
     size_t   countSize  = sizeof( uint32_t );
 
     // 2. Allocate & Upload Buffers
-    BufferHandle agentsBuf    = m_rm->CreateBuffer( { agentsSize, BufferType::STORAGE, "TestAgents" } );
-    BufferHandle phenotypeBuf = m_rm->CreateBuffer( { phenotypesSize, BufferType::STORAGE, "TestPhenotypes" } );
-    BufferHandle countBuf     = m_rm->CreateBuffer( { countSize, BufferType::STORAGE, "TestCounter" } );
+    BufferHandle agentsReadBuf  = m_rm->CreateBuffer( { agentsSize, BufferType::STORAGE, "TestAgentsRead" } );
+    BufferHandle agentsWriteBuf = m_rm->CreateBuffer( { agentsSize, BufferType::STORAGE, "TestAgentsWrite" } );
+    BufferHandle phenotypeBuf   = m_rm->CreateBuffer( { phenotypesSize, BufferType::STORAGE, "TestPhenotypes" } );
+    BufferHandle countBuf       = m_rm->CreateBuffer( { countSize, BufferType::STORAGE, "TestCounter" } );
 
-    m_stream->UploadBufferImmediate( { { agentsBuf, agents.data(), agentsSize, 0 },
+    m_stream->UploadBufferImmediate( { { agentsReadBuf, agents.data(), agentsSize, 0 },
+                                       { agentsWriteBuf, agents.data(), agentsSize, 0 },
                                        { phenotypeBuf, phenotypes.data(), phenotypesSize, 0 },
                                        { countBuf, &agentCount, countSize, 0 } } );
 
@@ -965,9 +967,10 @@ TEST_F( ComputeTest, Shader_Biology_MitosisAppend )
     ComputePipeline*      pipeline       = m_rm->GetPipeline( m_rm->CreatePipeline( pipeDesc ) );
 
     BindingGroup* bg = m_rm->GetBindingGroup( m_rm->CreateBindingGroup( pipelineHandle, 0 ) );
-    bg->Bind( 0, m_rm->GetBuffer( agentsBuf ) );
-    bg->Bind( 1, m_rm->GetBuffer( phenotypeBuf ) );
-    bg->Bind( 2, m_rm->GetBuffer( countBuf ) );
+    bg->Bind( 0, m_rm->GetBuffer( agentsReadBuf ) );
+    bg->Bind( 1, m_rm->GetBuffer( agentsWriteBuf ) );
+    bg->Bind( 2, m_rm->GetBuffer( phenotypeBuf ) );
+    bg->Bind( 3, m_rm->GetBuffer( countBuf ) );
     bg->Build();
 
     // 4. Dispatch
@@ -995,7 +998,7 @@ TEST_F( ComputeTest, Shader_Biology_MitosisAppend )
     std::vector<PhenotypeData> resPheno( maxCapacity );
     uint32_t                   resCount = 0;
 
-    m_stream->ReadbackBufferImmediate( agentsBuf, resAgents.data(), agentsSize );
+    m_stream->ReadbackBufferImmediate( agentsReadBuf, resAgents.data(), agentsSize );
     m_stream->ReadbackBufferImmediate( phenotypeBuf, resPheno.data(), phenotypesSize );
     m_stream->ReadbackBufferImmediate( countBuf, &resCount, countSize );
 
@@ -1005,7 +1008,8 @@ TEST_F( ComputeTest, Shader_Biology_MitosisAppend )
     EXPECT_FLOAT_EQ( resPheno[ 1 ].biomass, 0.5f ) << "Daughter biomass should start at 0.5!";
     EXPECT_FLOAT_EQ( resAgents[ 1 ].w, 1.0f ) << "Daughter w-component must be 1.0 (Alive)!";
 
-    m_rm->DestroyBuffer( agentsBuf );
+    m_rm->DestroyBuffer( agentsReadBuf );
+    m_rm->DestroyBuffer( agentsWriteBuf );
     m_rm->DestroyBuffer( phenotypeBuf );
     m_rm->DestroyBuffer( countBuf );
 }

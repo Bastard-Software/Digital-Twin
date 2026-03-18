@@ -46,7 +46,7 @@ void main() {
 
     uint globalIdx = pc.offset + idx;
     // Ignore non allocated
-    // if (agents.positions[globalIdx].w == 0.0) return; // TODO: Fails due to ping pong .w=0 bugs
+    if (agents.positions[globalIdx].w == 0.0) return;
 
     // Interaction condition test
     if (pc.reqState >= 0.0) {

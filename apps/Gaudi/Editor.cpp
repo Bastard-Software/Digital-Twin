@@ -72,32 +72,32 @@ namespace Gaudi
         tumorCells.AddBehaviour( DigitalTwin::Behaviours::BrownianMotion{ 0.5f } ).SetHz( 60.0f );
 
         // B. Oxygen Consumption: Moderately high to ensure the core starves as the tumor grows
-        tumorCells.AddBehaviour( DigitalTwin::Behaviours::ConsumeField{ "Oxygen", 8.0f } ).SetHz( 60.0f );
+        tumorCells.AddBehaviour( DigitalTwin::Behaviours::ConsumeField{ "Oxygen", 20.0f } ).SetHz( 60.0f );
 
         // C. VEGF Secretion: Conditioned on State Hypoxic.
         // Cells will only emit this field when they are starving for oxygen!
-        tumorCells.AddBehaviour( DigitalTwin::Behaviours::SecreteField{ "VEGF", 10000.0f, static_cast<int>( DigitalTwin::PhenotypeState::Hypoxic ) } )
+        tumorCells.AddBehaviour( DigitalTwin::Behaviours::SecreteField{ "VEGF", 100.0f, static_cast<int>( DigitalTwin::PhenotypeState::Hypoxic ) } )
             .SetHz( 60.0f );
 
-        // D. Biomechanics (JKR Model): Softer cells with less adhesion
+        // D. Biology (Cell Cycle): Oxygen-driven proliferation & Hypoxia trigger
+        tumorCells
+            .AddBehaviour( DigitalTwin::BiologyGenerator::StandardCellCycle()
+                               .SetBaseDoublingTime( 5.0f / 3600.0f ) // Rapid division for demonstration
+                               .SetProliferationOxygenTarget( 50.0f )
+                               .SetArrestPressureThreshold( 15.0f )
+                               .SetHypoxiaOxygenThreshold( 25.0f )  // If O2 < 25.0, cell becomes Hypoxic (State 2)
+                               .SetNecrosisOxygenThreshold( 22.0f ) // If O2 < 22.0, cell dies
+                               .SetApoptosisRate( 0.0f )
+                               .Build() )
+            .SetHz( 60.0f );
+
+        // E. Biomechanics (JKR Model): Softer cells with less adhesion
         tumorCells
             .AddBehaviour( DigitalTwin::BiomechanicsGenerator::JKR()
                                .SetYoungsModulus( 20.0f )
                                .SetPoissonRatio( 0.4f )
                                .SetAdhesionEnergy( 1.5f )
                                .SetMaxInteractionRadius( 1.5f )
-                               .Build() )
-            .SetHz( 60.0f );
-
-        // E. Biology (Cell Cycle): Oxygen-driven proliferation & Hypoxia trigger
-        tumorCells
-            .AddBehaviour( DigitalTwin::BiologyGenerator::StandardCellCycle()
-                               .SetBaseDoublingTime( 5.0f / 3600.0f ) // Rapid division for demonstration
-                               .SetProliferationOxygenTarget( 50.0f )
-                               .SetArrestPressureThreshold( 15.0f )
-                               .SetHypoxiaOxygenThreshold( 20.0f ) // If O2 < 20.0, cell becomes Hypoxic (State 4)
-                               .SetNecrosisOxygenThreshold( 5.0f ) // If O2 < 5.0, cell dies
-                               .SetApoptosisRate( 0.0f )
                                .Build() )
             .SetHz( 60.0f );
 

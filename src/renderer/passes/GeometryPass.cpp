@@ -80,6 +80,10 @@ namespace DigitalTwin
         bg->Bind( 1, m_resourceManager->GetBuffer( scene->vertexBuffer ) );
         bg->Bind( 2, m_resourceManager->GetBuffer( scene->GetAgentReadBuffer( flightIndex ) ) );
         bg->Bind( 3, m_resourceManager->GetBuffer( scene->groupDataBuffer ) );
+        if( scene->phenotypeBuffer.IsValid() )
+        {
+            bg->Bind( 4, m_resourceManager->GetBuffer( scene->phenotypeBuffer ) );
+        }
         bg->Build();
 
         GraphicsPipeline* pipeline = m_resourceManager->GetPipeline( m_pipeline );

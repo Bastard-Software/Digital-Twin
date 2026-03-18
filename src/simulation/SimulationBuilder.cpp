@@ -112,14 +112,8 @@ namespace DigitalTwin
             totalVertices += static_cast<uint32_t>( group.GetMorphology().vertices.size() );
             totalIndices += static_cast<uint32_t>( group.GetMorphology().indices.size() );
 
-            // TODO: Temp solution handle properly - full alocation at the beginning???
-            uint32_t targetCapacity = group.GetCount() * 2;
-            if( targetCapacity < 64 )
-                targetCapacity = 64;
-
-            // Round up to nearest power of two for Bitonic Sort compatibility
-            uint32_t paddedCount = 1;
-            while( paddedCount < targetCapacity )
+            uint32_t paddedCount = 131072;
+            while( paddedCount < group.GetCount() )
                 paddedCount <<= 1;
 
             groupCapacities.push_back( paddedCount );
@@ -251,24 +245,13 @@ namespace DigitalTwin
     void SimulationBuilder::CompileSpatialGrid( const SimulationBlueprint& blueprint, SimulationState& outState )
     {
         // 1. Calculate total agents across all groups for the global grid
-        uint32_t totalCapacity = 0;
+        uint32_t totalAgents = 0;
         for( const auto& group: blueprint.GetGroups() )
         {
-            if( group.GetCount() == 0 )
-                continue;
-
-            uint32_t targetCapacity = group.GetCount() * 2;
-            if( targetCapacity < 64 )
-                targetCapacity = 64;
-
-            uint32_t paddedCount = 1;
-            while( paddedCount < targetCapacity )
-                paddedCount <<= 1;
-
-            totalCapacity += paddedCount;
+            totalAgents += group.GetCount();
         }
 
-        if( totalCapacity == 0 )
+        if( totalAgents == 0 )
             return;
 
         // 2. Fetch Spatial Configuration from Blueprint
@@ -277,16 +260,15 @@ namespace DigitalTwin
         float       cellSize      = spatialConfig.cellSize;
 
         // GPU Bitonic Sort requires the array size to be a power of two
-        uint32_t globalPaddedCount = 1;
-        while( globalPaddedCount < totalCapacity )
-            globalPaddedCount <<= 1;
-
-        uint32_t offsetArraySize = 262144; // 64x64x64 hash grid slots
+        // Use the global maximum capacity for all spatial data structures!
+        uint32_t maxCapacity     = 131072;
+        uint32_t paddedCount     = maxCapacity; // 131072 is already a perfect power of two
+        uint32_t offsetArraySize = 262144;      // 64x64x64 hash grid slots
 
         // 3. Allocate Spatial & Physics Buffers (if not already allocated)
         if( !outState.hashBuffer.IsValid() )
         {
-            outState.hashBuffer = m_resourceManager->CreateBuffer( { globalPaddedCount * 8, BufferType::STORAGE, "AgentHashes" } );
+            outState.hashBuffer = m_resourceManager->CreateBuffer( { paddedCount * 8, BufferType::STORAGE, "AgentHashes" } );
         }
         if( !outState.offsetBuffer.IsValid() )
         {
@@ -301,7 +283,7 @@ namespace DigitalTwin
         {
             // We keep pressure buffer here since it's a global physics property
             // shared across potentially multiple mechanical behaviours.
-            outState.pressureBuffer = m_resourceManager->CreateBuffer( { globalPaddedCount * 4, BufferType::STORAGE, "AgentPressures" } );
+            outState.pressureBuffer = m_resourceManager->CreateBuffer( { paddedCount * 4, BufferType::STORAGE, "AgentPressures" } );
         }
 
         // 4. Load Shaders and Create Pipelines for Spatial Partitioning
@@ -346,7 +328,7 @@ namespace DigitalTwin
         // 6. Base Push Constants
         ComputePushConstants basePC{};
         basePC.offset      = 0; // Processing all agents globally, offset is always 0
-        basePC.maxCapacity = globalPaddedCount;
+        basePC.maxCapacity = paddedCount;
         // w component acts as padding here since maxRadius is not needed for pure hashing
         basePC.domainSize = glm::vec4( blueprint.GetDomainSize(), 0.0f );
         basePC.gridSize   = glm::uvec4( 0 );
@@ -354,17 +336,17 @@ namespace DigitalTwin
         // --- TASK A: HASH AGENTS ---
         ComputePushConstants hashPC = basePC;
         hashPC.fParam0              = cellSize;
-        glm::uvec3 hashDispatch( ( globalPaddedCount + 255 ) / 256, 1, 1 );
+        glm::uvec3 hashDispatch( ( paddedCount + 255 ) / 256, 1, 1 );
         outState.computeGraph.AddTask( ComputeTask( hashPipe, bgHash0, bgHash1, computeHz, hashPC, hashDispatch ) );
 
         // --- TASK B: BITONIC SORT (The Magic GPU Loop) ---
-        glm::uvec3 sortDispatch( ( globalPaddedCount + 255 ) / 256, 1, 1 );
-        for( uint32_t k = 2; k <= globalPaddedCount; k <<= 1 )
+        glm::uvec3 sortDispatch( ( paddedCount + 255 ) / 256, 1, 1 );
+        for( uint32_t k = 2; k <= paddedCount; k <<= 1 )
         {
             for( uint32_t j = k >> 1; j > 0; j >>= 1 )
             {
                 ComputePushConstants sortPC = basePC;
-                sortPC.maxCapacity          = globalPaddedCount; // Sort operates on the padded size
+                sortPC.maxCapacity          = paddedCount; // Sort operates on the padded size
                 sortPC.uParam0              = j;
                 sortPC.uParam1              = k;
                 outState.computeGraph.AddTask( ComputeTask( sortPipe, bgSort, bgSort, computeHz, sortPC, sortDispatch ) );
@@ -373,11 +355,11 @@ namespace DigitalTwin
 
         // --- TASK C: BUILD OFFSETS ---
         ComputePushConstants offsetPC = basePC;
-        offsetPC.maxCapacity          = globalPaddedCount;
-        glm::uvec3 offsetDispatch( ( globalPaddedCount + 255 ) / 256, 1, 1 );
+        offsetPC.maxCapacity          = paddedCount;
+        glm::uvec3 offsetDispatch( ( paddedCount + 255 ) / 256, 1, 1 );
         outState.computeGraph.AddTask( ComputeTask( offsetPipe, bgOffset, bgOffset, computeHz, offsetPC, offsetDispatch ) );
 
-        DT_INFO( "[SimulationBuilder] Compiled Global Spatial Grid. Total Agents: {}, Frequency: {}Hz", globalPaddedCount, computeHz );
+        DT_INFO( "[SimulationBuilder] Compiled Global Spatial Grid. Total Agents: {}, Frequency: {}Hz", paddedCount, computeHz );
     }
 
     void SimulationBuilder::CompileGridFields( const SimulationBlueprint& blueprint, SimulationState& outState )
@@ -519,19 +501,14 @@ namespace DigitalTwin
             basePC.gridSize = glm::uvec4( outState.gridFields[ 0 ].width, outState.gridFields[ 0 ].height, outState.gridFields[ 0 ].depth, 0 );
         }
 
+        // Maintain the global capacity to match memory structures
+        uint32_t paddedCount     = 131072;
+        uint32_t offsetArraySize = 262144;
+
         for( const auto& group: blueprint.GetGroups() )
         {
             if( group.GetCount() == 0 )
                 continue;
-
-            // Recalculate capacity to match AllocateAgentBuffers
-            uint32_t targetCapacity = group.GetCount() * 2;
-            if( targetCapacity < 64 )
-                targetCapacity = 64;
-
-            uint32_t paddedCount = 1;
-            while( paddedCount < targetCapacity )
-                paddedCount <<= 1;
 
             for( const auto& record: group.GetBehaviours() )
             {
@@ -714,14 +691,16 @@ namespace DigitalTwin
                     // Create Binding Groups (Mitosis)
                     BindingGroup* bgMitosis0 = m_resourceManager->GetBindingGroup( m_resourceManager->CreateBindingGroup( mitosisPipeHandle, 0 ) );
                     bgMitosis0->Bind( 0, m_resourceManager->GetBuffer( outState.agentBuffers[ 0 ] ) );
-                    bgMitosis0->Bind( 1, m_resourceManager->GetBuffer( outState.phenotypeBuffer ) );
-                    bgMitosis0->Bind( 2, m_resourceManager->GetBuffer( outState.agentCountBuffer ) );
+                    bgMitosis0->Bind( 1, m_resourceManager->GetBuffer( outState.agentBuffers[ 1 ] ) );
+                    bgMitosis0->Bind( 2, m_resourceManager->GetBuffer( outState.phenotypeBuffer ) );
+                    bgMitosis0->Bind( 3, m_resourceManager->GetBuffer( outState.agentCountBuffer ) );
                     bgMitosis0->Build();
 
                     BindingGroup* bgMitosis1 = m_resourceManager->GetBindingGroup( m_resourceManager->CreateBindingGroup( mitosisPipeHandle, 0 ) );
                     bgMitosis1->Bind( 0, m_resourceManager->GetBuffer( outState.agentBuffers[ 1 ] ) );
-                    bgMitosis1->Bind( 1, m_resourceManager->GetBuffer( outState.phenotypeBuffer ) );
-                    bgMitosis1->Bind( 2, m_resourceManager->GetBuffer( outState.agentCountBuffer ) );
+                    bgMitosis1->Bind( 1, m_resourceManager->GetBuffer( outState.agentBuffers[ 0 ] ) );
+                    bgMitosis1->Bind( 2, m_resourceManager->GetBuffer( outState.phenotypeBuffer ) );
+                    bgMitosis1->Bind( 3, m_resourceManager->GetBuffer( outState.agentCountBuffer ) );
                     bgMitosis1->Build();
 
                     // 4. Configure Push Constants

@@ -13,6 +13,7 @@
 #include "renderer/Scene.h"
 #include "resources/ResourceManager.h"
 #include "resources/StreamingManager.h"
+#include "rhi/Buffer.h"
 #include "rhi/Device.h"
 #include "rhi/GPUProfiler.h"
 #include "rhi/RHI.h"
@@ -817,6 +818,74 @@ namespace DigitalTwin
         DT_ASSERT( false, "Not implemented yet!" );
     }
 
+    void DebugDumpAgentBuffers( SimulationState& state, ResourceManager* rm, StreamingManager* stream )
+    {
+        if( !state.IsValid() )
+            return;
+
+        // Ensure all compute queues have finished before we readback
+        // (Assuming you call this when simulation is paused/stopped, so GPU should be idle)
+
+        DT_INFO( "==========================================================" );
+        DT_INFO( "[DEBUG] DUMPING AGENT BUFFERS STATE" );
+        DT_INFO( "==========================================================" );
+
+        uint32_t totalActive = 0;
+        // --- 1. Read Atomic Counters (Actual group sizes) ---
+        if( state.agentCountBuffer.IsValid() )
+        {
+            // Assuming we allocated enough space for groupCount uint32_t counters
+            size_t countBytes = state.groupCount * sizeof( uint32_t );
+            if( countBytes > 0 )
+            {
+                std::vector<uint32_t> counters( state.groupCount );
+                stream->ReadbackBufferImmediate( state.agentCountBuffer, counters.data(), countBytes );
+
+                for( size_t i = 0; i < state.groupCount; ++i )
+                {
+                    DT_INFO( "  Group [{}]: {} active agents (Atomic Counter)", i, counters[ i ] );
+                    totalActive += counters[ i ];
+                }
+            }
+        }
+
+        // --- Helper lambda to analyze a single buffer ---
+        auto AnalyzeBuffer = [ & ]( BufferHandle handle, const std::string& name ) {
+            if( !handle.IsValid() )
+                return;
+
+            size_t   bufSize   = rm->GetBuffer( handle )->GetSize();
+            uint32_t maxAgents = bufSize / sizeof( glm::vec4 );
+
+            std::vector<glm::vec4> agents( maxAgents );
+            stream->ReadbackBufferImmediate( handle, agents.data(), bufSize );
+
+            uint32_t validCount   = 0;
+            uint32_t zeroPosCount = 0;
+
+            for( uint32_t i = 0; i < maxAgents; ++i )
+            {
+                if( agents[ i ].w > 0.0f )
+                    validCount++;
+                if( agents[ i ].x == 0.0f && agents[ i ].y == 0.0f && agents[ i ].z == 0.0f )
+                    zeroPosCount++;
+            }
+
+            DT_INFO( "  {}: MaxCapacity: {}, Valid (w>0): {}, At (0,0,0): {}", name, maxAgents, validCount, zeroPosCount );
+
+            for( uint32_t i = 0; i < totalActive; ++i )
+            {
+                DT_INFO( "    Agent {}: pos({:0.2f}, {:0.2f}, {:0.2f}), w={:0.2f}", i, agents[ i ].x, agents[ i ].y, agents[ i ].z, agents[ i ].w );
+            }
+        };
+
+        // --- 2. Analyze Ping-Pong Buffers ---
+        AnalyzeBuffer( state.agentBuffers[ 0 ], "Buffer[0]" );
+        AnalyzeBuffer( state.agentBuffers[ 1 ], "Buffer[1]" );
+
+        DT_INFO( "==========================================================" );
+    }
+
     void DigitalTwin::Play()
     {
         if( m_impl->m_state == EngineState::STOPPED )
@@ -852,6 +921,8 @@ namespace DigitalTwin
         {
             if( m_impl->m_device )
                 m_impl->m_device->WaitIdle();
+            // Uncomment for reedback logging
+            // DebugDumpAgentBuffers( m_impl->m_simulationState, m_impl->m_resourceManager.get(), m_impl->m_streamingManager.get() );
 
             // Reset visualization flags
             auto gridSettings   = m_impl->m_renderer->GetGridVisualization();

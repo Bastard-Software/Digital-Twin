@@ -5,6 +5,7 @@
 #include "resources/StreamingManager.h"
 #include "rhi/BindingGroup.h"
 #include "simulation/SimulationBlueprint.h"
+#include "simulation/SimulationValidator.h"
 #include <tuple>
 #include <volk.h>
 
@@ -71,6 +72,21 @@ namespace DigitalTwin
     SimulationState SimulationBuilder::Build( const SimulationBlueprint& blueprint )
     {
         SimulationState state;
+
+        // 0. Validate blueprint before touching any GPU resources
+        ValidationResult validation = SimulationValidator::Validate( blueprint );
+        for( const auto& issue : validation.issues )
+        {
+            if( issue.severity == ValidationIssue::Severity::Error )
+                DT_ERROR( "[SimulationValidator] {}", issue.message );
+            else
+                DT_WARN( "[SimulationValidator] {}", issue.message );
+        }
+        if( !validation.IsValid() )
+        {
+            DT_ERROR( "[SimulationBuilder] Blueprint validation failed. Aborting build." );
+            return state;
+        }
 
         DT_INFO( "[SimulationBuilder] Starting simulation build process..." );
 

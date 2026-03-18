@@ -22,6 +22,11 @@ namespace DigitalTwin
         }
 
         // --- Fluent Setters ---
+        AgentGroup& SetName( const std::string& name )
+        {
+            m_name = name;
+            return *this;
+        }
         AgentGroup& SetCount( uint32_t count )
         {
             m_count = count;
@@ -57,6 +62,7 @@ namespace DigitalTwin
         const std::vector<glm::vec4>&       GetPositions() const { return m_positions; }
         const glm::vec4&                    GetColor() const { return m_color; }
         const std::vector<BehaviourRecord>& GetBehaviours() const { return m_behaviours; }
+        std::vector<BehaviourRecord>&       GetBehavioursMutable() { return m_behaviours; }
 
     private:
         std::string                  m_name;

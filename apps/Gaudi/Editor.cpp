@@ -41,6 +41,7 @@ namespace Gaudi
         // ==========================================================================================
         // 1. Domain & Spatial Partitioning Setup
         // ==========================================================================================
+        m_blueprint.SetName( "Tumor Growth" );
         m_blueprint.SetDomainSize( glm::vec3( 50.0f ), 2.0f );
 
         m_blueprint.ConfigureSpatialPartitioning()

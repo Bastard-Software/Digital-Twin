@@ -6,6 +6,26 @@
 
 namespace Gaudi
 {
+    // ── Pending modal state ───────────────────────────────────────────────────
+    // OpenPopup must be called at the same ID-stack level as BeginPopupModal.
+    // Context menus live inside a popup stack, so we defer by setting a flag here
+    // and calling OpenPopup just before BeginPopupModal at window level.
+
+    enum class PendingOp
+    {
+        None,
+        AddGroup,
+        RenameGroup,
+        AddField,
+        RenameField,
+    };
+
+    static PendingOp s_pendingOp    = PendingOp::None;
+    static int       s_pendingIdx   = -1;
+    static char      s_nameBuf[ 128 ] = {};
+
+    // ─────────────────────────────────────────────────────────────────────────
+
     HierarchyPanel::HierarchyPanel( DigitalTwin::DigitalTwin& engine, DigitalTwin::SimulationBlueprint& blueprint, EditorSelection& selection )
         : EditorPanel( "Hierarchy" )
         , m_engine( engine )
@@ -39,28 +59,46 @@ namespace Gaudi
     {
         ImGui::Begin( m_name.c_str() );
 
-        // ── Top-level simulation node ─────────────────────────────────
+        const bool isReset = ( m_engine.GetState() == DigitalTwin::EngineState::RESET );
+
+        // ── Top-level simulation node ─────────────────────────────────────────
         ImGuiTreeNodeFlags simFlags = ImGuiTreeNodeFlags_DefaultOpen | ImGuiTreeNodeFlags_SpanAvailWidth | ImGuiTreeNodeFlags_OpenOnArrow;
         bool simOpen = ImGui::TreeNodeEx( "##sim", simFlags, "%s", m_blueprint.GetName().c_str() );
 
         if( simOpen )
         {
-            // ── Agent Groups ──────────────────────────────────────────
             ImGuiTreeNodeFlags sectionFlags = ImGuiTreeNodeFlags_DefaultOpen | ImGuiTreeNodeFlags_SpanAvailWidth | ImGuiTreeNodeFlags_OpenOnArrow;
+
+            // ── Agent Groups ──────────────────────────────────────────────────
             bool agentSectionOpen = ImGui::TreeNodeEx( "##agentGroups", sectionFlags, "Agent Groups" );
+
+            if( ImGui::BeginPopupContextItem( "##agentGroupsCtx" ) )
+            {
+                ImGui::BeginDisabled( !isReset );
+                if( ImGui::MenuItem( "Add Agent Group" ) )
+                {
+                    snprintf( s_nameBuf, sizeof( s_nameBuf ), "AgentGroup_%d",
+                              static_cast<int>( m_blueprint.GetGroups().size() ) );
+                    s_pendingOp  = PendingOp::AddGroup;
+                    s_pendingIdx = -1;
+                }
+                ImGui::EndDisabled();
+                ImGui::EndPopup();
+            }
 
             if( agentSectionOpen )
             {
-                const auto& groups = m_blueprint.GetGroups();
+                auto& groups = m_blueprint.GetGroupsMutable();
                 for( int i = 0; i < static_cast<int>( groups.size() ); ++i )
                 {
-                    const auto& group = groups[ i ];
+                    auto& group = groups[ i ];
 
                     ImGuiTreeNodeFlags groupFlags = ImGuiTreeNodeFlags_OpenOnArrow | ImGuiTreeNodeFlags_SpanAvailWidth | ImGuiTreeNodeFlags_DefaultOpen;
                     if( m_selection.groupIndex == i && m_selection.behaviourIndex == -1 )
                         groupFlags |= ImGuiTreeNodeFlags_Selected;
 
-                    bool open = ImGui::TreeNodeEx( reinterpret_cast<void*>( static_cast<intptr_t>( i ) ), groupFlags, "%s", group.GetName().c_str() );
+                    ImGui::PushID( i );
+                    bool open = ImGui::TreeNodeEx( "##group", groupFlags, "%s", group.GetName().c_str() );
 
                     if( ImGui::IsItemClicked() && !ImGui::IsItemToggledOpen() )
                     {
@@ -69,52 +107,316 @@ namespace Gaudi
                         m_selection.gridFieldIndex = -1;
                     }
 
+                    if( ImGui::BeginPopupContextItem( "##groupCtx" ) )
+                    {
+                        ImGui::BeginDisabled( !isReset );
+
+                        if( ImGui::BeginMenu( "Add Behaviour" ) )
+                        {
+                            if( ImGui::MenuItem( "Brownian Motion" ) )
+                            {
+                                group.AddBehaviour( DigitalTwin::Behaviours::BrownianMotion{} ).SetHz( 60 );
+                                m_engine.SetBlueprint( m_blueprint );
+                            }
+                            if( ImGui::BeginMenu( "Consume Field" ) )
+                            {
+                                const auto& fields = m_blueprint.GetGridFields();
+                                if( fields.empty() )
+                                    ImGui::TextDisabled( "(no grid fields defined)" );
+                                for( const auto& f : fields )
+                                {
+                                    if( ImGui::MenuItem( f.GetName().c_str() ) )
+                                    {
+                                        group.AddBehaviour( DigitalTwin::Behaviours::ConsumeField{ f.GetName(), 1.0f } ).SetHz( 60 );
+                                        m_engine.SetBlueprint( m_blueprint );
+                                    }
+                                }
+                                ImGui::EndMenu();
+                            }
+                            if( ImGui::BeginMenu( "Secrete Field" ) )
+                            {
+                                const auto& fields = m_blueprint.GetGridFields();
+                                if( fields.empty() )
+                                    ImGui::TextDisabled( "(no grid fields defined)" );
+                                for( const auto& f : fields )
+                                {
+                                    if( ImGui::MenuItem( f.GetName().c_str() ) )
+                                    {
+                                        group.AddBehaviour( DigitalTwin::Behaviours::SecreteField{ f.GetName(), 1.0f } ).SetHz( 60 );
+                                        m_engine.SetBlueprint( m_blueprint );
+                                    }
+                                }
+                                ImGui::EndMenu();
+                            }
+                            if( ImGui::MenuItem( "Biomechanics" ) )
+                            {
+                                group.AddBehaviour( DigitalTwin::Behaviours::Biomechanics{} ).SetHz( 60 );
+                                m_engine.SetBlueprint( m_blueprint );
+                            }
+                            if( ImGui::MenuItem( "Cell Cycle" ) )
+                            {
+                                group.AddBehaviour( DigitalTwin::Behaviours::CellCycle{ 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f } ).SetHz( 60 );
+                                m_engine.SetBlueprint( m_blueprint );
+                            }
+                            ImGui::EndMenu();
+                        }
+
+                        ImGui::Separator();
+
+                        if( ImGui::MenuItem( "Duplicate" ) )
+                        {
+                            DigitalTwin::AgentGroup copy = group;
+                            copy.SetName( group.GetName() + "_Copy" );
+                            groups.push_back( std::move( copy ) );
+                            m_engine.SetBlueprint( m_blueprint );
+                        }
+
+                        if( ImGui::MenuItem( "Rename" ) )
+                        {
+                            strncpy_s( s_nameBuf, group.GetName().c_str(), sizeof( s_nameBuf ) - 1 );
+                            s_pendingOp  = PendingOp::RenameGroup;
+                            s_pendingIdx = i;
+                        }
+
+                        ImGui::Separator();
+
+                        if( ImGui::MenuItem( "Remove Agent Group" ) )
+                        {
+                            if( m_selection.groupIndex == i )
+                            {
+                                m_selection.groupIndex     = -1;
+                                m_selection.behaviourIndex = -1;
+                            }
+                            else if( m_selection.groupIndex > i )
+                            {
+                                --m_selection.groupIndex;
+                            }
+                            groups.erase( groups.begin() + i );
+                            m_engine.SetBlueprint( m_blueprint );
+                            ImGui::EndDisabled();
+                            ImGui::EndPopup();
+                            if( open )
+                                ImGui::TreePop();
+                            ImGui::PopID();
+                            continue;
+                        }
+
+                        ImGui::EndDisabled();
+                        ImGui::EndPopup();
+                    }
+
                     if( open )
                     {
-                        const auto& behaviours = group.GetBehaviours();
+                        auto& behaviours = group.GetBehavioursMutable();
                         for( int j = 0; j < static_cast<int>( behaviours.size() ); ++j )
                         {
                             bool        selected = ( m_selection.groupIndex == i && m_selection.behaviourIndex == j );
                             std::string label    = GetBehaviourLabel( behaviours[ j ].behaviour );
 
                             ImGui::PushID( j );
-                            if( ImGui::Selectable( label.c_str(), selected ) )
+                            ImGui::Selectable( label.c_str(), selected );
+
+                            if( ImGui::IsItemClicked() )
                             {
                                 m_selection.groupIndex     = i;
                                 m_selection.behaviourIndex = j;
                                 m_selection.gridFieldIndex = -1;
                             }
+
+                            if( ImGui::BeginPopupContextItem( "##behaviourCtx" ) )
+                            {
+                                ImGui::BeginDisabled( !isReset );
+                                if( ImGui::MenuItem( "Remove Behaviour" ) )
+                                {
+                                    if( m_selection.groupIndex == i )
+                                    {
+                                        if( m_selection.behaviourIndex == j )
+                                            m_selection.behaviourIndex = -1;
+                                        else if( m_selection.behaviourIndex > j )
+                                            --m_selection.behaviourIndex;
+                                    }
+                                    behaviours.erase( behaviours.begin() + j );
+                                    m_engine.SetBlueprint( m_blueprint );
+                                    ImGui::EndDisabled();
+                                    ImGui::EndPopup();
+                                    ImGui::PopID();
+                                    continue;
+                                }
+                                ImGui::EndDisabled();
+                                ImGui::EndPopup();
+                            }
+
                             ImGui::PopID();
                         }
                         ImGui::TreePop();
                     }
+
+                    ImGui::PopID();
                 }
                 ImGui::TreePop();
             }
 
-            // ── Grid Fields ───────────────────────────────────────────
+            // ── Grid Fields ───────────────────────────────────────────────────
             bool fieldSectionOpen = ImGui::TreeNodeEx( "##gridFields", sectionFlags, "Grid Fields" );
+
+            if( ImGui::BeginPopupContextItem( "##gridFieldsCtx" ) )
+            {
+                ImGui::BeginDisabled( !isReset );
+                if( ImGui::MenuItem( "Add Grid Field" ) )
+                {
+                    snprintf( s_nameBuf, sizeof( s_nameBuf ), "GridField_%d",
+                              static_cast<int>( m_blueprint.GetGridFields().size() ) );
+                    s_pendingOp  = PendingOp::AddField;
+                    s_pendingIdx = -1;
+                }
+                ImGui::EndDisabled();
+                ImGui::EndPopup();
+            }
 
             if( fieldSectionOpen )
             {
-                const auto& fields = m_blueprint.GetGridFields();
+                auto& fields = m_blueprint.GetGridFieldsMutable();
                 for( int i = 0; i < static_cast<int>( fields.size() ); ++i )
                 {
-                    bool selected = ( m_selection.gridFieldIndex == i );
+                    auto& field   = fields[ i ];
+                    bool  selected = ( m_selection.gridFieldIndex == i );
 
                     ImGui::PushID( 1000 + i );
-                    if( ImGui::Selectable( fields[ i ].GetName().c_str(), selected ) )
+                    ImGui::Selectable( field.GetName().c_str(), selected );
+
+                    if( ImGui::IsItemClicked() )
                     {
                         m_selection.gridFieldIndex = i;
                         m_selection.groupIndex     = -1;
                         m_selection.behaviourIndex = -1;
                     }
+
+                    if( ImGui::BeginPopupContextItem( "##fieldCtx" ) )
+                    {
+                        ImGui::BeginDisabled( !isReset );
+
+                        if( ImGui::MenuItem( "Duplicate" ) )
+                        {
+                            DigitalTwin::GridField copy( field.GetName() + "_Copy" );
+                            copy.SetDiffusionCoefficient( field.GetDiffusionCoefficient() )
+                                .SetDecayRate( field.GetDecayRate() )
+                                .SetComputeHz( field.GetComputeHz() )
+                                .SetInitializer( field.GetInitializer() );
+                            fields.push_back( std::move( copy ) );
+                            m_engine.SetBlueprint( m_blueprint );
+                        }
+
+                        if( ImGui::MenuItem( "Rename" ) )
+                        {
+                            strncpy_s( s_nameBuf, field.GetName().c_str(), sizeof( s_nameBuf ) - 1 );
+                            s_pendingOp  = PendingOp::RenameField;
+                            s_pendingIdx = i;
+                        }
+
+                        ImGui::Separator();
+
+                        if( ImGui::MenuItem( "Remove Grid Field" ) )
+                        {
+                            if( m_selection.gridFieldIndex == i )
+                                m_selection.gridFieldIndex = -1;
+                            else if( m_selection.gridFieldIndex > i )
+                                --m_selection.gridFieldIndex;
+
+                            fields.erase( fields.begin() + i );
+                            m_engine.SetBlueprint( m_blueprint );
+                            ImGui::EndDisabled();
+                            ImGui::EndPopup();
+                            ImGui::PopID();
+                            continue;
+                        }
+
+                        ImGui::EndDisabled();
+                        ImGui::EndPopup();
+                    }
+
                     ImGui::PopID();
                 }
                 ImGui::TreePop();
             }
 
             ImGui::TreePop();
+        }
+
+        // ── Deferred name modal ───────────────────────────────────────────────
+        // Must be opened and rendered at window level, outside any popup stack.
+
+        if( s_pendingOp != PendingOp::None )
+            ImGui::OpenPopup( "##nameModal" );
+
+        if( ImGui::BeginPopupModal( "##nameModal", nullptr, ImGuiWindowFlags_AlwaysAutoResize ) )
+        {
+            switch( s_pendingOp )
+            {
+                case PendingOp::AddGroup:    ImGui::Text( "New Agent Group name:" ); break;
+                case PendingOp::RenameGroup: ImGui::Text( "Rename Agent Group:" );   break;
+                case PendingOp::AddField:    ImGui::Text( "New Grid Field name:" );  break;
+                case PendingOp::RenameField: ImGui::Text( "Rename Grid Field:" );    break;
+                default: break;
+            }
+
+            ImGui::SetNextItemWidth( 260.0f );
+            bool confirm = ImGui::InputText( "##nameInput", s_nameBuf, sizeof( s_nameBuf ),
+                                             ImGuiInputTextFlags_EnterReturnsTrue | ImGuiInputTextFlags_AutoSelectAll );
+            if( ImGui::IsWindowAppearing() )
+                ImGui::SetKeyboardFocusHere( -1 );
+
+            ImGui::Spacing();
+            if( confirm || ImGui::Button( "OK", ImVec2( 120, 0 ) ) )
+            {
+                const std::string name( s_nameBuf );
+                switch( s_pendingOp )
+                {
+                    case PendingOp::AddGroup:
+                        m_blueprint.AddAgentGroup( name );
+                        m_engine.SetBlueprint( m_blueprint );
+                        break;
+
+                    case PendingOp::RenameGroup:
+                        if( s_pendingIdx >= 0 && s_pendingIdx < static_cast<int>( m_blueprint.GetGroupsMutable().size() ) )
+                        {
+                            m_blueprint.GetGroupsMutable()[ s_pendingIdx ].SetName( name );
+                            m_engine.SetBlueprint( m_blueprint );
+                        }
+                        break;
+
+                    case PendingOp::AddField:
+                        m_blueprint.AddGridField( name );
+                        m_engine.SetBlueprint( m_blueprint );
+                        break;
+
+                    case PendingOp::RenameField:
+                        if( s_pendingIdx >= 0 && s_pendingIdx < static_cast<int>( m_blueprint.GetGridFieldsMutable().size() ) )
+                        {
+                            auto& f = m_blueprint.GetGridFieldsMutable()[ s_pendingIdx ];
+                            DigitalTwin::GridField renamed( name );
+                            renamed.SetDiffusionCoefficient( f.GetDiffusionCoefficient() )
+                                   .SetDecayRate( f.GetDecayRate() )
+                                   .SetComputeHz( f.GetComputeHz() )
+                                   .SetInitializer( f.GetInitializer() );
+                            f = std::move( renamed );
+                            m_engine.SetBlueprint( m_blueprint );
+                        }
+                        break;
+
+                    default: break;
+                }
+                s_pendingOp = PendingOp::None;
+                ImGui::CloseCurrentPopup();
+            }
+
+            ImGui::SameLine();
+            if( ImGui::Button( "Cancel", ImVec2( 120, 0 ) ) )
+            {
+                s_pendingOp = PendingOp::None;
+                ImGui::CloseCurrentPopup();
+            }
+
+            ImGui::EndPopup();
         }
 
         ImGui::End();

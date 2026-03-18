@@ -65,6 +65,7 @@ namespace DigitalTwin
         SimulationBlueprint     m_blueprint;
         SimulationState         m_simulationState;
         EngineState             m_state = EngineState::RESET;
+        ValidationResult        m_lastValidationResult;
 
         // Frame Data
         static const uint32_t FRAMES_IN_FLIGHT = 2;
@@ -890,6 +891,20 @@ namespace DigitalTwin
     {
         if( m_impl->m_state == EngineState::RESET )
         {
+            m_impl->m_lastValidationResult = SimulationValidator::Validate( m_impl->m_blueprint );
+            for( const auto& issue : m_impl->m_lastValidationResult.issues )
+            {
+                if( issue.severity == ValidationIssue::Severity::Error )
+                    DT_ERROR( "[SimulationValidator] {}", issue.message );
+                else
+                    DT_WARN( "[SimulationValidator] {}", issue.message );
+            }
+            if( !m_impl->m_lastValidationResult.IsValid() )
+            {
+                DT_ERROR( "[SimulationBuilder] Blueprint validation failed. Aborting build." );
+                return;
+            }
+
             if( m_impl->m_device )
                 m_impl->m_device->WaitIdle();
 
@@ -952,6 +967,11 @@ namespace DigitalTwin
     EngineState DigitalTwin::GetState() const
     {
         return m_impl->m_state;
+    }
+
+    const ValidationResult& DigitalTwin::GetLastValidationResult() const
+    {
+        return m_impl->m_lastValidationResult;
     }
 
     bool DigitalTwin::IsWindowClosed()

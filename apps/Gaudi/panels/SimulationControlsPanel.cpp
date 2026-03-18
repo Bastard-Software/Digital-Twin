@@ -59,7 +59,12 @@ namespace Gaudi
         ImGui::PushStyleColor( ImGuiCol_ButtonHovered, ImVec4( 0.2f, 0.8f, 0.2f, 1.0f ) );
         if( ImGui::Button( ICON_FA_PLAY "##play", ImVec2( buttonSize, buttonSize ) ) )
         {
+            if( state == DigitalTwin::EngineState::RESET )
+                m_engine.SetBlueprint( m_blueprint );
             m_engine.Play();
+            // If Play() failed (validation), engine stays in RESET — open the error modal
+            if( m_engine.GetState() == DigitalTwin::EngineState::RESET )
+                ImGui::OpenPopup( "##validationErrors" );
         }
         ImGui::PopStyleColor( 2 );
         if( playDisabled )
@@ -104,6 +109,43 @@ namespace Gaudi
             ImGui::SetTooltip( "Reset Simulation" );
 
         ImGui::PopStyleVar();
+
+        // ── Validation error modal ────────────────────────────────────────────
+        ImGui::SetNextWindowSizeConstraints( ImVec2( 480, 0 ), ImVec2( 700, 500 ) );
+        if( ImGui::BeginPopupModal( "##validationErrors", nullptr, ImGuiWindowFlags_AlwaysAutoResize ) )
+        {
+            ImGui::TextColored( ImVec4( 1.0f, 0.35f, 0.35f, 1.0f ), ICON_FA_EXCLAMATION_TRIANGLE " Blueprint validation failed" );
+            ImGui::Separator();
+            ImGui::Spacing();
+
+            const auto& result = m_engine.GetLastValidationResult();
+            for( const auto& issue : result.issues )
+            {
+                if( issue.severity == DigitalTwin::ValidationIssue::Severity::Error )
+                {
+                    ImGui::PushStyleColor( ImGuiCol_Text, ImVec4( 1.0f, 0.4f, 0.4f, 1.0f ) );
+                    ImGui::TextWrapped( ICON_FA_TIMES_CIRCLE "  %s", issue.message.c_str() );
+                    ImGui::PopStyleColor();
+                }
+                else
+                {
+                    ImGui::PushStyleColor( ImGuiCol_Text, ImVec4( 1.0f, 0.85f, 0.3f, 1.0f ) );
+                    ImGui::TextWrapped( ICON_FA_EXCLAMATION_CIRCLE "  %s", issue.message.c_str() );
+                    ImGui::PopStyleColor();
+                }
+            }
+
+            ImGui::Spacing();
+            ImGui::Separator();
+            ImGui::Spacing();
+
+            const float btnW = 120.0f;
+            ImGui::SetCursorPosX( ( ImGui::GetContentRegionAvail().x - btnW ) * 0.5f + ImGui::GetCursorPosX() );
+            if( ImGui::Button( "OK", ImVec2( btnW, 0 ) ) )
+                ImGui::CloseCurrentPopup();
+
+            ImGui::EndPopup();
+        }
 
         ImGui::End();
     }

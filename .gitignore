@@ -11,3 +11,7 @@ external/*
 
 # shaders-bin
 *.spv
+
+# claude
+.claude/
+CLAUDE.md

@@ -37,7 +37,8 @@ namespace DigitalTwin
 
         // Ping-pong buffers for compute shader integration (Read/Write swapping)
         BufferHandle agentBuffers[ 2 ];
-        uint32_t     currentReadIndex = 0;
+        uint32_t     currentReadIndex   = 0; // Drives activeIndex for ALL tasks (field + agent)
+        uint32_t     latestAgentBuffer  = 0; // Final buffer written by position tasks this frame (for renderer)
 
         BufferHandle agentCountBuffer;
         BufferHandle phenotypeBuffer;

@@ -95,6 +95,13 @@ namespace Gaudi
 
                     ImGui::TextDisabled( "necrosis < hypoxia < target O2" );
                 }
+                else if constexpr( std::is_same_v<T, DigitalTwin::Behaviours::Chemotaxis> )
+                {
+                    ImGui::LabelText( "Target Field", "%s", b.fieldName.c_str() );
+                    changed |= ImGui::SliderFloat( "Sensitivity",  &b.chemotacticSensitivity, 0.01f, 20.0f );
+                    changed |= ImGui::SliderFloat( "Saturation",   &b.receptorSaturation,     0.0f,  1.0f, "%.4f" );
+                    changed |= ImGui::SliderFloat( "Max Velocity", &b.maxVelocity,            0.1f,  50.0f );
+                }
             },
             record.behaviour );
 

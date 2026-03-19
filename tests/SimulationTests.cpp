@@ -806,3 +806,64 @@ TEST_F( SimulationBuilderTest, Behaviour_Hypoxia_Secretion_Integration )
 
     state.Destroy( m_resourceManager.get() );
 }
+
+// 10. Chemotaxis integration: agent migrates toward the VEGF gradient peak
+TEST_F( SimulationBuilderTest, Behaviour_Chemotaxis_AgentMovesTowardGradient )
+{
+    if( !m_device )
+        GTEST_SKIP();
+
+    // 10x10x10 domain (world coords -5 to +5 per axis)
+    SimulationBlueprint blueprint;
+    blueprint.SetDomainSize( glm::vec3( 10.0f ), 1.0f );
+
+    // VEGF field: pure linear X gradient (concentration increases toward +X)
+    // This ensures dCy = dCz = 0 exactly regardless of voxel-center offsets
+    blueprint.AddGridField( "VEGF" )
+        .SetInitializer( []( const glm::vec3& pos ) { return pos.x * 10.0f + 50.0f; } )
+        .SetDiffusionCoefficient( 0.0f )
+        .SetDecayRate( 0.0f )
+        .SetComputeHz( 1.0f );
+
+    // 1 agent placed at -X side (away from the VEGF peak)
+    std::vector<glm::vec4> startPos = { glm::vec4( -3.0f, 0.0f, 0.0f, 1.0f ) };
+
+    blueprint.AddAgentGroup( "EndothelialCells" )
+        .SetCount( 1 )
+        .SetDistribution( startPos )
+        // sensitivity=10, saturation=0 (linear), maxVelocity=100 (no clamp)
+        .AddBehaviour( DigitalTwin::Behaviours::Chemotaxis{ "VEGF", 10.0f, 0.0f, 100.0f } )
+        .SetHz( 1.0f );
+
+    DigitalTwin::SimulationBuilder builder( m_resourceManager.get(), m_streamingManager.get() );
+    SimulationState                state = builder.Build( blueprint );
+
+    auto compCtxHandle = m_device->CreateThreadContext( QueueType::COMPUTE );
+    auto compCtx       = m_device->GetThreadContext( compCtxHandle );
+    auto compCmd       = compCtx->GetCommandBuffer( compCtx->CreateCommandBuffer() );
+
+    DigitalTwin::GraphDispatcher dispatcher;
+    compCmd->Begin();
+    // activeIndex=0: reads agentBuffers[0], writes agentBuffers[1]; dt=1.0, totalTime=1.0 → executes
+    dispatcher.Dispatch( &state.computeGraph, compCmd, nullptr, 1.0f, 1.0f, 0 );
+    compCmd->End();
+
+    m_device->GetComputeQueue()->Submit( { compCmd } );
+    m_device->GetComputeQueue()->WaitIdle();
+
+    // Readback from output buffer (index 1 after activeIndex=0 dispatch)
+    glm::vec4 resultPos{ 0.0f };
+    m_streamingManager->ReadbackBufferImmediate( state.agentBuffers[ 1 ], &resultPos, sizeof( glm::vec4 ) );
+
+    // Agent started at x=-3.0; VEGF gradient points in +X direction → must have moved right
+    EXPECT_GT( resultPos.x, -3.0f ) << "Chemotaxis failed: agent did not move toward the VEGF gradient";
+
+    // Y and Z should be near zero (gradient is purely along X axis)
+    EXPECT_NEAR( resultPos.y, 0.0f, 0.5f ) << "Chemotaxis introduced unexpected Y displacement";
+    EXPECT_NEAR( resultPos.z, 0.0f, 0.5f ) << "Chemotaxis introduced unexpected Z displacement";
+
+    // Sanity: agent is still alive
+    EXPECT_FLOAT_EQ( resultPos.w, 1.0f );
+
+    state.Destroy( m_resourceManager.get() );
+}

@@ -574,6 +574,7 @@ namespace DigitalTwin
                     glm::uvec3 agentDispatch( ( paddedCount + 255 ) / 256, 1, 1 );
                     ComputeTask brownianTask( pipe, bg0, bg1, record.targetHz, pc, agentDispatch );
                     brownianTask.SetTag( "brownian" + tagBase );
+                    brownianTask.SetChainFlip( true );
                     outState.computeGraph.AddTask( brownianTask );
                     DT_INFO( "SimulationBuilder: Compiled BrownianMotion for group '{}' at {}Hz", group.GetName(), record.targetHz );
                 }
@@ -625,6 +626,7 @@ namespace DigitalTwin
 
                     ComputeTask jkrTask( jkrPipe, bgJkr0, bgJkr1, record.targetHz, jkrPC, jkrDispatch );
                     jkrTask.SetTag( "jkr" + tagBase );
+                    jkrTask.SetChainFlip( true );
                     outState.computeGraph.AddTask( jkrTask );
 
                     DT_INFO( "[SimulationBuilder] Compiled Biomechanics (JKR) for '{}' at {}Hz", group.GetName(), record.targetHz );
@@ -757,6 +759,7 @@ namespace DigitalTwin
 
                     ComputeTask mitosisTask( mitosisPipe, bgMitosis0, bgMitosis1, record.targetHz, mitosisPC, maxDispatch );
                     mitosisTask.SetTag( "mitosis" + tagBase );
+                    mitosisTask.SetChainFlip( true );
                     outState.computeGraph.AddTask( mitosisTask );
 
                     DT_INFO( "[SimulationBuilder] Compiled Biology (Cell Cycle) for '{}' at {}Hz", group.GetName(), record.targetHz );
@@ -867,6 +870,59 @@ namespace DigitalTwin
                         DT_WARN( "SimulationBuilder: Target grid '{}' not found for agent interaction!", targetName );
                     }
                 }
+                if( std::holds_alternative<Behaviours::Chemotaxis>( record.behaviour ) )
+                {
+                    const auto& chemo = std::get<Behaviours::Chemotaxis>( record.behaviour );
+
+                    GridFieldState* targetGrid = nullptr;
+                    for( auto& grid: outState.gridFields )
+                        if( grid.name == chemo.fieldName ) { targetGrid = &grid; break; }
+
+                    if( targetGrid )
+                    {
+                        ShaderHandle          sh       = m_resourceManager->CreateShader( "shaders/compute/chemotaxis.comp" );
+                        ComputePipelineDesc   desc{};
+                        desc.shader                    = sh;
+                        ComputePipelineHandle pipe     = m_resourceManager->CreatePipeline( desc );
+                        ComputePipeline*      pipePtr  = m_resourceManager->GetPipeline( pipe );
+
+                        BindingGroup* bg0 = m_resourceManager->GetBindingGroup( m_resourceManager->CreateBindingGroup( pipe, 0 ) );
+                        bg0->Bind( 0, m_resourceManager->GetBuffer( outState.agentBuffers[ 0 ] ) );
+                        bg0->Bind( 1, m_resourceManager->GetBuffer( outState.agentBuffers[ 1 ] ) );
+                        bg0->Bind( 2, m_resourceManager->GetTexture( targetGrid->textures[ 0 ] ), VK_IMAGE_LAYOUT_GENERAL );
+                        bg0->Bind( 3, m_resourceManager->GetBuffer( outState.agentCountBuffer ) );
+                        bg0->Build();
+
+                        BindingGroup* bg1 = m_resourceManager->GetBindingGroup( m_resourceManager->CreateBindingGroup( pipe, 0 ) );
+                        bg1->Bind( 0, m_resourceManager->GetBuffer( outState.agentBuffers[ 1 ] ) );
+                        bg1->Bind( 1, m_resourceManager->GetBuffer( outState.agentBuffers[ 0 ] ) );
+                        bg1->Bind( 2, m_resourceManager->GetTexture( targetGrid->textures[ 1 ] ), VK_IMAGE_LAYOUT_GENERAL );
+                        bg1->Bind( 3, m_resourceManager->GetBuffer( outState.agentCountBuffer ) );
+                        bg1->Build();
+
+                        ComputePushConstants pc{};
+                        pc.fParam0     = chemo.chemotacticSensitivity;
+                        pc.fParam1     = chemo.receptorSaturation;
+                        pc.fParam2     = chemo.maxVelocity;
+                        pc.offset      = currentOffset;
+                        pc.maxCapacity = paddedCount;
+                        pc.uParam1     = groupIndex;
+                        pc.domainSize  = glm::vec4( blueprint.GetDomainSize(), 0.0f );
+                        pc.gridSize    = glm::uvec4( targetGrid->width, targetGrid->height, targetGrid->depth, 0 );
+
+                        glm::uvec3  dispatch( ( paddedCount + 255 ) / 256, 1, 1 );
+                        ComputeTask task( pipePtr, bg0, bg1, record.targetHz, pc, dispatch );
+                        task.SetTag( "chemotaxis" + tagBase );
+                        task.SetChainFlip( true );
+                        outState.computeGraph.AddTask( task );
+                        DT_INFO( "[SimulationBuilder] Compiled Chemotaxis for '{}' → '{}' at {}Hz",
+                                 group.GetName(), chemo.fieldName, record.targetHz );
+                    }
+                    else
+                    {
+                        DT_WARN( "[SimulationBuilder] Chemotaxis: target field '{}' not found!", chemo.fieldName );
+                    }
+                }
                 behaviourIndex++;
             }
             currentOffset += paddedCount;
@@ -957,6 +1013,19 @@ namespace DigitalTwin
                         ComputePushConstants pc = task->GetPushConstants();
                         pc.fParam0              = rate;
                         pc.fParam1              = static_cast<float>( reqState );
+                        task->UpdatePushConstants( pc );
+                    }
+                }
+                else if( std::holds_alternative<Behaviours::Chemotaxis>( record.behaviour ) )
+                {
+                    ComputeTask* task = state.computeGraph.FindTask( "chemotaxis" + tagBase );
+                    if( task )
+                    {
+                        const auto&          chemo = std::get<Behaviours::Chemotaxis>( record.behaviour );
+                        ComputePushConstants pc    = task->GetPushConstants();
+                        pc.fParam0                 = chemo.chemotacticSensitivity;
+                        pc.fParam1                 = chemo.receptorSaturation;
+                        pc.fParam2                 = chemo.maxVelocity;
                         task->UpdatePushConstants( pc );
                     }
                 }

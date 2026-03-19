@@ -5,13 +5,13 @@
 
 namespace DigitalTwin
 {
-    void GraphDispatcher::Dispatch( ComputeGraph* graph, CommandBuffer* computeCmd, CommandBuffer* graphicsCmd, float dt, float totalTime,
-                                    uint32_t activeIndex )
+    uint32_t GraphDispatcher::Dispatch( ComputeGraph* graph, CommandBuffer* computeCmd, CommandBuffer* graphicsCmd, float dt, float totalTime,
+                                        uint32_t activeIndex )
     {
         ( void )graphicsCmd;
 
         if( !graph || graph->IsEmpty() )
-            return;
+            return activeIndex;
 
         // =========================================================================
         // FUTURE HEURISTICS HERE:
@@ -21,6 +21,7 @@ namespace DigitalTwin
         // =========================================================================
 
         // For now: We record all compute tasks sequentially into the dedicated compute command buffer.
-        graph->Execute( computeCmd, dt, totalTime, activeIndex );
+        // Returns the final active index after all chain-flipping position-writing tasks.
+        return graph->Execute( computeCmd, dt, totalTime, activeIndex );
     }
 } // namespace DigitalTwin

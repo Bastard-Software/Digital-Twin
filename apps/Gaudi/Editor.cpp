@@ -34,6 +34,7 @@ namespace Gaudi
         io.Fonts->AddFontFromFileTTF( faSolid.c_str(), 16.0f, &iconCfg, iconRanges );
 
         SetupInitialBlueprint();
+        // SetupChemotaxisDemo();
     }
 
     void Editor::SetupInitialBlueprint()
@@ -117,6 +118,28 @@ namespace Gaudi
                                .Build() )
             .SetHz( 60.0f );
 
+        // ==========================================================================================
+        // 5. Endothelial Tip Cells — migrate toward VEGF secreted by Hypoxic tumour cells
+        // ==========================================================================================
+
+        // Spawned at domain periphery (simulating vessel walls at ~r=20 inside a 50³ domain)
+        auto& endo = m_blueprint.AddAgentGroup( "EndothelialCells" )
+                         .SetCount( 50 )
+                         .SetMorphology( DigitalTwin::MorphologyGenerator::CreateSphere( 1.0f ) )
+                         .SetDistribution( DigitalTwin::SpatialDistribution::UniformInSphere( 50, 20.0f ) )
+                         .SetColor( glm::vec4( 1.0f, 0.3f, 0.3f, 1.0f ) ); // Red
+
+        // Chemotaxis toward VEGF — MUST be before Biomechanics for correct ComputeGraph order
+        endo.AddBehaviour( DigitalTwin::Behaviours::Chemotaxis{ "VEGF", 2.0f, 0.005f, 8.0f } ).SetHz( 60.0f );
+        endo.AddBehaviour( DigitalTwin::Behaviours::BrownianMotion{ 0.1f } ).SetHz( 60.0f );
+        endo.AddBehaviour( DigitalTwin::BiomechanicsGenerator::JKR()
+                               .SetYoungsModulus( 15.0f )
+                               .SetPoissonRatio( 0.4f )
+                               .SetAdhesionEnergy( 1.0f )
+                               .SetMaxInteractionRadius( 1.5f )
+                               .Build() )
+            .SetHz( 60.0f );
+
         m_engine.SetBlueprint( m_blueprint );
     }
 
@@ -158,4 +181,93 @@ namespace Gaudi
         DT_INFO( "Gaudi Editor closing..." );
         m_engine.Shutdown();
     }
+    void Editor::SetupChemotaxisDemo()
+    {
+        // Fresh blueprint — wipe any previous state
+        m_blueprint = DigitalTwin::SimulationBlueprint{};
+
+        // ==========================================================================================
+        // 1. Domain
+        // ==========================================================================================
+        m_blueprint.SetName( "Chemotaxis Demo" );
+        m_blueprint.SetDomainSize( glm::vec3( 50.0f ), 2.0f );
+
+        m_blueprint.ConfigureSpatialPartitioning()
+            .SetMethod( DigitalTwin::SpatialPartitioningMethod::HashGrid )
+            .SetCellSize( 3.0f )
+            .SetMaxDensity( 64 )
+            .SetComputeHz( 60.0f );
+
+        // ==========================================================================================
+        // 2. VEGF field — pre-seeded Gaussian at origin so gradient is visible from frame 1.
+        //    Source cells top it up continuously; decay is minimal so the cloud stays stable.
+        // ==========================================================================================
+        m_blueprint.AddGridField( "VEGF" )
+            .SetInitializer( DigitalTwin::GridInitializer::Gaussian( glm::vec3( 0.0f ), 8.0f, 200.0f ) )
+            .SetDiffusionCoefficient( 0.8f )
+            .SetDecayRate( 0.01f )
+            .SetComputeHz( 60.0f );
+
+        // ==========================================================================================
+        // 3. HypoxicCores — 3 cells at the centre, always secreting VEGF (no CellCycle needed).
+        //    Orange so they stand out as the attractant source.
+        // ==========================================================================================
+        std::vector<glm::vec4> corePositions = {
+            glm::vec4( -1.5f,  0.5f, 0.0f, 1.0f ),
+            glm::vec4(  1.5f,  0.5f, 0.0f, 1.0f ),
+            glm::vec4(  0.0f, -1.0f, 0.0f, 1.0f ),
+        };
+
+        auto& cores = m_blueprint.AddAgentGroup( "HypoxicCores" )
+                          .SetCount( 3 )
+                          .SetMorphology( DigitalTwin::MorphologyGenerator::CreateSphere( 1.5f ) )
+                          .SetDistribution( corePositions )
+                          .SetColor( glm::vec4( 1.0f, 0.6f, 0.0f, 1.0f ) ); // Orange
+
+        // Unconditional secretion — no requiredState so VEGF flows from simulation start
+        cores.AddBehaviour( DigitalTwin::Behaviours::SecreteField{ "VEGF", 500.0f } ).SetHz( 60.0f );
+        cores.AddBehaviour( DigitalTwin::BiomechanicsGenerator::JKR()
+                                .SetYoungsModulus( 20.0f )
+                                .SetPoissonRatio( 0.4f )
+                                .SetAdhesionEnergy( 1.5f )
+                                .SetMaxInteractionRadius( 1.5f )
+                                .Build() )
+            .SetHz( 60.0f );
+
+        // ==========================================================================================
+        // 4. EndothelialCells — ring of 8 cells at r ≈ 18 in the XZ plane.
+        //    No BrownianMotion so directed migration is unambiguous.
+        //    Red so the inward collapse toward the orange source is visually obvious.
+        // ==========================================================================================
+        const float r = 18.0f;
+        std::vector<glm::vec4> endoPositions = {
+            glm::vec4(  r,     0.0f,  0.0f,  1.0f ),
+            glm::vec4(  r * 0.707f, 0.0f,  r * 0.707f, 1.0f ),
+            glm::vec4(  0.0f,  0.0f,  r,     1.0f ),
+            glm::vec4( -r * 0.707f, 0.0f,  r * 0.707f, 1.0f ),
+            glm::vec4( -r,     0.0f,  0.0f,  1.0f ),
+            glm::vec4( -r * 0.707f, 0.0f, -r * 0.707f, 1.0f ),
+            glm::vec4(  0.0f,  0.0f, -r,     1.0f ),
+            glm::vec4(  r * 0.707f, 0.0f, -r * 0.707f, 1.0f ),
+        };
+
+        auto& endo = m_blueprint.AddAgentGroup( "EndothelialCells" )
+                         .SetCount( 8 )
+                         .SetMorphology( DigitalTwin::MorphologyGenerator::CreateSphere( 1.0f ) )
+                         .SetDistribution( endoPositions )
+                         .SetColor( glm::vec4( 1.0f, 0.2f, 0.2f, 1.0f ) ); // Red
+
+        // Chemotaxis BEFORE Biomechanics — gradient movement resolved first, then collision
+        endo.AddBehaviour( DigitalTwin::Behaviours::Chemotaxis{ "VEGF", 6.0f, 0.001f, 15.0f } ).SetHz( 60.0f );
+        endo.AddBehaviour( DigitalTwin::BiomechanicsGenerator::JKR()
+                               .SetYoungsModulus( 15.0f )
+                               .SetPoissonRatio( 0.4f )
+                               .SetAdhesionEnergy( 1.0f )
+                               .SetMaxInteractionRadius( 1.5f )
+                               .Build() )
+            .SetHz( 60.0f );
+
+        m_engine.SetBlueprint( m_blueprint );
+    }
+
 } // namespace Gaudi

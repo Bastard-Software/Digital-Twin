@@ -650,14 +650,19 @@ namespace DigitalTwin
                 compCmd->Begin();
                 gfxSimCmd->Begin();
 
-                GraphDispatcher::Dispatch( &m_simulationState.computeGraph, compCmd, gfxSimCmd, dt, m_totalTime, m_simulationState.currentReadIndex );
+                uint32_t finalActive = GraphDispatcher::Dispatch( &m_simulationState.computeGraph, compCmd, gfxSimCmd, dt, m_totalTime, m_simulationState.currentReadIndex );
 
                 gfxSimCmd->End();
                 compCmd->End();
 
-                // PING-PONG SWAP LOGIC:
-                // After dispatching the current frame's work, we swap the read and write buffers
-                // so the next frame reads from what we just wrote.
+                // latestAgentBuffer: the side that received the last position write this frame,
+                // determined by the chain-flip mechanism. Used by the renderer so it always
+                // reads the most recent agent positions without blinking on pause.
+                m_simulationState.latestAgentBuffer = finalActive;
+
+                // currentReadIndex drives the active-index for ALL tasks (field textures + agents)
+                // next frame. It must alternate every frame so the field ping-pong evolves correctly
+                // (diffusion always needs to read from the side it previously wrote to).
                 m_simulationState.currentReadIndex = ( m_simulationState.currentReadIndex + 1 ) % 2;
 
                 // 1A. Submit to COMPUTE queue

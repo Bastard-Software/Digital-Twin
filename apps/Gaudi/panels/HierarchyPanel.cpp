@@ -49,6 +49,8 @@ namespace Gaudi
                     return "Biomechanics";
                 else if constexpr( std::is_same_v<T, DigitalTwin::Behaviours::CellCycle> )
                     return "Cell Cycle";
+                else if constexpr( std::is_same_v<T, DigitalTwin::Behaviours::Chemotaxis> )
+                    return "Chemotaxis: " + b.fieldName;
                 else
                     return "Unknown";
             },
@@ -157,6 +159,21 @@ namespace Gaudi
                             {
                                 group.AddBehaviour( DigitalTwin::Behaviours::CellCycle{ 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f } ).SetHz( 60 );
                                 m_engine.SetBlueprint( m_blueprint );
+                            }
+                            if( ImGui::BeginMenu( "Chemotaxis" ) )
+                            {
+                                const auto& fields = m_blueprint.GetGridFields();
+                                if( fields.empty() )
+                                    ImGui::TextDisabled( "(no grid fields defined)" );
+                                for( const auto& f : fields )
+                                {
+                                    if( ImGui::MenuItem( f.GetName().c_str() ) )
+                                    {
+                                        group.AddBehaviour( DigitalTwin::Behaviours::Chemotaxis{ f.GetName() } ).SetHz( 60 );
+                                        m_engine.SetBlueprint( m_blueprint );
+                                    }
+                                }
+                                ImGui::EndMenu();
                             }
                             ImGui::EndMenu();
                         }

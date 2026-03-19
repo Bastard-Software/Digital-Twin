@@ -52,13 +52,26 @@ namespace DigitalTwin::Behaviours
         float apoptosisProbPerSec; // Base probability of death per second
     };
 
+    struct Chemotaxis
+    {
+        std::string fieldName;
+        float       chemotacticSensitivity = 1.0f;   // Bias strength (µm²/s per unit gradient)
+        float       receptorSaturation     = 0.01f;  // Kd-like constant; 0 = linear (no saturation)
+        float       maxVelocity            = 5.0f;   // Hard clamp on resultant speed (µm/s)
+    };
+
 } // namespace DigitalTwin::Behaviours
 
 namespace DigitalTwin
 {
     // A variant holding all possible behaviours the engine understands
-    using BehaviourVariant =
-        std::variant<Behaviours::BrownianMotion, Behaviours::ConsumeField, Behaviours::SecreteField, Behaviours::Biomechanics, Behaviours::CellCycle>;
+    using BehaviourVariant = std::variant<
+        Behaviours::BrownianMotion,
+        Behaviours::ConsumeField,
+        Behaviours::SecreteField,
+        Behaviours::Biomechanics,
+        Behaviours::CellCycle,
+        Behaviours::Chemotaxis>;
 
     // Wrapper to attach execution parameters (like frequency) to a behaviour
     struct BehaviourRecord

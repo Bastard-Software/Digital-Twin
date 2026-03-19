@@ -5,13 +5,15 @@
 
 namespace DigitalTwin
 {
-    void ComputeGraph::Execute( CommandBuffer* cmd, float dt, float totalTime, uint32_t activeIndex )
+    uint32_t ComputeGraph::Execute( CommandBuffer* cmd, float dt, float totalTime, uint32_t activeIndex )
     {
+        uint32_t localActive = activeIndex;
+
         for( auto& task: m_tasks )
         {
             if( task.ShouldExecute( dt ) )
             {
-                task.Record( cmd, totalTime, activeIndex );
+                task.Record( cmd, totalTime, localActive );
 
                 VkMemoryBarrier2 barrier = { VK_STRUCTURE_TYPE_MEMORY_BARRIER_2 };
                 barrier.srcStageMask     = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT;
@@ -24,8 +26,13 @@ namespace DigitalTwin
                 depInfo.pMemoryBarriers    = &barrier;
 
                 cmd->PipelineBarrier( &depInfo );
+
+                if( task.GetChainFlip() )
+                    localActive = 1u - localActive;
             }
         }
+
+        return localActive;
     }
     ComputeTask* ComputeGraph::FindTask( const std::string& tag )
     {

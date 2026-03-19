@@ -10,7 +10,7 @@ namespace DigitalTwin
     {
     public:
         void         AddTask( const ComputeTask& task ) { m_tasks.push_back( task ); }
-        void         Execute( CommandBuffer* cmd, float dt, float totalTime, uint32_t activeIndex );
+        uint32_t     Execute( CommandBuffer* cmd, float dt, float totalTime, uint32_t activeIndex );
         bool         IsEmpty() const { return m_tasks.empty(); }
         ComputeTask* FindTask( const std::string& tag );
 

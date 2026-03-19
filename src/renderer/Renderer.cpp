@@ -338,6 +338,7 @@ namespace DigitalTwin
             renderScene.groupDataBuffer   = state->groupDataBuffer;
             renderScene.agentBuffers[ 0 ] = state->agentBuffers[ 0 ];
             renderScene.agentBuffers[ 1 ] = state->agentBuffers[ 1 ];
+            renderScene.readIndex         = state->latestAgentBuffer;
             renderScene.agentCountBuffer  = state->agentCountBuffer;
             renderScene.phenotypeBuffer   = state->phenotypeBuffer;
             renderScene.drawCount         = state->groupCount;

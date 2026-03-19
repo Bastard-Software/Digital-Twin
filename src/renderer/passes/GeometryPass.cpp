@@ -78,12 +78,14 @@ namespace DigitalTwin
         // Update bindings dynamically for the current frame
         bg->Bind( 0, m_resourceManager->GetBuffer( cameraUBO ) );
         bg->Bind( 1, m_resourceManager->GetBuffer( scene->vertexBuffer ) );
-        bg->Bind( 2, m_resourceManager->GetBuffer( scene->GetAgentReadBuffer( flightIndex ) ) );
+        bg->Bind( 2, m_resourceManager->GetBuffer( scene->GetAgentReadBuffer() ) );
         bg->Bind( 3, m_resourceManager->GetBuffer( scene->groupDataBuffer ) );
+        // Binding 4 must always be updated (Vulkan spec: statically used descriptors must be valid).
+        // Fall back to the agent buffer when no phenotype data exists (e.g. no CellCycle behaviour).
         if( scene->phenotypeBuffer.IsValid() )
-        {
             bg->Bind( 4, m_resourceManager->GetBuffer( scene->phenotypeBuffer ) );
-        }
+        else
+            bg->Bind( 4, m_resourceManager->GetBuffer( scene->GetAgentReadBuffer() ) );
         bg->Build();
 
         GraphicsPipeline* pipeline = m_resourceManager->GetPipeline( m_pipeline );

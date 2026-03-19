@@ -1153,3 +1153,200 @@ TEST_F( ComputeTest, Shader_Biology_ConditionalSecretion )
     m_rm->DestroyBuffer( deltaBuf );
     m_rm->DestroyBuffer( pressuresBuf );
 }
+
+// =================================================================================================
+// Chemotaxis shader tests
+// =================================================================================================
+
+// Verify that an agent moves in the direction of a linear X-axis gradient
+TEST_F( ComputeTest, Chemotaxis_PureGradient_MovesInGradientDirection )
+{
+    if( !m_device )
+        GTEST_SKIP();
+
+    // 10x10x10 field with a linear X-axis gradient: field(x,y,z) = x * 1.0f
+    uint32_t width = 10, height = 10, depth = 10;
+    uint32_t voxelCount = width * height * depth;
+    size_t   gridBytes  = voxelCount * sizeof( float );
+
+    std::vector<float> fieldData( voxelCount );
+    for( uint32_t z = 0; z < depth; ++z )
+        for( uint32_t y = 0; y < height; ++y )
+            for( uint32_t x = 0; x < width; ++x )
+                fieldData[ x + y * width + z * width * height ] = static_cast<float>( x );
+
+    TextureDesc texDesc{};
+    texDesc.type      = TextureType::Texture3D;
+    texDesc.width     = width;
+    texDesc.height    = height;
+    texDesc.depth     = depth;
+    texDesc.format    = VK_FORMAT_R32_SFLOAT;
+    texDesc.usage     = TextureUsage::STORAGE | TextureUsage::TRANSFER_DST | TextureUsage::TRANSFER_SRC;
+    texDesc.debugName = "ChemotaxisFieldTex";
+    TextureHandle fieldTex = m_rm->CreateTexture( texDesc );
+    m_stream->UploadTextureImmediate( fieldTex, fieldData.data(), gridBytes );
+
+    // Agent buffer: 1 agent at world origin (0,0,0), alive (w=1)
+    size_t           agentBytes = sizeof( glm::vec4 );
+    glm::vec4        agentIn    = glm::vec4( 0.0f, 0.0f, 0.0f, 1.0f );
+    glm::vec4        agentOut   = glm::vec4( 0.0f );
+    BufferHandle     inBuf      = m_rm->CreateBuffer( { agentBytes, BufferType::STORAGE, "ChemoInAgents" } );
+    BufferHandle     outBuf     = m_rm->CreateBuffer( { agentBytes, BufferType::STORAGE, "ChemoOutAgents" } );
+    m_stream->UploadBufferImmediate( { { inBuf, &agentIn, agentBytes } } );
+    m_stream->UploadBufferImmediate( { { outBuf, &agentOut, agentBytes } } );
+
+    // Count buffer: counts[0] = 1
+    uint32_t     count    = 1;
+    BufferHandle countBuf = m_rm->CreateBuffer( { sizeof( uint32_t ), BufferType::INDIRECT, "ChemoCountBuf" } );
+    m_stream->UploadBufferImmediate( { { countBuf, &count, sizeof( uint32_t ) } } );
+
+    ComputePipelineDesc   pipeDesc{};
+    pipeDesc.shader                  = m_rm->CreateShader( "shaders/compute/chemotaxis.comp" );
+    ComputePipelineHandle pipeHandle = m_rm->CreatePipeline( pipeDesc );
+    ComputePipeline*      pipeline   = m_rm->GetPipeline( pipeHandle );
+
+    BindingGroup* bg = m_rm->GetBindingGroup( m_rm->CreateBindingGroup( pipeHandle, 0 ) );
+    bg->Bind( 0, m_rm->GetBuffer( inBuf ) );
+    bg->Bind( 1, m_rm->GetBuffer( outBuf ) );
+    bg->Bind( 2, m_rm->GetTexture( fieldTex ), VK_IMAGE_LAYOUT_GENERAL );
+    bg->Bind( 3, m_rm->GetBuffer( countBuf ) );
+    bg->Build();
+
+    // Domain 10x10x10, voxels 10x10x10, dt=1.0, sensitivity=1, saturation=0, maxVelocity=100
+    ComputePushConstants pc{};
+    pc.dt          = 1.0f;
+    pc.fParam0     = 1.0f;   // sensitivity
+    pc.fParam1     = 0.0f;   // saturation (linear)
+    pc.fParam2     = 100.0f; // maxVelocity (no clamp)
+    pc.offset      = 0;
+    pc.maxCapacity = 1;
+    pc.uParam1     = 0; // grpNdx
+    pc.domainSize  = glm::vec4( 10.0f, 10.0f, 10.0f, 0.0f );
+    pc.gridSize    = glm::uvec4( 10, 10, 10, 0 );
+
+    auto compCtxHandle = m_device->CreateThreadContext( QueueType::COMPUTE );
+    auto compCtx       = m_device->GetThreadContext( compCtxHandle );
+    auto compCmd       = compCtx->GetCommandBuffer( compCtx->CreateCommandBuffer() );
+
+    compCmd->Begin();
+    compCmd->SetPipeline( pipeline );
+    compCmd->SetBindingGroup( bg, pipeline->GetLayout(), VK_PIPELINE_BIND_POINT_COMPUTE );
+    compCmd->PushConstants( pipeline->GetLayout(), VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof( pc ), &pc );
+    compCmd->Dispatch( 1, 1, 1 );
+    compCmd->End();
+
+    m_device->GetComputeQueue()->Submit( { compCmd } );
+    m_device->GetComputeQueue()->WaitIdle();
+
+    glm::vec4 result;
+    m_stream->ReadbackBufferImmediate( outBuf, &result, sizeof( glm::vec4 ) );
+
+    // Agent started at x=0; linear X gradient → must have moved in +X direction
+    EXPECT_GT( result.x, 0.0f ) << "Chemotaxis failed: agent did not move toward the X gradient";
+    // Y and Z should not have moved (pure X gradient)
+    EXPECT_NEAR( result.y, 0.0f, 1e-4f ) << "Unexpected Y displacement from pure X gradient";
+    EXPECT_NEAR( result.z, 0.0f, 1e-4f ) << "Unexpected Z displacement from pure X gradient";
+    EXPECT_FLOAT_EQ( result.w, 1.0f ) << "Agent w flag was corrupted";
+
+    m_rm->DestroyBuffer( inBuf );
+    m_rm->DestroyBuffer( outBuf );
+    m_rm->DestroyBuffer( countBuf );
+    m_rm->DestroyTexture( fieldTex );
+}
+
+// Verify that an extremely large gradient is clamped to maxVelocity and produces no NaN
+TEST_F( ComputeTest, Chemotaxis_HighGradient_ClampedToMaxVelocity )
+{
+    if( !m_device )
+        GTEST_SKIP();
+
+    uint32_t width = 10, height = 10, depth = 10;
+    uint32_t voxelCount = width * height * depth;
+    size_t   gridBytes  = voxelCount * sizeof( float );
+
+    // Extreme gradient: field(x,y,z) = x * 10000.0f
+    std::vector<float> fieldData( voxelCount );
+    for( uint32_t z = 0; z < depth; ++z )
+        for( uint32_t y = 0; y < height; ++y )
+            for( uint32_t x = 0; x < width; ++x )
+                fieldData[ x + y * width + z * width * height ] = static_cast<float>( x ) * 10000.0f;
+
+    TextureDesc texDesc{};
+    texDesc.type      = TextureType::Texture3D;
+    texDesc.width     = width;
+    texDesc.height    = height;
+    texDesc.depth     = depth;
+    texDesc.format    = VK_FORMAT_R32_SFLOAT;
+    texDesc.usage     = TextureUsage::STORAGE | TextureUsage::TRANSFER_DST | TextureUsage::TRANSFER_SRC;
+    texDesc.debugName = "ChemotaxisHighFieldTex";
+    TextureHandle fieldTex = m_rm->CreateTexture( texDesc );
+    m_stream->UploadTextureImmediate( fieldTex, fieldData.data(), gridBytes );
+
+    glm::vec4    agentIn  = glm::vec4( 0.0f, 0.0f, 0.0f, 1.0f );
+    glm::vec4    agentOut = glm::vec4( 0.0f );
+    BufferHandle inBuf    = m_rm->CreateBuffer( { sizeof( glm::vec4 ), BufferType::STORAGE, "ChemoHighInAgents" } );
+    BufferHandle outBuf   = m_rm->CreateBuffer( { sizeof( glm::vec4 ), BufferType::STORAGE, "ChemoHighOutAgents" } );
+    m_stream->UploadBufferImmediate( { { inBuf, &agentIn, sizeof( glm::vec4 ) } } );
+    m_stream->UploadBufferImmediate( { { outBuf, &agentOut, sizeof( glm::vec4 ) } } );
+
+    uint32_t     count    = 1;
+    BufferHandle countBuf = m_rm->CreateBuffer( { sizeof( uint32_t ), BufferType::INDIRECT, "ChemoHighCountBuf" } );
+    m_stream->UploadBufferImmediate( { { countBuf, &count, sizeof( uint32_t ) } } );
+
+    ComputePipelineDesc   pipeDesc{};
+    pipeDesc.shader                  = m_rm->CreateShader( "shaders/compute/chemotaxis.comp" );
+    ComputePipelineHandle pipeHandle = m_rm->CreatePipeline( pipeDesc );
+    ComputePipeline*      pipeline   = m_rm->GetPipeline( pipeHandle );
+
+    BindingGroup* bg = m_rm->GetBindingGroup( m_rm->CreateBindingGroup( pipeHandle, 0 ) );
+    bg->Bind( 0, m_rm->GetBuffer( inBuf ) );
+    bg->Bind( 1, m_rm->GetBuffer( outBuf ) );
+    bg->Bind( 2, m_rm->GetTexture( fieldTex ), VK_IMAGE_LAYOUT_GENERAL );
+    bg->Bind( 3, m_rm->GetBuffer( countBuf ) );
+    bg->Build();
+
+    const float          maxVelocity = 5.0f;
+    const float          dt          = 0.016f;
+    ComputePushConstants pc{};
+    pc.dt          = dt;
+    pc.fParam0     = 1.0f;        // sensitivity
+    pc.fParam1     = 0.0f;        // saturation
+    pc.fParam2     = maxVelocity; // maxVelocity
+    pc.offset      = 0;
+    pc.maxCapacity = 1;
+    pc.uParam1     = 0;
+    pc.domainSize  = glm::vec4( 10.0f, 10.0f, 10.0f, 0.0f );
+    pc.gridSize    = glm::uvec4( 10, 10, 10, 0 );
+
+    auto compCtxHandle = m_device->CreateThreadContext( QueueType::COMPUTE );
+    auto compCtx       = m_device->GetThreadContext( compCtxHandle );
+    auto compCmd       = compCtx->GetCommandBuffer( compCtx->CreateCommandBuffer() );
+
+    compCmd->Begin();
+    compCmd->SetPipeline( pipeline );
+    compCmd->SetBindingGroup( bg, pipeline->GetLayout(), VK_PIPELINE_BIND_POINT_COMPUTE );
+    compCmd->PushConstants( pipeline->GetLayout(), VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof( pc ), &pc );
+    compCmd->Dispatch( 1, 1, 1 );
+    compCmd->End();
+
+    m_device->GetComputeQueue()->Submit( { compCmd } );
+    m_device->GetComputeQueue()->WaitIdle();
+
+    glm::vec4 result;
+    m_stream->ReadbackBufferImmediate( outBuf, &result, sizeof( glm::vec4 ) );
+
+    // Displacement must not exceed maxVelocity * dt
+    float displacement = glm::length( glm::vec3( result ) - glm::vec3( agentIn ) );
+    EXPECT_LE( displacement, maxVelocity * dt + 1e-4f ) << "Chemotaxis exceeded maxVelocity clamp!";
+
+    // No NaN values
+    EXPECT_TRUE( result.x == result.x ) << "NaN detected in x component after extreme gradient!";
+    EXPECT_TRUE( result.y == result.y ) << "NaN detected in y component after extreme gradient!";
+    EXPECT_TRUE( result.z == result.z ) << "NaN detected in z component after extreme gradient!";
+    EXPECT_FLOAT_EQ( result.w, 1.0f );
+
+    m_rm->DestroyBuffer( inBuf );
+    m_rm->DestroyBuffer( outBuf );
+    m_rm->DestroyBuffer( countBuf );
+    m_rm->DestroyTexture( fieldTex );
+}

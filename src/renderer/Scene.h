@@ -17,14 +17,10 @@ namespace DigitalTwin
         BufferHandle agentBuffers[ 2 ];
         BufferHandle agentCountBuffer;
         BufferHandle phenotypeBuffer;
-        uint32_t     drawCount = 0;
+        uint32_t     drawCount  = 0;
+        uint32_t     readIndex  = 0; // Which ping-pong buffer holds the latest valid agent positions
 
-        /**
-         * @brief Helper to get the correct agent buffer for reading in the current frame.
-         * @param flightIndex The current frame-in-flight index (0 or 1).
-         * @return Handle to the buffer that should be read by the vertex shader.
-         */
-        BufferHandle GetAgentReadBuffer( uint32_t flightIndex ) const { return agentBuffers[ flightIndex ]; }
+        BufferHandle GetAgentReadBuffer() const { return agentBuffers[ readIndex ]; }
     };
 
 } // namespace DigitalTwin

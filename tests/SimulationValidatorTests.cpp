@@ -520,3 +520,66 @@ TEST( SimulationValidatorTest, WarningsOnly_IsValidTrue )
     EXPECT_TRUE( result.IsValid() );
     EXPECT_FALSE( result.issues.empty() );
 }
+
+// --- Chemotaxis Validator Tests ---
+
+TEST( SimulationValidatorTests, Chemotaxis_ValidParams_NoError )
+{
+    SimulationBlueprint bp;
+    bp.SetDomainSize( { 100.f, 100.f, 100.f }, 2.f );
+    bp.AddGridField( "VEGF" ).SetDiffusionCoefficient( 2.0f );
+    bp.AddAgentGroup( "EC" ).SetCount( 10 )
+      .AddBehaviour( Behaviours::Chemotaxis{ "VEGF", 1.0f, 0.01f, 5.0f } );
+    EXPECT_TRUE( SimulationValidator::Validate( bp ).IsValid() );
+}
+
+TEST( SimulationValidatorTests, Chemotaxis_UnknownField_ReturnsError )
+{
+    SimulationBlueprint bp;
+    bp.SetDomainSize( { 100.f, 100.f, 100.f }, 2.f );
+    // No VEGF field declared
+    bp.AddAgentGroup( "EC" ).SetCount( 10 )
+      .AddBehaviour( Behaviours::Chemotaxis{ "VEGF", 1.0f, 0.01f, 5.0f } );
+    EXPECT_FALSE( SimulationValidator::Validate( bp ).IsValid() );
+}
+
+TEST( SimulationValidatorTests, Chemotaxis_ZeroSensitivity_ReturnsError )
+{
+    SimulationBlueprint bp;
+    bp.SetDomainSize( { 100.f, 100.f, 100.f }, 2.f );
+    bp.AddGridField( "VEGF" ).SetDiffusionCoefficient( 2.0f );
+    bp.AddAgentGroup( "EC" ).SetCount( 10 )
+      .AddBehaviour( Behaviours::Chemotaxis{ "VEGF", 0.0f, 0.01f, 5.0f } ); // sensitivity=0
+    EXPECT_FALSE( SimulationValidator::Validate( bp ).IsValid() );
+}
+
+TEST( SimulationValidatorTests, Chemotaxis_ZeroMaxVelocity_ReturnsError )
+{
+    SimulationBlueprint bp;
+    bp.SetDomainSize( { 100.f, 100.f, 100.f }, 2.f );
+    bp.AddGridField( "VEGF" ).SetDiffusionCoefficient( 2.0f );
+    bp.AddAgentGroup( "EC" ).SetCount( 10 )
+      .AddBehaviour( Behaviours::Chemotaxis{ "VEGF", 1.0f, 0.01f, 0.0f } ); // maxVelocity=0
+    EXPECT_FALSE( SimulationValidator::Validate( bp ).IsValid() );
+}
+
+TEST( SimulationValidatorTests, Chemotaxis_NegativeSaturation_ReturnsError )
+{
+    SimulationBlueprint bp;
+    bp.SetDomainSize( { 100.f, 100.f, 100.f }, 2.f );
+    bp.AddGridField( "VEGF" ).SetDiffusionCoefficient( 2.0f );
+    bp.AddAgentGroup( "EC" ).SetCount( 10 )
+      .AddBehaviour( Behaviours::Chemotaxis{ "VEGF", 1.0f, -0.1f, 5.0f } ); // saturation<0
+    EXPECT_FALSE( SimulationValidator::Validate( bp ).IsValid() );
+}
+
+TEST( SimulationValidatorTests, Chemotaxis_ZeroSaturation_NoError )
+{
+    // saturation=0 means linear response — valid (just potentially unstable at high gradients)
+    SimulationBlueprint bp;
+    bp.SetDomainSize( { 100.f, 100.f, 100.f }, 2.f );
+    bp.AddGridField( "VEGF" ).SetDiffusionCoefficient( 2.0f );
+    bp.AddAgentGroup( "EC" ).SetCount( 10 )
+      .AddBehaviour( Behaviours::Chemotaxis{ "VEGF", 1.0f, 0.0f, 5.0f } );
+    EXPECT_TRUE( SimulationValidator::Validate( bp ).IsValid() );
+}

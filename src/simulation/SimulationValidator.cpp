@@ -109,6 +109,17 @@ namespace DigitalTwin
                                                  "'. Available fields: " + availableFields );
                             }
                         }
+
+                        if constexpr( std::is_same_v<T, Behaviours::Chemotaxis> )
+                        {
+                            if( behaviour.fieldName.empty() )
+                                result.AddError( "AgentGroup '" + group.GetName() +
+                                                 "': Chemotaxis fieldName must not be empty" );
+                            else if( declaredFields.find( behaviour.fieldName ) == declaredFields.end() )
+                                result.AddError( "AgentGroup '" + group.GetName() +
+                                                 "': Chemotaxis references unknown field '" + behaviour.fieldName +
+                                                 "'. Available fields: " + availableFields );
+                        }
                     },
                     record.behaviour );
             }
@@ -175,6 +186,19 @@ namespace DigitalTwin
                             if( behaviour.speed <= 0.0f )
                                 result.AddWarning( "AgentGroup '" + group.GetName() +
                                                    "': BrownianMotion speed <= 0. The behaviour will have no effect." );
+                        }
+
+                        if constexpr( std::is_same_v<T, Behaviours::Chemotaxis> )
+                        {
+                            if( behaviour.chemotacticSensitivity <= 0.0f )
+                                result.AddError( "AgentGroup '" + group.GetName() +
+                                                 "': Chemotaxis chemotacticSensitivity must be > 0" );
+                            if( behaviour.receptorSaturation < 0.0f )
+                                result.AddError( "AgentGroup '" + group.GetName() +
+                                                 "': Chemotaxis receptorSaturation must be >= 0" );
+                            if( behaviour.maxVelocity <= 0.0f )
+                                result.AddError( "AgentGroup '" + group.GetName() +
+                                                 "': Chemotaxis maxVelocity must be > 0" );
                         }
                     },
                     record.behaviour );

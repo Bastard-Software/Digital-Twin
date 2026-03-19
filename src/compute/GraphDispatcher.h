@@ -15,7 +15,7 @@ namespace DigitalTwin
     class GraphDispatcher
     {
     public:
-        static void Dispatch( ComputeGraph* graph, CommandBuffer* computeCmd, CommandBuffer* graphicsCmd, float dt, float totalTime,
-                              uint32_t activeIndex );
+        static uint32_t Dispatch( ComputeGraph* graph, CommandBuffer* computeCmd, CommandBuffer* graphicsCmd, float dt, float totalTime,
+                                  uint32_t activeIndex );
     };
 } // namespace DigitalTwin

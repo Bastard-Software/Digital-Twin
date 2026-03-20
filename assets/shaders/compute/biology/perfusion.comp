@@ -1,0 +1,64 @@
+#version 460
+layout(local_size_x = 256) in;
+
+// Standard 64-byte push constant block.
+// fParam0 = signed flow rate (positive = inject, negative = drain)
+layout(push_constant) uniform PushConstants {
+    float dt;
+    float totalTime;
+    float rate;     // fParam0 — +rate for Perfusion, -rate for Drain (negated by builder)
+    float _pad0;    // fParam1 unused
+    float _pad1;    // fParam2 unused
+    float _pad2;    // fParam3 unused
+    float _pad3;    // fParam4 unused
+    float _pad4;    // fParam5 unused
+    uint  offset;
+    uint  maxCapacity;
+    uint  _upad0;   // uParam0 unused
+    uint  grpNdx;   // uParam1 — group index for agent count lookup
+    vec4  domainSize;
+    uvec4 gridSize;
+} pc;
+
+layout(std140, binding = 0) readonly buffer AgentBuffer   { vec4 positions[]; } agents;
+layout(std430, binding = 1)          buffer DeltaBuffer   { int  deltas[];    };
+layout(std430, binding = 2) readonly buffer CounterBuffer { uint counts[];    } counters;
+
+struct PhenotypeData {
+    uint  lifecycleState;
+    float biomass;
+    float timer;
+    uint  cellType;
+};
+layout(std430, binding = 3) readonly buffer Phenotypes { PhenotypeData data[]; } phenotypes;
+
+void main() {
+    uint idx = gl_GlobalInvocationID.x;
+    if (idx >= pc.maxCapacity) return;
+    if (idx >= counters.counts[pc.grpNdx]) return;
+
+    uint globalIdx = pc.offset + idx;
+    if (agents.positions[globalIdx].w == 0.0) return; // dead slot
+
+    // Only StalkCells (cellType == 2) are established vessel segments that perfuse/drain
+    if (phenotypes.data[globalIdx].cellType != 2u) return;
+
+    vec3 pos = agents.positions[globalIdx].xyz;
+    if (isnan(pos.x) || isnan(pos.y) || isnan(pos.z)) return;
+
+    vec3 boxMin = -pc.domainSize.xyz * 0.5;
+    vec3 boxMax =  pc.domainSize.xyz * 0.5;
+    if (any(lessThan(pos, boxMin)) || any(greaterThanEqual(pos, boxMax))) return;
+
+    uint flatIdx = 0;
+    if (pc.gridSize.x > 0) {
+        vec3  uvw   = (pos - boxMin) / pc.domainSize.xyz;
+        ivec3 coord = ivec3(uvw * vec3(pc.gridSize.xyz));
+        coord   = clamp(coord, ivec3(0), ivec3(pc.gridSize.xyz) - ivec3(1));
+        flatIdx = coord.x + coord.y * pc.gridSize.x + coord.z * pc.gridSize.x * pc.gridSize.y;
+    }
+
+    // Signed delta: positive injects substance, negative removes it
+    int intDelta = int(pc.rate * pc.dt * 100000.0);
+    atomicAdd(deltas[flatIdx], intDelta);
+}

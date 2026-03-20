@@ -904,6 +904,91 @@ namespace DigitalTwin
                         DT_WARN( "SimulationBuilder: Target grid '{}' not found for agent interaction!", targetName );
                     }
                 }
+                if( std::holds_alternative<Behaviours::Perfusion>( record.behaviour ) ||
+                    std::holds_alternative<Behaviours::Drain>( record.behaviour ) )
+                {
+                    bool        isPerfusion = std::holds_alternative<Behaviours::Perfusion>( record.behaviour );
+                    std::string targetName  = isPerfusion ? std::get<Behaviours::Perfusion>( record.behaviour ).fieldName
+                                                          : std::get<Behaviours::Drain>( record.behaviour ).fieldName;
+
+                    // Positive for Perfusion (inject), negative for Drain (remove)
+                    float rate = isPerfusion ? +std::get<Behaviours::Perfusion>( record.behaviour ).rate
+                                            : -std::get<Behaviours::Drain>( record.behaviour ).rate;
+
+                    GridFieldState* targetGrid = nullptr;
+                    for( auto& grid: outState.gridFields )
+                        if( grid.name == targetName ) { targetGrid = &grid; break; }
+
+                    if( targetGrid )
+                    {
+                        // phenotypeBuffer must exist to filter by cellType == StalkCell
+                        if( !outState.phenotypeBuffer.IsValid() )
+                        {
+                            uint32_t globalCapacity = 0;
+                            for( const auto& g: blueprint.GetGroups() )
+                            {
+                                if( g.GetCount() == 0 )
+                                    continue;
+                                uint32_t cap = 131072;
+                                while( cap < g.GetCount() )
+                                    cap <<= 1;
+                                globalCapacity += cap;
+                            }
+                            struct PhenotypeData
+                            {
+                                uint32_t lifecycleState;
+                                float    biomass;
+                                float    timer;
+                                uint32_t cellType;
+                            };
+                            size_t phenotypeSize     = globalCapacity * sizeof( PhenotypeData );
+                            outState.phenotypeBuffer = m_resourceManager->CreateBuffer( { phenotypeSize, BufferType::STORAGE, "PhenotypeBuffer" } );
+                            std::vector<PhenotypeData> initPhenotypes( globalCapacity, { 0u, 0.5f, 0.0f, 0u } );
+                            m_streamingManager->UploadBufferImmediate( { { outState.phenotypeBuffer, initPhenotypes.data(), phenotypeSize, 0 } } );
+                        }
+
+                        ShaderHandle          shaderHandle = m_resourceManager->CreateShader( "shaders/compute/biology/perfusion.comp" );
+                        ComputePipelineDesc   compDesc{};
+                        compDesc.shader                  = shaderHandle;
+                        ComputePipelineHandle pipeHandle = m_resourceManager->CreatePipeline( compDesc );
+                        ComputePipeline*      pipe       = m_resourceManager->GetPipeline( pipeHandle );
+
+                        BindingGroup* bg0 = m_resourceManager->GetBindingGroup( m_resourceManager->CreateBindingGroup( pipeHandle, 0 ) );
+                        bg0->Bind( 0, m_resourceManager->GetBuffer( outState.agentBuffers[ 0 ] ) );
+                        bg0->Bind( 1, m_resourceManager->GetBuffer( targetGrid->interactionDeltaBuffer ) );
+                        bg0->Bind( 2, m_resourceManager->GetBuffer( outState.agentCountBuffer ) );
+                        bg0->Bind( 3, m_resourceManager->GetBuffer( outState.phenotypeBuffer ) );
+                        bg0->Build();
+
+                        BindingGroup* bg1 = m_resourceManager->GetBindingGroup( m_resourceManager->CreateBindingGroup( pipeHandle, 0 ) );
+                        bg1->Bind( 0, m_resourceManager->GetBuffer( outState.agentBuffers[ 1 ] ) );
+                        bg1->Bind( 1, m_resourceManager->GetBuffer( targetGrid->interactionDeltaBuffer ) );
+                        bg1->Bind( 2, m_resourceManager->GetBuffer( outState.agentCountBuffer ) );
+                        bg1->Bind( 3, m_resourceManager->GetBuffer( outState.phenotypeBuffer ) );
+                        bg1->Build();
+
+                        ComputePushConstants pc{};
+                        pc.fParam0     = rate;
+                        pc.offset      = currentOffset;
+                        pc.maxCapacity = paddedCount;
+                        pc.uParam1     = groupIndex;
+                        pc.domainSize  = glm::vec4( blueprint.GetDomainSize(), 0.0f );
+                        pc.gridSize    = glm::uvec4( targetGrid->width, targetGrid->height, targetGrid->depth, 0 );
+
+                        glm::uvec3  agentDispatch( ( paddedCount + 255 ) / 256, 1, 1 );
+                        ComputeTask perfTask( pipe, bg0, bg1, record.targetHz, pc, agentDispatch );
+                        perfTask.SetTag( ( isPerfusion ? "perfusion" : "drain" ) + tagBase );
+                        outState.computeGraph.AddTask( perfTask );
+
+                        DT_INFO( "[SimulationBuilder] Compiled {} for field '{}' at {}Hz",
+                                 isPerfusion ? "Perfusion" : "Drain", targetName, record.targetHz );
+                    }
+                    else
+                    {
+                        DT_WARN( "[SimulationBuilder] Target grid '{}' not found for {}!", targetName,
+                                 isPerfusion ? "Perfusion" : "Drain" );
+                    }
+                }
                 if( std::holds_alternative<Behaviours::Chemotaxis>( record.behaviour ) )
                 {
                     const auto& chemo = std::get<Behaviours::Chemotaxis>( record.behaviour );
@@ -914,6 +999,33 @@ namespace DigitalTwin
 
                     if( targetGrid )
                     {
+                        // Chemotaxis with requiredCellType needs the phenotype buffer to filter by cellType
+                        if( record.requiredCellType >= 0 && !outState.phenotypeBuffer.IsValid() )
+                        {
+                            uint32_t globalCapacity = 0;
+                            for( const auto& g: blueprint.GetGroups() )
+                            {
+                                uint32_t tc = g.GetCount() * 2;
+                                if( tc < 64 )
+                                    tc = 64;
+                                uint32_t pc = 1;
+                                while( pc < tc )
+                                    pc <<= 1;
+                                globalCapacity += pc;
+                            }
+                            size_t phenotypeSize     = globalCapacity * 4 * sizeof( uint32_t );
+                            outState.phenotypeBuffer = m_resourceManager->CreateBuffer( { phenotypeSize, BufferType::STORAGE, "PhenotypeBuffer" } );
+                            struct PhenotypeData
+                            {
+                                uint32_t lifecycleState;
+                                float    biomass;
+                                float    timer;
+                                uint32_t cellType;
+                            };
+                            std::vector<PhenotypeData> initPhenotypes( globalCapacity, { 0, 0.5f, 0.0f, 0 } );
+                            m_streamingManager->UploadBufferImmediate( { { outState.phenotypeBuffer, initPhenotypes.data(), phenotypeSize, 0 } } );
+                        }
+
                         ShaderHandle          sh       = m_resourceManager->CreateShader( "shaders/compute/chemotaxis.comp" );
                         ComputePipelineDesc   desc{};
                         desc.shader                    = sh;
@@ -1363,6 +1475,20 @@ namespace DigitalTwin
                         const auto&          anastomosis = std::get<Behaviours::Anastomosis>( record.behaviour );
                         ComputePushConstants pc          = task->GetPushConstants();
                         pc.fParam0                       = anastomosis.contactDistance;
+                        task->UpdatePushConstants( pc );
+                    }
+                }
+                else if( std::holds_alternative<Behaviours::Perfusion>( record.behaviour ) ||
+                         std::holds_alternative<Behaviours::Drain>( record.behaviour ) )
+                {
+                    bool         isPerfusion = std::holds_alternative<Behaviours::Perfusion>( record.behaviour );
+                    ComputeTask* task        = state.computeGraph.FindTask( ( isPerfusion ? "perfusion" : "drain" ) + tagBase );
+                    if( task )
+                    {
+                        float rate = isPerfusion ? +std::get<Behaviours::Perfusion>( record.behaviour ).rate
+                                                 : -std::get<Behaviours::Drain>( record.behaviour ).rate;
+                        ComputePushConstants pc = task->GetPushConstants();
+                        pc.fParam0              = rate;
                         task->UpdatePushConstants( pc );
                     }
                 }

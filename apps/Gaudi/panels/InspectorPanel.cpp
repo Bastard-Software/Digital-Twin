@@ -119,7 +119,12 @@ namespace Gaudi
                 else if constexpr( std::is_same_v<T, DigitalTwin::Behaviours::Perfusion> )
                 {
                     ImGui::LabelText( "Field", "%s", b.fieldName.c_str() );
-                    changed |= ImGui::SliderFloat( "Flow Rate", &b.baseFlowRate, 0.0f, 10.0f );
+                    changed |= ImGui::SliderFloat( "Rate", &b.rate, 0.01f, 50.0f );
+                }
+                else if constexpr( std::is_same_v<T, DigitalTwin::Behaviours::Drain> )
+                {
+                    ImGui::LabelText( "Field", "%s", b.fieldName.c_str() );
+                    changed |= ImGui::SliderFloat( "Rate", &b.rate, 0.01f, 50.0f );
                 }
             },
             record.behaviour );

@@ -75,10 +75,18 @@ namespace DigitalTwin::Behaviours
         float contactDistance = 3.0f;
     };
 
+    // Vessel injects a substance into the field (O2, glucose). Rate > 0.
     struct Perfusion
     {
         std::string fieldName;
-        float       baseFlowRate = 1.0f;
+        float       rate = 1.0f;
+    };
+
+    // Vessel removes a substance from the field (lactate, CO2). Rate > 0 (sign negated by builder).
+    struct Drain
+    {
+        std::string fieldName;
+        float       rate = 1.0f;
     };
 
 } // namespace DigitalTwin::Behaviours
@@ -95,7 +103,8 @@ namespace DigitalTwin
         Behaviours::Chemotaxis,
         Behaviours::NotchDll4,
         Behaviours::Anastomosis,
-        Behaviours::Perfusion>;
+        Behaviours::Perfusion,
+        Behaviours::Drain>;
 
     // Wrapper to attach execution parameters (like frequency) to a behaviour
     struct BehaviourRecord

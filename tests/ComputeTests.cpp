@@ -2177,3 +2177,288 @@ TEST_F( ComputeTest, Shader_VesselComponents_Chain_ThreeAgents )
     m_rm->DestroyBuffer( edgeCountBuf );
     m_rm->DestroyBuffer( componentBuf );
 }
+
+// ===========================================================================================
+// perfusion.comp — raw shader tests (no Builder)
+// ===========================================================================================
+
+// Shared setup for perfusion.comp raw tests: one agent, one voxel, returns delta after dispatch.
+// cellType=2 → StalkCell (should fire), cellType=0 → Default (should skip).
+// rate is passed directly to fParam0 (positive=inject, negative=drain).
+#define PERFUSION_RAW_TEST_SETUP( TEST_CELLTYPE, TEST_RATE, LABEL )                                  \
+    glm::vec4 agentPos( 0.0f, 0.0f, 0.0f, 1.0f );                                                   \
+    struct PhenotypeData { uint32_t lifecycleState; float biomass; float timer; uint32_t cellType; }; \
+    PhenotypeData pheno{ 0u, 0.5f, 0.0f, ( TEST_CELLTYPE ) };                                        \
+    uint32_t agentCount = 1;                                                                          \
+    int      deltaInit  = 0;                                                                          \
+    BufferHandle agentBuf = m_rm->CreateBuffer( { sizeof( glm::vec4 ),    BufferType::STORAGE,  LABEL "Agents" } ); \
+    BufferHandle phenoBuf = m_rm->CreateBuffer( { sizeof( PhenotypeData ), BufferType::STORAGE,  LABEL "Pheno"  } ); \
+    BufferHandle countBuf = m_rm->CreateBuffer( { sizeof( uint32_t ),      BufferType::INDIRECT, LABEL "Count"  } ); \
+    BufferHandle deltaBuf = m_rm->CreateBuffer( { sizeof( int ),           BufferType::STORAGE,  LABEL "Delta"  } ); \
+    m_stream->UploadBufferImmediate( {                                                                \
+        { agentBuf, &agentPos,   sizeof( glm::vec4 ),    0 },                                        \
+        { phenoBuf, &pheno,      sizeof( PhenotypeData ), 0 },                                       \
+        { countBuf, &agentCount, sizeof( uint32_t ),     0 },                                        \
+        { deltaBuf, &deltaInit,  sizeof( int ),          0 },                                        \
+    } );                                                                                              \
+    ComputePipelineDesc   pipeDesc{ m_rm->CreateShader( "shaders/compute/biology/perfusion.comp" ), "TestPerf" LABEL }; \
+    ComputePipelineHandle pipeHandle = m_rm->CreatePipeline( pipeDesc );                             \
+    ComputePipeline*      pipeline   = m_rm->GetPipeline( pipeHandle );                              \
+    BindingGroup* bg = m_rm->GetBindingGroup( m_rm->CreateBindingGroup( pipeHandle, 0 ) );           \
+    bg->Bind( 0, m_rm->GetBuffer( agentBuf ) );                                                      \
+    bg->Bind( 1, m_rm->GetBuffer( deltaBuf ) );                                                      \
+    bg->Bind( 2, m_rm->GetBuffer( countBuf ) );                                                      \
+    bg->Bind( 3, m_rm->GetBuffer( phenoBuf ) );                                                      \
+    bg->Build();                                                                                      \
+    ComputePushConstants pc{};                                                                        \
+    pc.dt          = 1.0f;                                                                            \
+    pc.fParam0     = ( TEST_RATE );                                                                   \
+    pc.offset      = 0;                                                                               \
+    pc.maxCapacity = 1;                                                                               \
+    pc.uParam1     = 0;                                                                               \
+    pc.domainSize  = glm::vec4( 10.0f, 10.0f, 10.0f, 0.0f );                                        \
+    pc.gridSize    = glm::uvec4( 1, 1, 1, 0 );                                                       \
+    auto compCtxHandle = m_device->CreateThreadContext( QueueType::COMPUTE );                        \
+    auto compCtx       = m_device->GetThreadContext( compCtxHandle );                                \
+    auto compCmd       = compCtx->GetCommandBuffer( compCtx->CreateCommandBuffer() );                \
+    compCmd->Begin();                                                                                 \
+    compCmd->SetPipeline( pipeline );                                                                 \
+    compCmd->SetBindingGroup( bg, pipeline->GetLayout(), VK_PIPELINE_BIND_POINT_COMPUTE );           \
+    compCmd->PushConstants( pipeline->GetLayout(), VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof( pc ), &pc ); \
+    compCmd->Dispatch( 1, 1, 1 );                                                                     \
+    compCmd->End();                                                                                   \
+    m_device->GetComputeQueue()->Submit( { compCmd } );                                              \
+    m_device->GetComputeQueue()->WaitIdle();                                                         \
+    int result = 0;                                                                                   \
+    m_stream->ReadbackBufferImmediate( deltaBuf, &result, sizeof( int ) );                           \
+    m_rm->DestroyBuffer( agentBuf );                                                                  \
+    m_rm->DestroyBuffer( phenoBuf );                                                                  \
+    m_rm->DestroyBuffer( countBuf );                                                                  \
+    m_rm->DestroyBuffer( deltaBuf );
+
+// =================================================================================================
+// Chemotaxis cell-type filter tests
+// =================================================================================================
+
+// TipCell (cellType=1) in a VEGF gradient with reqCT=1 → agent must move toward gradient.
+TEST_F( ComputeTest, Chemotaxis_CellTypeFilter_TipCellMoves )
+{
+    if( !m_device )
+        GTEST_SKIP();
+
+    // 10x10x10 field with a linear X gradient: field(x,y,z) = x * 1.0f
+    uint32_t width = 10, height = 10, depth = 10;
+    uint32_t voxelCount = width * height * depth;
+    size_t   gridBytes  = voxelCount * sizeof( float );
+
+    std::vector<float> fieldData( voxelCount );
+    for( uint32_t z = 0; z < depth; ++z )
+        for( uint32_t y = 0; y < height; ++y )
+            for( uint32_t x = 0; x < width; ++x )
+                fieldData[ x + y * width + z * width * height ] = static_cast<float>( x );
+
+    TextureDesc texDesc{};
+    texDesc.type      = TextureType::Texture3D;
+    texDesc.width     = width;
+    texDesc.height    = height;
+    texDesc.depth     = depth;
+    texDesc.format    = VK_FORMAT_R32_SFLOAT;
+    texDesc.usage     = TextureUsage::STORAGE | TextureUsage::TRANSFER_DST | TextureUsage::TRANSFER_SRC;
+    texDesc.debugName = "ChemoCTFilterFieldTex";
+    TextureHandle fieldTex = m_rm->CreateTexture( texDesc );
+    m_stream->UploadTextureImmediate( fieldTex, fieldData.data(), gridBytes );
+
+    // 1 agent at world origin (0,0,0), alive
+    glm::vec4    agentIn  = glm::vec4( 0.0f, 0.0f, 0.0f, 1.0f );
+    glm::vec4    agentOut = glm::vec4( 0.0f );
+    BufferHandle inBuf    = m_rm->CreateBuffer( { sizeof( glm::vec4 ), BufferType::STORAGE, "ChemoCTIn" } );
+    BufferHandle outBuf   = m_rm->CreateBuffer( { sizeof( glm::vec4 ), BufferType::STORAGE, "ChemoCTOut" } );
+    m_stream->UploadBufferImmediate( { { inBuf, &agentIn, sizeof( glm::vec4 ) } } );
+    m_stream->UploadBufferImmediate( { { outBuf, &agentOut, sizeof( glm::vec4 ) } } );
+
+    uint32_t     count    = 1;
+    BufferHandle countBuf = m_rm->CreateBuffer( { sizeof( uint32_t ), BufferType::INDIRECT, "ChemoCTCount" } );
+    m_stream->UploadBufferImmediate( { { countBuf, &count, sizeof( uint32_t ) } } );
+
+    // Phenotype buffer: cellType = 1 (TipCell) — matches reqCT
+    struct PhenotypeData { uint32_t lifecycleState; float biomass; float timer; uint32_t cellType; };
+    PhenotypeData pheno = { 0u, 0.5f, 0.0f, 1u }; // TipCell
+    BufferHandle  phenoBuf = m_rm->CreateBuffer( { sizeof( PhenotypeData ), BufferType::STORAGE, "ChemoCTPheno" } );
+    m_stream->UploadBufferImmediate( { { phenoBuf, &pheno, sizeof( PhenotypeData ) } } );
+
+    ComputePipelineDesc   pipeDesc{};
+    pipeDesc.shader                  = m_rm->CreateShader( "shaders/compute/chemotaxis.comp" );
+    ComputePipelineHandle pipeHandle = m_rm->CreatePipeline( pipeDesc );
+    ComputePipeline*      pipeline   = m_rm->GetPipeline( pipeHandle );
+
+    BindingGroup* bg = m_rm->GetBindingGroup( m_rm->CreateBindingGroup( pipeHandle, 0 ) );
+    bg->Bind( 0, m_rm->GetBuffer( inBuf ) );
+    bg->Bind( 1, m_rm->GetBuffer( outBuf ) );
+    bg->Bind( 2, m_rm->GetTexture( fieldTex ), VK_IMAGE_LAYOUT_GENERAL );
+    bg->Bind( 3, m_rm->GetBuffer( countBuf ) );
+    bg->Bind( 4, m_rm->GetBuffer( phenoBuf ) );
+    bg->Build();
+
+    ComputePushConstants pc{};
+    pc.dt          = 1.0f;
+    pc.fParam0     = 1.0f;   // sensitivity
+    pc.fParam1     = 0.0f;   // saturation (linear)
+    pc.fParam2     = 100.0f; // maxVelocity
+    pc.fParam3     = 1.0f;   // reqCT = 1 (TipCell)
+    pc.offset      = 0;
+    pc.maxCapacity = 1;
+    pc.uParam0     = static_cast<uint32_t>( -1 ); // reqLC = -1 (any)
+    pc.uParam1     = 0;
+    pc.domainSize  = glm::vec4( 10.0f, 10.0f, 10.0f, 0.0f );
+    pc.gridSize    = glm::uvec4( 10, 10, 10, 0 );
+
+    auto compCtxHandle = m_device->CreateThreadContext( QueueType::COMPUTE );
+    auto compCtx       = m_device->GetThreadContext( compCtxHandle );
+    auto compCmd       = compCtx->GetCommandBuffer( compCtx->CreateCommandBuffer() );
+
+    compCmd->Begin();
+    compCmd->SetPipeline( pipeline );
+    compCmd->SetBindingGroup( bg, pipeline->GetLayout(), VK_PIPELINE_BIND_POINT_COMPUTE );
+    compCmd->PushConstants( pipeline->GetLayout(), VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof( pc ), &pc );
+    compCmd->Dispatch( 1, 1, 1 );
+    compCmd->End();
+
+    m_device->GetComputeQueue()->Submit( { compCmd } );
+    m_device->GetComputeQueue()->WaitIdle();
+
+    glm::vec4 result;
+    m_stream->ReadbackBufferImmediate( outBuf, &result, sizeof( glm::vec4 ) );
+
+    EXPECT_GT( result.x, 0.0f ) << "TipCell with reqCT=TipCell must move toward the X gradient";
+    EXPECT_FLOAT_EQ( result.w, 1.0f );
+
+    m_rm->DestroyBuffer( inBuf );
+    m_rm->DestroyBuffer( outBuf );
+    m_rm->DestroyBuffer( countBuf );
+    m_rm->DestroyBuffer( phenoBuf );
+    m_rm->DestroyTexture( fieldTex );
+}
+
+// Default cell (cellType=0) in a VEGF gradient with reqCT=1 (TipCell) → agent must NOT move.
+// This verifies that the cell-type filter correctly skips non-TipCells.
+TEST_F( ComputeTest, Chemotaxis_CellTypeFilter_NonTipCellSkipped )
+{
+    if( !m_device )
+        GTEST_SKIP();
+
+    uint32_t width = 10, height = 10, depth = 10;
+    uint32_t voxelCount = width * height * depth;
+    size_t   gridBytes  = voxelCount * sizeof( float );
+
+    std::vector<float> fieldData( voxelCount );
+    for( uint32_t z = 0; z < depth; ++z )
+        for( uint32_t y = 0; y < height; ++y )
+            for( uint32_t x = 0; x < width; ++x )
+                fieldData[ x + y * width + z * width * height ] = static_cast<float>( x );
+
+    TextureDesc texDesc{};
+    texDesc.type      = TextureType::Texture3D;
+    texDesc.width     = width;
+    texDesc.height    = height;
+    texDesc.depth     = depth;
+    texDesc.format    = VK_FORMAT_R32_SFLOAT;
+    texDesc.usage     = TextureUsage::STORAGE | TextureUsage::TRANSFER_DST | TextureUsage::TRANSFER_SRC;
+    texDesc.debugName = "ChemoCTSkipFieldTex";
+    TextureHandle fieldTex = m_rm->CreateTexture( texDesc );
+    m_stream->UploadTextureImmediate( fieldTex, fieldData.data(), gridBytes );
+
+    // Agent at origin — initial position deliberately non-zero in output to detect no-write
+    glm::vec4    agentIn  = glm::vec4( 0.0f, 0.0f, 0.0f, 1.0f );
+    glm::vec4    sentinel = glm::vec4( -999.0f, -999.0f, -999.0f, -999.0f );
+    BufferHandle inBuf    = m_rm->CreateBuffer( { sizeof( glm::vec4 ), BufferType::STORAGE, "ChemoCTSkipIn" } );
+    BufferHandle outBuf   = m_rm->CreateBuffer( { sizeof( glm::vec4 ), BufferType::STORAGE, "ChemoCTSkipOut" } );
+    m_stream->UploadBufferImmediate( { { inBuf, &agentIn, sizeof( glm::vec4 ) } } );
+    m_stream->UploadBufferImmediate( { { outBuf, &sentinel, sizeof( glm::vec4 ) } } );
+
+    uint32_t     count    = 1;
+    BufferHandle countBuf = m_rm->CreateBuffer( { sizeof( uint32_t ), BufferType::INDIRECT, "ChemoCTSkipCount" } );
+    m_stream->UploadBufferImmediate( { { countBuf, &count, sizeof( uint32_t ) } } );
+
+    // Phenotype: cellType = 0 (Default) — does NOT match reqCT=1 (TipCell)
+    struct PhenotypeData { uint32_t lifecycleState; float biomass; float timer; uint32_t cellType; };
+    PhenotypeData pheno = { 0u, 0.5f, 0.0f, 0u }; // Default
+    BufferHandle  phenoBuf = m_rm->CreateBuffer( { sizeof( PhenotypeData ), BufferType::STORAGE, "ChemoCTSkipPheno" } );
+    m_stream->UploadBufferImmediate( { { phenoBuf, &pheno, sizeof( PhenotypeData ) } } );
+
+    ComputePipelineDesc   pipeDesc{};
+    pipeDesc.shader                  = m_rm->CreateShader( "shaders/compute/chemotaxis.comp" );
+    ComputePipelineHandle pipeHandle = m_rm->CreatePipeline( pipeDesc );
+    ComputePipeline*      pipeline   = m_rm->GetPipeline( pipeHandle );
+
+    BindingGroup* bg = m_rm->GetBindingGroup( m_rm->CreateBindingGroup( pipeHandle, 0 ) );
+    bg->Bind( 0, m_rm->GetBuffer( inBuf ) );
+    bg->Bind( 1, m_rm->GetBuffer( outBuf ) );
+    bg->Bind( 2, m_rm->GetTexture( fieldTex ), VK_IMAGE_LAYOUT_GENERAL );
+    bg->Bind( 3, m_rm->GetBuffer( countBuf ) );
+    bg->Bind( 4, m_rm->GetBuffer( phenoBuf ) );
+    bg->Build();
+
+    ComputePushConstants pc{};
+    pc.dt          = 1.0f;
+    pc.fParam0     = 1.0f;   // sensitivity
+    pc.fParam1     = 0.0f;   // saturation
+    pc.fParam2     = 100.0f; // maxVelocity
+    pc.fParam3     = 1.0f;   // reqCT = 1 (TipCell) — filter out Default cells
+    pc.offset      = 0;
+    pc.maxCapacity = 1;
+    pc.uParam0     = static_cast<uint32_t>( -1 );
+    pc.uParam1     = 0;
+    pc.domainSize  = glm::vec4( 10.0f, 10.0f, 10.0f, 0.0f );
+    pc.gridSize    = glm::uvec4( 10, 10, 10, 0 );
+
+    auto compCtxHandle = m_device->CreateThreadContext( QueueType::COMPUTE );
+    auto compCtx       = m_device->GetThreadContext( compCtxHandle );
+    auto compCmd       = compCtx->GetCommandBuffer( compCtx->CreateCommandBuffer() );
+
+    compCmd->Begin();
+    compCmd->SetPipeline( pipeline );
+    compCmd->SetBindingGroup( bg, pipeline->GetLayout(), VK_PIPELINE_BIND_POINT_COMPUTE );
+    compCmd->PushConstants( pipeline->GetLayout(), VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof( pc ), &pc );
+    compCmd->Dispatch( 1, 1, 1 );
+    compCmd->End();
+
+    m_device->GetComputeQueue()->Submit( { compCmd } );
+    m_device->GetComputeQueue()->WaitIdle();
+
+    glm::vec4 result;
+    m_stream->ReadbackBufferImmediate( outBuf, &result, sizeof( glm::vec4 ) );
+
+    // Output buffer should retain its sentinel value — the shader returns early without writing
+    EXPECT_FLOAT_EQ( result.x, -999.0f ) << "Default cell with reqCT=TipCell must NOT be written to output";
+    EXPECT_FLOAT_EQ( result.w, -999.0f ) << "Output buffer sentinel should be untouched";
+
+    m_rm->DestroyBuffer( inBuf );
+    m_rm->DestroyBuffer( outBuf );
+    m_rm->DestroyBuffer( countBuf );
+    m_rm->DestroyBuffer( phenoBuf );
+    m_rm->DestroyTexture( fieldTex );
+}
+
+// StalkCell (cellType=2) with positive rate → delta > 0 (injection).
+TEST_F( ComputeTest, Shader_Perfusion_StalkCell_InjectsDelta )
+{
+    if( !m_device ) GTEST_SKIP();
+    PERFUSION_RAW_TEST_SETUP( 2u, +5.0f, "PFInject" )
+    EXPECT_GT( result, 0 ) << "StalkCell with positive rate must produce a positive delta (injection)";
+}
+
+// StalkCell with negative rate → delta < 0 (drain).
+TEST_F( ComputeTest, Shader_Drain_StalkCell_RemovesDelta )
+{
+    if( !m_device ) GTEST_SKIP();
+    PERFUSION_RAW_TEST_SETUP( 2u, -5.0f, "PFDrain" )
+    EXPECT_LT( result, 0 ) << "StalkCell with negative rate must produce a negative delta (drain)";
+}
+
+// Non-StalkCell (Default, cellType=0) → delta unchanged regardless of rate.
+TEST_F( ComputeTest, Shader_Perfusion_NonStalkCell_Skipped )
+{
+    if( !m_device ) GTEST_SKIP();
+    PERFUSION_RAW_TEST_SETUP( 0u, +5.0f, "PFSkip" )
+    EXPECT_EQ( result, 0 ) << "Default cell must not modify the delta buffer";
+}

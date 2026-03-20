@@ -122,14 +122,16 @@ namespace DigitalTwin
                                                  "'. Available fields: " + availableFields );
                         }
 
-                        if constexpr( std::is_same_v<T, Behaviours::Perfusion> )
+                        if constexpr( std::is_same_v<T, Behaviours::Perfusion> ||
+                                      std::is_same_v<T, Behaviours::Drain> )
                         {
+                            const std::string typeName = std::is_same_v<T, Behaviours::Perfusion> ? "Perfusion" : "Drain";
                             if( behaviour.fieldName.empty() )
                                 result.AddError( "AgentGroup '" + group.GetName() +
-                                                 "': Perfusion fieldName must not be empty" );
+                                                 "': " + typeName + " fieldName must not be empty" );
                             else if( declaredFields.find( behaviour.fieldName ) == declaredFields.end() )
                                 result.AddError( "AgentGroup '" + group.GetName() +
-                                                 "': Perfusion references unknown field '" + behaviour.fieldName +
+                                                 "': " + typeName + " references unknown field '" + behaviour.fieldName +
                                                  "'. Available fields: " + availableFields );
                         }
                     },
@@ -246,10 +248,12 @@ namespace DigitalTwin
                                 result.AddError( "AgentGroup '" + group.GetName() + "': Anastomosis contactDistance must be > 0" );
                         }
 
-                        if constexpr( std::is_same_v<T, Behaviours::Perfusion> )
+                        if constexpr( std::is_same_v<T, Behaviours::Perfusion> ||
+                                      std::is_same_v<T, Behaviours::Drain> )
                         {
-                            if( behaviour.baseFlowRate <= 0.0f )
-                                result.AddError( "AgentGroup '" + group.GetName() + "': Perfusion baseFlowRate must be > 0" );
+                            const std::string typeName = std::is_same_v<T, Behaviours::Perfusion> ? "Perfusion" : "Drain";
+                            if( behaviour.rate <= 0.0f )
+                                result.AddError( "AgentGroup '" + group.GetName() + "': " + typeName + " rate must be > 0" );
                         }
                     },
                     record.behaviour );

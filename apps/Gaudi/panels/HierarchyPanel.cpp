@@ -57,6 +57,8 @@ namespace Gaudi
                     return "Anastomosis";
                 else if constexpr( std::is_same_v<T, DigitalTwin::Behaviours::Perfusion> )
                     return "Perfusion: " + b.fieldName;
+                else if constexpr( std::is_same_v<T, DigitalTwin::Behaviours::Drain> )
+                    return "Drain: " + b.fieldName;
                 else
                     return "Unknown";
             },
@@ -201,6 +203,21 @@ namespace Gaudi
                                     if( ImGui::MenuItem( f.GetName().c_str() ) )
                                     {
                                         group.AddBehaviour( DigitalTwin::Behaviours::Perfusion{ f.GetName() } ).SetHz( 60 );
+                                        m_engine.SetBlueprint( m_blueprint );
+                                    }
+                                }
+                                ImGui::EndMenu();
+                            }
+                            if( ImGui::BeginMenu( "Drain" ) )
+                            {
+                                const auto& fields = m_blueprint.GetGridFields();
+                                if( fields.empty() )
+                                    ImGui::TextDisabled( "(no grid fields defined)" );
+                                for( const auto& f : fields )
+                                {
+                                    if( ImGui::MenuItem( f.GetName().c_str() ) )
+                                    {
+                                        group.AddBehaviour( DigitalTwin::Behaviours::Drain{ f.GetName() } ).SetHz( 60 );
                                         m_engine.SetBlueprint( m_blueprint );
                                     }
                                 }

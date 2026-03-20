@@ -7,12 +7,12 @@ layout(push_constant) uniform PushConstants {
     float sensitivity;       // fParam0
     float saturation;        // fParam1
     float maxVelocity;       // fParam2
-    float fParam3;
+    float reqCT;             // fParam3 -- requiredCellType (-1 = any), stored as float-encoded int
     float fParam4;
     float fParam5;
     uint  offset;
     uint  maxCapacity;
-    uint  uParam0;
+    uint  uParam0;           // requiredLifecycleState encoded as uint (-1 = 0xFFFFFFFF)
     uint  grpNdx;
     vec4  domainSize;
     uvec4 gridSize;
@@ -22,6 +22,14 @@ layout(std140, binding = 0) readonly  buffer InAgents  { vec4 positions[]; } inD
 layout(std140, binding = 1) writeonly buffer OutAgents { vec4 positions[]; } outData;
 layout(set = 0, binding = 2, r32f) uniform readonly image3D u_Field;
 layout(std430, binding = 3) readonly buffer CounterBuffer { uint counts[]; } counters;
+
+struct PhenotypeData {
+    uint  lifecycleState;
+    float biomass;
+    float timer;
+    uint  cellType;
+};
+layout(std430, binding = 4) readonly buffer Phenotypes { PhenotypeData data[]; } phenotypes;
 
 // World position → voxel coordinate
 ivec3 toVoxel(vec3 worldPos) {
@@ -41,6 +49,13 @@ void main()
     if (idx >= counters.counts[pc.grpNdx]) return;
 
     uint globalIdx = pc.offset + idx;
+
+    // Universal state filtering
+    int reqLC = int(pc.uParam0);
+    int reqCT = int(pc.reqCT);
+    if (reqLC >= 0 && phenotypes.data[globalIdx].lifecycleState != uint(reqLC)) return;
+    if (reqCT >= 0 && phenotypes.data[globalIdx].cellType != uint(reqCT)) return;
+
     vec4 pos = inData.positions[globalIdx];
     if (pos.w == 0.0) { outData.positions[globalIdx] = pos; return; } // dead slot
 

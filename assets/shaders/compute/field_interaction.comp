@@ -5,7 +5,7 @@ layout(push_constant) uniform PushConstants {
     float dt;
     float totalTime;
     float rate;
-    float reqState;
+    float reqLifecycleState;
     float fParam2;
     float fParam3;
     float fParam4;
@@ -31,10 +31,10 @@ layout(std430, binding = 1) buffer DeltaBuffer {
 layout(std430, binding = 2) readonly buffer CounterBuffer { uint counts[]; } counters;
 
 struct PhenotypeData {
-    uint  state;
+    uint  lifecycleState;  // was: state
     float biomass;
     float timer;
-    uint  padding;
+    uint  cellType;        // was: padding
 };
 // Binding 3: Phenotype buffer
 layout(std430, binding = 3) readonly buffer Phenotypes { PhenotypeData data[]; } inPhenotypes;
@@ -49,8 +49,8 @@ void main() {
     if (agents.positions[globalIdx].w == 0.0) return;
 
     // Interaction condition test
-    if (pc.reqState >= 0.0) {
-        if (inPhenotypes.data[globalIdx].state != uint(pc.reqState)) return;
+    if (pc.reqLifecycleState >= 0.0) {
+        if (inPhenotypes.data[globalIdx].lifecycleState != uint(pc.reqLifecycleState)) return;
     }
 
     vec3 pos = agents.positions[globalIdx].xyz;

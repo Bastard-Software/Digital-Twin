@@ -6,8 +6,8 @@ layout(push_constant) uniform PushConstants {
     float totalTime;
     float repulsion;
     float adhesion;
-    float fParam2;
-    float fParam3;
+    float reqLC;             // fParam2 -- requiredLifecycleState (-1 = any), stored as float-encoded int
+    float reqCT;             // fParam3 -- requiredCellType (-1 = any), stored as float-encoded int
     float fParam4;
     float fParam5;
     uint  offset;
@@ -27,6 +27,14 @@ layout(std430, binding = 3) readonly buffer Hashes { AgentHash data[]; } sortedH
 layout(std430, binding = 4) readonly buffer Offsets { uint startIndices[]; } cellOffsets;
 layout(std430, binding = 5) readonly buffer CounterBuffer { uint counts[]; } counters;
 
+struct PhenotypeData {
+    uint  lifecycleState;
+    float biomass;
+    float timer;
+    uint  cellType;
+};
+layout(std430, binding = 6) readonly buffer Phenotypes { PhenotypeData data[]; } phenotypes;
+
 uint hashPos(ivec3 cell) {
     const uint p1 = 73856093; const uint p2 = 19349663; const uint p3 = 83492791;
     return (uint(cell.x) * p1) ^ (uint(cell.y) * p2) ^ (uint(cell.z) * p3);
@@ -39,6 +47,13 @@ void main() {
 
     // Iterate sequentially through the sorted array to maximize cache hits
     uint originalAgentIdx = sortedHashes.data[idx].agentIndex;
+
+    // Universal state filtering — uses originalAgentIdx since jkr accesses via sorted hash
+    int reqLC = int(pc.reqLC);
+    int reqCT = int(pc.reqCT);
+    if (reqLC >= 0 && phenotypes.data[originalAgentIdx].lifecycleState != uint(reqLC)) return;
+    if (reqCT >= 0 && phenotypes.data[originalAgentIdx].cellType != uint(reqCT)) return;
+
     vec3 myPos = inAgents.positions[originalAgentIdx].xyz;
     
     vec3 force = vec3(0.0);

@@ -93,7 +93,7 @@ namespace Gaudi
 
         // C. VEGF Secretion: Conditioned on State Hypoxic.
         // Cells will only emit this field when they are starving for oxygen!
-        tumorCells.AddBehaviour( DigitalTwin::Behaviours::SecreteField{ "VEGF", 100.0f, static_cast<int>( DigitalTwin::PhenotypeState::Hypoxic ) } )
+        tumorCells.AddBehaviour( DigitalTwin::Behaviours::SecreteField{ "VEGF", 100.0f, static_cast<int>( DigitalTwin::LifecycleState::Hypoxic ) } )
             .SetHz( 60.0f );
 
         // D. Biology (Cell Cycle): Oxygen-driven proliferation & Hypoxia trigger

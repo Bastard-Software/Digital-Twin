@@ -724,10 +724,10 @@ TEST_F( SimulationBuilderTest, Behaviour_CellCycle_Integration )
     // Readback Phenotypes
     struct PhenotypeData
     {
-        uint32_t state;
+        uint32_t lifecycleState;
         float    biomass;
         float    timer;
-        uint32_t padding;
+        uint32_t cellType;
     };
     std::vector<PhenotypeData> resultPhenotypes( 2 ); // Check up to 2 cells
     m_streamingManager->ReadbackBufferImmediate( state.phenotypeBuffer, resultPhenotypes.data(), 2 * sizeof( PhenotypeData ) );
@@ -745,7 +745,7 @@ TEST_F( SimulationBuilderTest, Behaviour_CellCycle_Integration )
 
     // 3. Daughter cell (idx 1) should be initialized properly
     EXPECT_NEAR( resultPhenotypes[ 1 ].biomass, 0.5f, 0.001f ) << "Daughter cell was not initialized with 0.5 biomass!";
-    EXPECT_EQ( resultPhenotypes[ 1 ].state, 0 ) << "Daughter cell is not in 'Live' state!";
+    EXPECT_EQ( resultPhenotypes[ 1 ].lifecycleState, 0 ) << "Daughter cell is not in 'Live' state!";
     EXPECT_FLOAT_EQ( resultPositions[ 1 ].w, 1.0f ) << "Daughter cell did not receive w=1.0 (Alive flag)!";
 
     state.Destroy( m_resourceManager.get() );
@@ -776,7 +776,7 @@ TEST_F( SimulationBuilderTest, Behaviour_Hypoxia_Secretion_Integration )
         .SetHz( 60.0f );
     agentGrp
         .AddBehaviour(
-            DigitalTwin::Behaviours::SecreteField{ "VEGF", 10.0f, static_cast<int>( DigitalTwin::PhenotypeState::Hypoxic ) } )
+            DigitalTwin::Behaviours::SecreteField{ "VEGF", 10.0f, static_cast<int>( DigitalTwin::LifecycleState::Hypoxic ) } )
         .SetHz( 60.0f );
 
     DigitalTwin::SimulationBuilder builder( m_resourceManager.get(), m_streamingManager.get() );

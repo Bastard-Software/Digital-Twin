@@ -28,10 +28,10 @@ layout(std140, binding = 3) readonly buffer GroupData {
 } groupData;
 
 struct PhenotypeData {
-    uint  state;
+    uint  lifecycleState;
     float biomass;
     float timer;
-    uint  padding;
+    uint  cellType;
 };
 layout(std430, set = 0, binding = 4) readonly buffer Phenotypes {
     PhenotypeData data[];
@@ -52,7 +52,7 @@ Vertex v = vertices[gl_VertexIndex];
     outNormal = v.normal.xyz;
 
     vec4 baseColor = groupData.colors[gl_DrawIDARB];
-    uint state = phenotypes.data[gl_InstanceIndex].state;
+    uint state = phenotypes.data[gl_InstanceIndex].lifecycleState;
 
     if (state == 0) {
         outColor = baseColor;

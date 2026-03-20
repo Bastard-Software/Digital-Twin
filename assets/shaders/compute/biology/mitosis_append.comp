@@ -19,10 +19,10 @@ layout(std140, binding = 1) buffer AgentsWrite { vec4 positions[]; } agentsWrite
 
 // Binding 2: Biological state machine
 struct PhenotypeData {
-    uint  state;   // 0: Live, 1: Quiescent, 2: Hypoxic, 3: Apoptotic, 4: Necrotic
-    float biomass; // Grows from 0.5 to 1.0
+    uint  lifecycleState; // 0: Live, 1: Quiescent, 2: Hypoxic, 3: Apoptotic, 4: Necrotic
+    float biomass;        // Grows from 0.5 to 1.0
     float timer;
-    uint  padding;
+    uint  cellType;
 };
 layout(std430, binding = 2) buffer Phenotypes { PhenotypeData data[]; } inOutPhenotypes;
 
@@ -68,7 +68,7 @@ void main()
     if(agentsRead.positions[globalIdx].w == 0.0) return;
 
     // Check if the cell is alive and has accumulated enough biomass to divide
-    if(inOutPhenotypes.data[globalIdx].state == 0 && inOutPhenotypes.data[globalIdx].biomass >= 1.0) 
+    if(inOutPhenotypes.data[globalIdx].lifecycleState == 0 && inOutPhenotypes.data[globalIdx].biomass >= 1.0)
     {
         // 1. Instantly halve the mother cell's biomass
         inOutPhenotypes.data[globalIdx].biomass = 0.5;
@@ -98,9 +98,10 @@ void main()
             agentsWrite.positions[globalChildIdx] = childPos;
             
             // Initialize Daughter Cell biological data
-            inOutPhenotypes.data[globalChildIdx].state   = 0;   // Set to Live
-            inOutPhenotypes.data[globalChildIdx].biomass = 0.5; // Start with half the mother's mass
-            inOutPhenotypes.data[globalChildIdx].timer   = 0.0; // Reset internal clock
+            inOutPhenotypes.data[globalChildIdx].lifecycleState = 0;   // Set to Live
+            inOutPhenotypes.data[globalChildIdx].biomass        = 0.5; // Start with half the mother's mass
+            inOutPhenotypes.data[globalChildIdx].timer          = 0.0; // Reset internal clock
+            inOutPhenotypes.data[globalChildIdx].cellType       = 0;   // Inherit Default cell type
         } 
         else 
         {

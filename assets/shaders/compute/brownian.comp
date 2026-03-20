@@ -4,15 +4,15 @@ layout(local_size_x = 256) in;
 layout(push_constant) uniform PushConstants {
     float dt;
     float totalTime;
-    float speed;
-    float fParam1;
+    float speed;      // fParam0
+    float reqCT;      // fParam1 -- requiredCellType (-1 = any), stored as float-encoded int
     float fParam2;
     float fParam3;
     float fParam4;
     float fParam5;
     uint  offset;
     uint  maxCapacity;
-    uint  uParam0;
+    uint  uParam0;    // requiredLifecycleState encoded as uint (-1 = 0xFFFFFFFF)
     uint  grpNdx;
     vec4  domainSize;
     uvec4 gridSize;
@@ -30,6 +30,14 @@ layout(std140, binding = 1) writeonly buffer OutputBuffer {
 
 layout(std430, binding = 2) readonly buffer CounterBuffer { uint counts[]; } counters;
 
+struct PhenotypeData {
+    uint  lifecycleState;
+    float biomass;
+    float timer;
+    uint  cellType;
+};
+layout(std430, binding = 3) readonly buffer Phenotypes { PhenotypeData data[]; } phenotypes;
+
 // Simple PRNG (Pseudo-Random Number Generator) based on global coordinates and time
 float rand(vec2 co){
     return fract(sin(dot(co, vec2(12.9898, 78.233))) * 43758.5453);
@@ -42,7 +50,13 @@ void main()
     if(idx >= counters.counts[pc.grpNdx]) return;
 
     uint globalIdx = pc.offset + idx;
-    
+
+    // Universal state filtering
+    int reqLC = int(pc.uParam0);
+    int reqCT = int(pc.reqCT);
+    if (reqLC >= 0 && phenotypes.data[globalIdx].lifecycleState != uint(reqLC)) return;
+    if (reqCT >= 0 && phenotypes.data[globalIdx].cellType != uint(reqCT)) return;
+
     // 1. READ from input buffer
     vec4 pos = inData.positions[globalIdx];
 

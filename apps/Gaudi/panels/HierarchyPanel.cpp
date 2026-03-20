@@ -51,6 +51,12 @@ namespace Gaudi
                     return "Cell Cycle";
                 else if constexpr( std::is_same_v<T, DigitalTwin::Behaviours::Chemotaxis> )
                     return "Chemotaxis: " + b.fieldName;
+                else if constexpr( std::is_same_v<T, DigitalTwin::Behaviours::NotchDll4> )
+                    return "Notch-Dll4";
+                else if constexpr( std::is_same_v<T, DigitalTwin::Behaviours::Anastomosis> )
+                    return "Anastomosis";
+                else if constexpr( std::is_same_v<T, DigitalTwin::Behaviours::Perfusion> )
+                    return "Perfusion: " + b.fieldName;
                 else
                     return "Unknown";
             },
@@ -170,6 +176,31 @@ namespace Gaudi
                                     if( ImGui::MenuItem( f.GetName().c_str() ) )
                                     {
                                         group.AddBehaviour( DigitalTwin::Behaviours::Chemotaxis{ f.GetName() } ).SetHz( 60 );
+                                        m_engine.SetBlueprint( m_blueprint );
+                                    }
+                                }
+                                ImGui::EndMenu();
+                            }
+                            if( ImGui::MenuItem( "Notch-Dll4" ) )
+                            {
+                                group.AddBehaviour( DigitalTwin::Behaviours::NotchDll4{} ).SetHz( 60 );
+                                m_engine.SetBlueprint( m_blueprint );
+                            }
+                            if( ImGui::MenuItem( "Anastomosis" ) )
+                            {
+                                group.AddBehaviour( DigitalTwin::Behaviours::Anastomosis{} ).SetHz( 60 );
+                                m_engine.SetBlueprint( m_blueprint );
+                            }
+                            if( ImGui::BeginMenu( "Perfusion" ) )
+                            {
+                                const auto& fields = m_blueprint.GetGridFields();
+                                if( fields.empty() )
+                                    ImGui::TextDisabled( "(no grid fields defined)" );
+                                for( const auto& f : fields )
+                                {
+                                    if( ImGui::MenuItem( f.GetName().c_str() ) )
+                                    {
+                                        group.AddBehaviour( DigitalTwin::Behaviours::Perfusion{ f.GetName() } ).SetHz( 60 );
                                         m_engine.SetBlueprint( m_blueprint );
                                     }
                                 }

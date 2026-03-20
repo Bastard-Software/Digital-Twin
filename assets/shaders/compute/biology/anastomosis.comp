@@ -1,0 +1,114 @@
+#version 460
+layout(local_size_x = 256) in;
+
+layout(push_constant) uniform PushConstants {
+    float dt;
+    float totalTime;
+    float contactDistance;  // fParam0 — max distance for Tip-Tip fusion
+    float _pad0;            // fParam1 unused
+    float _pad1;            // fParam2 unused
+    float _pad2;            // fParam3 unused
+    float _pad3;            // fParam4 unused
+    float _pad4;            // fParam5 unused
+    uint  offset;
+    uint  maxCapacity;
+    uint  offsetArraySize;  // uParam0 — hash grid slot count
+    uint  grpNdx;           // uParam1 — group index for agent count lookup
+    vec4  domainSize;       // .xyz = domain, .w = spatial hash cell size
+    uvec4 gridSize;         // unused
+} pc;
+
+layout(std140, binding = 0) readonly buffer InputAgents { vec4 positions[]; } agents;
+
+struct PhenotypeData {
+    uint  lifecycleState;
+    float biomass;
+    float timer;
+    uint  cellType;
+};
+layout(std430, binding = 1) coherent buffer Phenotypes { PhenotypeData data[]; } phenotypes;
+
+struct AgentHash { uint hash; uint agentIndex; };
+layout(std430, binding = 2) readonly buffer Hashes  { AgentHash data[]; } sortedHashes;
+layout(std430, binding = 3) readonly buffer Offsets { uint startIndices[]; } cellOffsets;
+layout(std430, binding = 4) readonly buffer CounterBuffer { uint counts[]; } counters;
+
+struct VesselEdge {
+    uint  agentA;
+    uint  agentB;
+    float dist;
+    uint  flags;
+};
+layout(std430, binding = 5) buffer Edges { VesselEdge data[]; } edges;
+layout(std430, binding = 6) coherent buffer EdgeCountBuffer { uint count; } edgeCount;
+
+uint hashPos(ivec3 cell) {
+    const uint p1 = 73856093; const uint p2 = 19349663; const uint p3 = 83492791;
+    return (uint(cell.x) * p1) ^ (uint(cell.y) * p2) ^ (uint(cell.z) * p3);
+}
+
+void main() {
+    uint idx = gl_GlobalInvocationID.x;
+    if (idx >= pc.maxCapacity) return;
+    if (idx >= counters.counts[pc.grpNdx]) return;
+
+    uint globalIdx = pc.offset + idx;
+
+    vec4 myData = agents.positions[globalIdx];
+    if (myData.w == 0.0) return; // dead slot
+
+    // Only TipCells (cellType == 1) can anastomose
+    if (phenotypes.data[globalIdx].cellType != 1u) return;
+
+    vec3  myPos          = myData.xyz;
+    float hashCellSize   = pc.domainSize.w;
+    float contactDist    = pc.contactDistance;
+
+    ivec3 myCell = ivec3(floor(myPos / hashCellSize));
+
+    // Search 27-cell neighborhood in spatial hash
+    for (int z = -1; z <= 1; z++) {
+        for (int y = -1; y <= 1; y++) {
+            for (int x = -1; x <= 1; x++) {
+                uint neighborHash = hashPos(myCell + ivec3(x, y, z));
+                uint offsetIdx    = neighborHash % pc.offsetArraySize;
+
+                uint startIdx = cellOffsets.startIndices[offsetIdx];
+                if (startIdx == 0xFFFFFFFF) continue;
+
+                for (uint i = startIdx; i < pc.maxCapacity; i++) {
+                    if (sortedHashes.data[i].hash != neighborHash) break;
+
+                    uint neighborAgentIdx = sortedHashes.data[i].agentIndex;
+
+                    // Process each pair only once (lower index handles the pair)
+                    if (neighborAgentIdx <= globalIdx) continue;
+
+                    vec4 neighborPos = agents.positions[neighborAgentIdx];
+                    if (neighborPos.w == 0.0) continue; // dead
+
+                    // Neighbor must also be a TipCell
+                    if (phenotypes.data[neighborAgentIdx].cellType != 1u) continue;
+
+                    float dist = length(myPos - neighborPos.xyz);
+                    if (dist >= contactDist) continue;
+
+                    // Anastomosis: atomically convert both TipCells to StalkCells
+                    atomicCompSwap(phenotypes.data[globalIdx].cellType,      1u, 2u);
+                    atomicCompSwap(phenotypes.data[neighborAgentIdx].cellType, 1u, 2u);
+
+                    // Record the vessel edge
+                    uint edgeIdx = atomicAdd(edgeCount.count, 1u);
+                    if (edgeIdx < pc.maxCapacity) {
+                        edges.data[edgeIdx].agentA = globalIdx;
+                        edges.data[edgeIdx].agentB = neighborAgentIdx;
+                        edges.data[edgeIdx].dist   = dist;
+                        edges.data[edgeIdx].flags  = 0u;
+                    }
+
+                    return; // one anastomosis event per TipCell per dispatch
+                }
+            }
+        }
+    }
+}

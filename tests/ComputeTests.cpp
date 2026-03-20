@@ -1721,3 +1721,322 @@ TEST_F( ComputeTest, Shader_NotchDll4_LateralInhibition_Asymmetric )
     m_rm->DestroyBuffer( offsetBuf );
     m_rm->DestroyBuffer( countBuf  );
 }
+
+// =================================================================================================
+// anastomosis.comp — raw shader tests
+// =================================================================================================
+
+// Two TipCells within contactDistance → both become StalkCell, one edge written.
+//
+// Agents: A=(0,0,0), B=(2,0,0).  contactDistance=5, hashCellSize=30.
+// Both map to hash cell (0,0,0) → hashPos(0,0,0)=0. offset[0]=0.
+// Invocation A (idx=0) sees B (idx=1 > 0) → dist=2 < 5 → anastomose.
+// Invocation B (idx=1) sees A (idx=0 ≤ 1) → dedup skip.
+// Result: both cellType=2 (StalkCell), edgeCount=1, edge.dist≈2.
+TEST_F( ComputeTest, Shader_Anastomosis_TwoTipCells_WithinRange )
+{
+    if( !m_device )
+        GTEST_SKIP();
+
+    // ── Raw data ──────────────────────────────────────────────────────────────
+    std::vector<glm::vec4> agents     = { glm::vec4( 0.0f, 0.0f, 0.0f, 1.0f ), glm::vec4( 2.0f, 0.0f, 0.0f, 1.0f ) };
+    size_t                 agentsSize = 2 * sizeof( glm::vec4 );
+
+    struct PhenotypeData { uint32_t lifecycleState; float biomass; float timer; uint32_t cellType; };
+    std::vector<PhenotypeData> phenotypes     = { { 0u, 0.5f, 0.0f, 1u }, { 0u, 0.5f, 0.0f, 1u } }; // both TipCell
+    size_t                     phenotypesSize = 2 * sizeof( PhenotypeData );
+
+    // Both agents in hash cell (0,0,0) → hashPos(0,0,0) = 0
+    struct AgentHash { uint32_t hash; uint32_t agentIndex; };
+    std::vector<AgentHash> sortedHashes = { { 0u, 0u }, { 0u, 1u } };
+    size_t                 hashesSize   = 2 * sizeof( AgentHash );
+
+    uint32_t              offsetArraySize = 256;
+    std::vector<uint32_t> cellOffsets( offsetArraySize, 0xFFFFFFFF );
+    cellOffsets[ 0 ] = 0; // hash 0 → sortedHashes[0]
+    size_t offsetsSize = offsetArraySize * sizeof( uint32_t );
+
+    uint32_t agentCount    = 2;
+    uint32_t edgeCountInit = 0;
+
+    struct VesselEdge { uint32_t agentA; uint32_t agentB; float dist; uint32_t flags; };
+    size_t edgeBufferSize = 16 * sizeof( VesselEdge );
+
+    // ── Allocate & Upload ─────────────────────────────────────────────────────
+    BufferHandle agentBuf     = m_rm->CreateBuffer( { agentsSize,           BufferType::STORAGE,  "AnaAgents"    } );
+    BufferHandle phenoBuf     = m_rm->CreateBuffer( { phenotypesSize,       BufferType::STORAGE,  "AnaPheno"     } );
+    BufferHandle hashBuf      = m_rm->CreateBuffer( { hashesSize,           BufferType::STORAGE,  "AnaHash"      } );
+    BufferHandle offsetBuf    = m_rm->CreateBuffer( { offsetsSize,          BufferType::STORAGE,  "AnaOffsets"   } );
+    BufferHandle countBuf     = m_rm->CreateBuffer( { sizeof( uint32_t ),   BufferType::INDIRECT, "AnaCount"     } );
+    BufferHandle edgeBuf      = m_rm->CreateBuffer( { edgeBufferSize,       BufferType::STORAGE,  "AnaEdges"     } );
+    BufferHandle edgeCountBuf = m_rm->CreateBuffer( { sizeof( uint32_t ),   BufferType::STORAGE,  "AnaEdgeCount" } );
+
+    m_stream->UploadBufferImmediate( {
+        { agentBuf,     agents.data(),       agentsSize,         0 },
+        { phenoBuf,     phenotypes.data(),   phenotypesSize,     0 },
+        { hashBuf,      sortedHashes.data(), hashesSize,         0 },
+        { offsetBuf,    cellOffsets.data(),  offsetsSize,        0 },
+        { countBuf,     &agentCount,         sizeof( uint32_t ), 0 },
+        { edgeCountBuf, &edgeCountInit,      sizeof( uint32_t ), 0 },
+    } );
+
+    // ── Pipeline & BindingGroup ───────────────────────────────────────────────
+    ComputePipelineDesc   pipeDesc{ m_rm->CreateShader( "shaders/compute/biology/anastomosis.comp" ), "TestAnastomosis" };
+    ComputePipelineHandle pipeHandle = m_rm->CreatePipeline( pipeDesc );
+    ComputePipeline*      pipeline   = m_rm->GetPipeline( pipeHandle );
+
+    BindingGroup* bg = m_rm->GetBindingGroup( m_rm->CreateBindingGroup( pipeHandle, 0 ) );
+    bg->Bind( 0, m_rm->GetBuffer( agentBuf     ) );
+    bg->Bind( 1, m_rm->GetBuffer( phenoBuf     ) );
+    bg->Bind( 2, m_rm->GetBuffer( hashBuf      ) );
+    bg->Bind( 3, m_rm->GetBuffer( offsetBuf    ) );
+    bg->Bind( 4, m_rm->GetBuffer( countBuf     ) );
+    bg->Bind( 5, m_rm->GetBuffer( edgeBuf      ) );
+    bg->Bind( 6, m_rm->GetBuffer( edgeCountBuf ) );
+    bg->Build();
+
+    // ── Push Constants ────────────────────────────────────────────────────────
+    ComputePushConstants pc{};
+    pc.dt          = 1.0f / 60.0f;
+    pc.fParam0     = 5.0f;  // contactDistance
+    pc.offset      = 0;
+    pc.maxCapacity = 2;
+    pc.uParam0     = offsetArraySize;
+    pc.uParam1     = 0;
+    pc.domainSize  = glm::vec4( 100.0f, 100.0f, 100.0f, 30.0f ); // .w = hashCellSize
+
+    // ── Dispatch ──────────────────────────────────────────────────────────────
+    auto compCtxHandle = m_device->CreateThreadContext( QueueType::COMPUTE );
+    auto compCtx       = m_device->GetThreadContext( compCtxHandle );
+    auto compCmd       = compCtx->GetCommandBuffer( compCtx->CreateCommandBuffer() );
+
+    compCmd->Begin();
+    compCmd->SetPipeline( pipeline );
+    compCmd->SetBindingGroup( bg, pipeline->GetLayout(), VK_PIPELINE_BIND_POINT_COMPUTE );
+    compCmd->PushConstants( pipeline->GetLayout(), VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof( pc ), &pc );
+    compCmd->Dispatch( 1, 1, 1 );
+    compCmd->End();
+
+    m_device->GetComputeQueue()->Submit( { compCmd } );
+    m_device->GetComputeQueue()->WaitIdle();
+
+    // ── Readback & Assert ─────────────────────────────────────────────────────
+    std::vector<PhenotypeData> resultPheno( 2 );
+    uint32_t                   resultEdgeCount = 0;
+    VesselEdge                 resultEdge{};
+    m_stream->ReadbackBufferImmediate( phenoBuf,     resultPheno.data(), phenotypesSize );
+    m_stream->ReadbackBufferImmediate( edgeCountBuf, &resultEdgeCount,   sizeof( uint32_t ) );
+    m_stream->ReadbackBufferImmediate( edgeBuf,      &resultEdge,        sizeof( VesselEdge ) );
+
+    EXPECT_EQ(   resultPheno[ 0 ].cellType, 2u )   << "Agent 0 must be StalkCell (2) after anastomosis";
+    EXPECT_EQ(   resultPheno[ 1 ].cellType, 2u )   << "Agent 1 must be StalkCell (2) after anastomosis";
+    EXPECT_EQ(   resultEdgeCount,           1u )   << "Exactly 1 edge must be recorded";
+    EXPECT_EQ(   resultEdge.agentA,         0u )   << "Edge agentA must be 0 (lower-index invocation handles the pair)";
+    EXPECT_EQ(   resultEdge.agentB,         1u )   << "Edge agentB must be 1";
+    EXPECT_NEAR( resultEdge.dist,           2.0f, 1e-4f ) << "Edge dist must equal agent separation";
+
+    m_rm->DestroyBuffer( agentBuf     );
+    m_rm->DestroyBuffer( phenoBuf     );
+    m_rm->DestroyBuffer( hashBuf      );
+    m_rm->DestroyBuffer( offsetBuf    );
+    m_rm->DestroyBuffer( countBuf     );
+    m_rm->DestroyBuffer( edgeBuf      );
+    m_rm->DestroyBuffer( edgeCountBuf );
+}
+
+// Dead slot (w=0) pre-labelled as TipCell must be skipped — cellType and edge count unchanged.
+TEST_F( ComputeTest, Shader_Anastomosis_DeadSlot_Skipped )
+{
+    if( !m_device )
+        GTEST_SKIP();
+
+    std::vector<glm::vec4> agents     = { glm::vec4( 0.0f, 0.0f, 0.0f, 0.0f ) }; // w=0 → dead
+    size_t                 agentsSize = sizeof( glm::vec4 );
+
+    struct PhenotypeData { uint32_t lifecycleState; float biomass; float timer; uint32_t cellType; };
+    std::vector<PhenotypeData> phenotypes     = { { 0u, 0.5f, 0.0f, 1u } }; // TipCell but dead
+    size_t                     phenotypesSize = sizeof( PhenotypeData );
+
+    struct AgentHash { uint32_t hash; uint32_t agentIndex; };
+    std::vector<AgentHash> sortedHashes = { { 0u, 0u } };
+    size_t                 hashesSize   = sizeof( AgentHash );
+
+    uint32_t              offsetArraySize = 256;
+    std::vector<uint32_t> cellOffsets( offsetArraySize, 0xFFFFFFFF );
+    size_t                offsetsSize = offsetArraySize * sizeof( uint32_t );
+
+    uint32_t agentCount    = 1;
+    uint32_t edgeCountInit = 0;
+
+    struct VesselEdge { uint32_t agentA; uint32_t agentB; float dist; uint32_t flags; };
+
+    BufferHandle agentBuf     = m_rm->CreateBuffer( { agentsSize,           BufferType::STORAGE,  "DeadAnaAgents"    } );
+    BufferHandle phenoBuf     = m_rm->CreateBuffer( { phenotypesSize,       BufferType::STORAGE,  "DeadAnaPheno"     } );
+    BufferHandle hashBuf      = m_rm->CreateBuffer( { hashesSize,           BufferType::STORAGE,  "DeadAnaHash"      } );
+    BufferHandle offsetBuf    = m_rm->CreateBuffer( { offsetsSize,          BufferType::STORAGE,  "DeadAnaOffsets"   } );
+    BufferHandle countBuf     = m_rm->CreateBuffer( { sizeof( uint32_t ),   BufferType::INDIRECT, "DeadAnaCount"     } );
+    BufferHandle edgeBuf      = m_rm->CreateBuffer( { sizeof( VesselEdge ), BufferType::STORAGE,  "DeadAnaEdges"     } );
+    BufferHandle edgeCountBuf = m_rm->CreateBuffer( { sizeof( uint32_t ),   BufferType::STORAGE,  "DeadAnaEdgeCount" } );
+
+    m_stream->UploadBufferImmediate( {
+        { agentBuf,     agents.data(),       agentsSize,         0 },
+        { phenoBuf,     phenotypes.data(),   phenotypesSize,     0 },
+        { hashBuf,      sortedHashes.data(), hashesSize,         0 },
+        { offsetBuf,    cellOffsets.data(),  offsetsSize,        0 },
+        { countBuf,     &agentCount,         sizeof( uint32_t ), 0 },
+        { edgeCountBuf, &edgeCountInit,      sizeof( uint32_t ), 0 },
+    } );
+
+    ComputePipelineDesc   pipeDesc{ m_rm->CreateShader( "shaders/compute/biology/anastomosis.comp" ), "TestAnastomosisDeadSlot" };
+    ComputePipelineHandle pipeHandle = m_rm->CreatePipeline( pipeDesc );
+    ComputePipeline*      pipeline   = m_rm->GetPipeline( pipeHandle );
+
+    BindingGroup* bg = m_rm->GetBindingGroup( m_rm->CreateBindingGroup( pipeHandle, 0 ) );
+    bg->Bind( 0, m_rm->GetBuffer( agentBuf     ) );
+    bg->Bind( 1, m_rm->GetBuffer( phenoBuf     ) );
+    bg->Bind( 2, m_rm->GetBuffer( hashBuf      ) );
+    bg->Bind( 3, m_rm->GetBuffer( offsetBuf    ) );
+    bg->Bind( 4, m_rm->GetBuffer( countBuf     ) );
+    bg->Bind( 5, m_rm->GetBuffer( edgeBuf      ) );
+    bg->Bind( 6, m_rm->GetBuffer( edgeCountBuf ) );
+    bg->Build();
+
+    ComputePushConstants pc{};
+    pc.dt          = 1.0f / 60.0f;
+    pc.fParam0     = 5.0f;
+    pc.offset      = 0;
+    pc.maxCapacity = 1;
+    pc.uParam0     = offsetArraySize;
+    pc.uParam1     = 0;
+    pc.domainSize  = glm::vec4( 100.0f, 100.0f, 100.0f, 30.0f );
+
+    auto compCtxHandle = m_device->CreateThreadContext( QueueType::COMPUTE );
+    auto compCtx       = m_device->GetThreadContext( compCtxHandle );
+    auto compCmd       = compCtx->GetCommandBuffer( compCtx->CreateCommandBuffer() );
+
+    compCmd->Begin();
+    compCmd->SetPipeline( pipeline );
+    compCmd->SetBindingGroup( bg, pipeline->GetLayout(), VK_PIPELINE_BIND_POINT_COMPUTE );
+    compCmd->PushConstants( pipeline->GetLayout(), VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof( pc ), &pc );
+    compCmd->Dispatch( 1, 1, 1 );
+    compCmd->End();
+
+    m_device->GetComputeQueue()->Submit( { compCmd } );
+    m_device->GetComputeQueue()->WaitIdle();
+
+    PhenotypeData resultPheno{};
+    uint32_t      resultEdgeCount = 0;
+    m_stream->ReadbackBufferImmediate( phenoBuf,     &resultPheno,     phenotypesSize );
+    m_stream->ReadbackBufferImmediate( edgeCountBuf, &resultEdgeCount, sizeof( uint32_t ) );
+
+    EXPECT_EQ( resultPheno.cellType, 1u ) << "Dead slot: cellType must remain TipCell (1) — dead guard fired";
+    EXPECT_EQ( resultEdgeCount,      0u ) << "Dead slot: no edge must be written";
+
+    m_rm->DestroyBuffer( agentBuf     );
+    m_rm->DestroyBuffer( phenoBuf     );
+    m_rm->DestroyBuffer( hashBuf      );
+    m_rm->DestroyBuffer( offsetBuf    );
+    m_rm->DestroyBuffer( countBuf     );
+    m_rm->DestroyBuffer( edgeBuf      );
+    m_rm->DestroyBuffer( edgeCountBuf );
+}
+
+// Non-TipCell agents (Default + StalkCell) within contact range must be skipped — no edge written.
+TEST_F( ComputeTest, Shader_Anastomosis_NonTipCells_Skipped )
+{
+    if( !m_device )
+        GTEST_SKIP();
+
+    // Two alive agents at close range — Default (0) and StalkCell (2), neither is TipCell (1)
+    std::vector<glm::vec4> agents     = { glm::vec4( 0.0f, 0.0f, 0.0f, 1.0f ), glm::vec4( 1.0f, 0.0f, 0.0f, 1.0f ) };
+    size_t                 agentsSize = 2 * sizeof( glm::vec4 );
+
+    struct PhenotypeData { uint32_t lifecycleState; float biomass; float timer; uint32_t cellType; };
+    std::vector<PhenotypeData> phenotypes     = { { 0u, 0.5f, 0.0f, 0u }, { 0u, 0.5f, 0.0f, 2u } };
+    size_t                     phenotypesSize = 2 * sizeof( PhenotypeData );
+
+    struct AgentHash { uint32_t hash; uint32_t agentIndex; };
+    std::vector<AgentHash> sortedHashes = { { 0u, 0u }, { 0u, 1u } };
+    size_t                 hashesSize   = 2 * sizeof( AgentHash );
+
+    uint32_t              offsetArraySize = 256;
+    std::vector<uint32_t> cellOffsets( offsetArraySize, 0xFFFFFFFF );
+    cellOffsets[ 0 ] = 0;
+    size_t offsetsSize = offsetArraySize * sizeof( uint32_t );
+
+    uint32_t agentCount    = 2;
+    uint32_t edgeCountInit = 0;
+
+    struct VesselEdge { uint32_t agentA; uint32_t agentB; float dist; uint32_t flags; };
+
+    BufferHandle agentBuf     = m_rm->CreateBuffer( { agentsSize,           BufferType::STORAGE,  "NTCAgents"    } );
+    BufferHandle phenoBuf     = m_rm->CreateBuffer( { phenotypesSize,       BufferType::STORAGE,  "NTCPheno"     } );
+    BufferHandle hashBuf      = m_rm->CreateBuffer( { hashesSize,           BufferType::STORAGE,  "NTCHash"      } );
+    BufferHandle offsetBuf    = m_rm->CreateBuffer( { offsetsSize,          BufferType::STORAGE,  "NTCOffsets"   } );
+    BufferHandle countBuf     = m_rm->CreateBuffer( { sizeof( uint32_t ),   BufferType::INDIRECT, "NTCCount"     } );
+    BufferHandle edgeBuf      = m_rm->CreateBuffer( { sizeof( VesselEdge ), BufferType::STORAGE,  "NTCEdges"     } );
+    BufferHandle edgeCountBuf = m_rm->CreateBuffer( { sizeof( uint32_t ),   BufferType::STORAGE,  "NTCEdgeCount" } );
+
+    m_stream->UploadBufferImmediate( {
+        { agentBuf,     agents.data(),       agentsSize,         0 },
+        { phenoBuf,     phenotypes.data(),   phenotypesSize,     0 },
+        { hashBuf,      sortedHashes.data(), hashesSize,         0 },
+        { offsetBuf,    cellOffsets.data(),  offsetsSize,        0 },
+        { countBuf,     &agentCount,         sizeof( uint32_t ), 0 },
+        { edgeCountBuf, &edgeCountInit,      sizeof( uint32_t ), 0 },
+    } );
+
+    ComputePipelineDesc   pipeDesc{ m_rm->CreateShader( "shaders/compute/biology/anastomosis.comp" ), "TestAnastomosisNTC" };
+    ComputePipelineHandle pipeHandle = m_rm->CreatePipeline( pipeDesc );
+    ComputePipeline*      pipeline   = m_rm->GetPipeline( pipeHandle );
+
+    BindingGroup* bg = m_rm->GetBindingGroup( m_rm->CreateBindingGroup( pipeHandle, 0 ) );
+    bg->Bind( 0, m_rm->GetBuffer( agentBuf     ) );
+    bg->Bind( 1, m_rm->GetBuffer( phenoBuf     ) );
+    bg->Bind( 2, m_rm->GetBuffer( hashBuf      ) );
+    bg->Bind( 3, m_rm->GetBuffer( offsetBuf    ) );
+    bg->Bind( 4, m_rm->GetBuffer( countBuf     ) );
+    bg->Bind( 5, m_rm->GetBuffer( edgeBuf      ) );
+    bg->Bind( 6, m_rm->GetBuffer( edgeCountBuf ) );
+    bg->Build();
+
+    ComputePushConstants pc{};
+    pc.dt          = 1.0f / 60.0f;
+    pc.fParam0     = 5.0f;
+    pc.offset      = 0;
+    pc.maxCapacity = 2;
+    pc.uParam0     = offsetArraySize;
+    pc.uParam1     = 0;
+    pc.domainSize  = glm::vec4( 100.0f, 100.0f, 100.0f, 30.0f );
+
+    auto compCtxHandle = m_device->CreateThreadContext( QueueType::COMPUTE );
+    auto compCtx       = m_device->GetThreadContext( compCtxHandle );
+    auto compCmd       = compCtx->GetCommandBuffer( compCtx->CreateCommandBuffer() );
+
+    compCmd->Begin();
+    compCmd->SetPipeline( pipeline );
+    compCmd->SetBindingGroup( bg, pipeline->GetLayout(), VK_PIPELINE_BIND_POINT_COMPUTE );
+    compCmd->PushConstants( pipeline->GetLayout(), VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof( pc ), &pc );
+    compCmd->Dispatch( 1, 1, 1 );
+    compCmd->End();
+
+    m_device->GetComputeQueue()->Submit( { compCmd } );
+    m_device->GetComputeQueue()->WaitIdle();
+
+    std::vector<PhenotypeData> resultPheno( 2 );
+    uint32_t                   resultEdgeCount = 0;
+    m_stream->ReadbackBufferImmediate( phenoBuf,     resultPheno.data(), phenotypesSize );
+    m_stream->ReadbackBufferImmediate( edgeCountBuf, &resultEdgeCount,   sizeof( uint32_t ) );
+
+    EXPECT_EQ( resultPheno[ 0 ].cellType, 0u ) << "Default agent must remain Default (0)";
+    EXPECT_EQ( resultPheno[ 1 ].cellType, 2u ) << "StalkCell agent must remain StalkCell (2)";
+    EXPECT_EQ( resultEdgeCount,           0u ) << "No edge must be written for non-TipCell agents";
+
+    m_rm->DestroyBuffer( agentBuf     );
+    m_rm->DestroyBuffer( phenoBuf     );
+    m_rm->DestroyBuffer( hashBuf      );
+    m_rm->DestroyBuffer( offsetBuf    );
+    m_rm->DestroyBuffer( countBuf     );
+    m_rm->DestroyBuffer( edgeBuf      );
+    m_rm->DestroyBuffer( edgeCountBuf );
+}

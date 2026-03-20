@@ -987,6 +987,130 @@ TEST_F( SimulationBuilderTest, Behaviour_NotchDll4_LateralInhibition )
 }
 
 // ===========================================================================================
+// Anastomosis GPU tests
+// ===========================================================================================
+
+// Helper: force all agents in the phenotype buffer to a given cellType
+static void ForceAllCellType( DigitalTwin::StreamingManager* stream, const DigitalTwin::BufferHandle& phenotypeBuffer,
+                               uint32_t cellType, uint32_t capacity )
+{
+    struct PhenotypeData { uint32_t lifecycleState; float biomass; float timer; uint32_t cellType; };
+    std::vector<PhenotypeData> phenotypes( capacity, { 0u, 0.5f, 0.0f, cellType } );
+    stream->UploadBufferImmediate( { { phenotypeBuffer, phenotypes.data(), capacity * sizeof( PhenotypeData ) } } );
+}
+
+// Two TipCells within contactDistance → both become StalkCell, edge count == 1
+TEST_F( SimulationBuilderTest, Behaviour_Anastomosis_TwoTipCells_WithinRange )
+{
+    if( !m_device )
+        GTEST_SKIP();
+
+    SimulationBlueprint blueprint;
+    blueprint.SetDomainSize( glm::vec3( 100.0f ), 1.0f )
+        .ConfigureSpatialPartitioning()
+        .SetCellSize( 30.0f )
+        .SetComputeHz( 60.0f );
+
+    // Two agents 2µm apart — contactDistance = 5µm → within range
+    std::vector<glm::vec4> pos = {
+        glm::vec4( 0.0f, 0.0f, 0.0f, 1.0f ),
+        glm::vec4( 2.0f, 0.0f, 0.0f, 1.0f )
+    };
+
+    blueprint.AddAgentGroup( "Endothelial" )
+        .SetCount( 2 )
+        .SetDistribution( pos )
+        .AddBehaviour( Behaviours::Anastomosis{ /* contactDistance */ 5.0f } )
+        .SetHz( 60.0f );
+
+    SimulationBuilder builder( m_resourceManager.get(), m_streamingManager.get() );
+    SimulationState   state = builder.Build( blueprint );
+
+    // Pre-set both agents to TipCell (cellType = 1)
+    ForceAllCellType( m_streamingManager.get(), state.phenotypeBuffer, 1u, 131072 );
+
+    auto compCtxHandle = m_device->CreateThreadContext( QueueType::COMPUTE );
+    auto compCtx       = m_device->GetThreadContext( compCtxHandle );
+    auto compCmd       = compCtx->GetCommandBuffer( compCtx->CreateCommandBuffer() );
+
+    GraphDispatcher dispatcher;
+    compCmd->Begin();
+    dispatcher.Dispatch( &state.computeGraph, compCmd, nullptr, 1.0f / 60.0f, 0.0f, 0 );
+    compCmd->End();
+
+    m_device->GetComputeQueue()->Submit( { compCmd } );
+    m_device->GetComputeQueue()->WaitIdle();
+
+    struct PhenotypeData { uint32_t lifecycleState; float biomass; float timer; uint32_t cellType; };
+    std::vector<PhenotypeData> results( 2 );
+    m_streamingManager->ReadbackBufferImmediate( state.phenotypeBuffer, results.data(), 2 * sizeof( PhenotypeData ) );
+
+    EXPECT_EQ( results[ 0 ].cellType, 2u ) << "Agent 0 should be StalkCell (2) after anastomosis";
+    EXPECT_EQ( results[ 1 ].cellType, 2u ) << "Agent 1 should be StalkCell (2) after anastomosis";
+
+    uint32_t edgeCount = 0;
+    m_streamingManager->ReadbackBufferImmediate( state.vesselEdgeCountBuffer, &edgeCount, sizeof( uint32_t ) );
+    EXPECT_EQ( edgeCount, 1u ) << "Exactly 1 vessel edge should be recorded";
+
+    state.Destroy( m_resourceManager.get() );
+}
+
+// Two TipCells far apart → both remain TipCell, edge count == 0
+TEST_F( SimulationBuilderTest, Behaviour_Anastomosis_TwoTipCells_OutOfRange )
+{
+    if( !m_device )
+        GTEST_SKIP();
+
+    SimulationBlueprint blueprint;
+    blueprint.SetDomainSize( glm::vec3( 200.0f ), 1.0f )
+        .ConfigureSpatialPartitioning()
+        .SetCellSize( 30.0f )
+        .SetComputeHz( 60.0f );
+
+    // Two agents 50µm apart — contactDistance = 5µm → out of range
+    std::vector<glm::vec4> pos = {
+        glm::vec4(  0.0f, 0.0f, 0.0f, 1.0f ),
+        glm::vec4( 50.0f, 0.0f, 0.0f, 1.0f )
+    };
+
+    blueprint.AddAgentGroup( "Endothelial" )
+        .SetCount( 2 )
+        .SetDistribution( pos )
+        .AddBehaviour( Behaviours::Anastomosis{ /* contactDistance */ 5.0f } )
+        .SetHz( 60.0f );
+
+    SimulationBuilder builder( m_resourceManager.get(), m_streamingManager.get() );
+    SimulationState   state = builder.Build( blueprint );
+
+    ForceAllCellType( m_streamingManager.get(), state.phenotypeBuffer, 1u, 131072 );
+
+    auto compCtxHandle = m_device->CreateThreadContext( QueueType::COMPUTE );
+    auto compCtx       = m_device->GetThreadContext( compCtxHandle );
+    auto compCmd       = compCtx->GetCommandBuffer( compCtx->CreateCommandBuffer() );
+
+    GraphDispatcher dispatcher;
+    compCmd->Begin();
+    dispatcher.Dispatch( &state.computeGraph, compCmd, nullptr, 1.0f / 60.0f, 0.0f, 0 );
+    compCmd->End();
+
+    m_device->GetComputeQueue()->Submit( { compCmd } );
+    m_device->GetComputeQueue()->WaitIdle();
+
+    struct PhenotypeData { uint32_t lifecycleState; float biomass; float timer; uint32_t cellType; };
+    std::vector<PhenotypeData> results( 2 );
+    m_streamingManager->ReadbackBufferImmediate( state.phenotypeBuffer, results.data(), 2 * sizeof( PhenotypeData ) );
+
+    EXPECT_EQ( results[ 0 ].cellType, 1u ) << "Agent 0 should remain TipCell (1) — too far to anastomose";
+    EXPECT_EQ( results[ 1 ].cellType, 1u ) << "Agent 1 should remain TipCell (1) — too far to anastomose";
+
+    uint32_t edgeCount = 0;
+    m_streamingManager->ReadbackBufferImmediate( state.vesselEdgeCountBuffer, &edgeCount, sizeof( uint32_t ) );
+    EXPECT_EQ( edgeCount, 0u ) << "No vessel edges should be recorded";
+
+    state.Destroy( m_resourceManager.get() );
+}
+
+// ===========================================================================================
 // SpatialDistribution::VesselLine — CPU-only, no GPU fixture needed
 // ===========================================================================================
 

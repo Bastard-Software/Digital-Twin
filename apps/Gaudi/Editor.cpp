@@ -139,6 +139,9 @@ namespace Gaudi
                 /* stalkThreshold       */ 0.3f } )
             .SetHz( 60.0f );
 
+        // Anastomosis — TipCell-TipCell fusion; contactDistance ~= 2x cell radius (tight contact)
+        endo.AddBehaviour( DigitalTwin::Behaviours::Anastomosis{ /* contactDistance */ 2.0f } ).SetHz( 60.0f );
+
         // Chemotaxis toward VEGF — MUST be before Biomechanics for correct ComputeGraph order
         endo.AddBehaviour( DigitalTwin::Behaviours::Chemotaxis{ "VEGF", 2.0f, 0.005f, 8.0f } ).SetHz( 60.0f );
         endo.AddBehaviour( DigitalTwin::Behaviours::BrownianMotion{ 0.1f } ).SetHz( 60.0f );

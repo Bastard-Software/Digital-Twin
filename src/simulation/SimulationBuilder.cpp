@@ -46,6 +46,10 @@ namespace DigitalTwin
             resourceManager->DestroyBuffer( phenotypeBuffer );
         if( signalingBuffer.IsValid() )
             resourceManager->DestroyBuffer( signalingBuffer );
+        if( vesselEdgeBuffer.IsValid() )
+            resourceManager->DestroyBuffer( vesselEdgeBuffer );
+        if( vesselEdgeCountBuffer.IsValid() )
+            resourceManager->DestroyBuffer( vesselEdgeCountBuffer );
 
         for( auto& field: gridFields )
         {
@@ -68,8 +72,10 @@ namespace DigitalTwin
         agentBuffers[ 0 ] = {};
         agentBuffers[ 1 ] = {};
         agentCountBuffer  = {};
-        phenotypeBuffer   = {};
-        signalingBuffer   = {};
+        phenotypeBuffer       = {};
+        signalingBuffer       = {};
+        vesselEdgeBuffer      = {};
+        vesselEdgeCountBuffer = {};
     }
 
     SimulationState SimulationBuilder::Build( const SimulationBlueprint& blueprint )
@@ -1065,6 +1071,103 @@ namespace DigitalTwin
 
                     DT_INFO( "[SimulationBuilder] Compiled NotchDll4 for '{}' at {}Hz", group.GetName(), record.targetHz );
                 }
+                if( std::holds_alternative<Behaviours::Anastomosis>( record.behaviour ) )
+                {
+                    const auto& anastomosis = std::get<Behaviours::Anastomosis>( record.behaviour );
+
+                    // Ensure phenotype buffer exists (stores cellType)
+                    if( !outState.phenotypeBuffer.IsValid() )
+                    {
+                        uint32_t globalCapacity = 0;
+                        for( const auto& g: blueprint.GetGroups() )
+                        {
+                            if( g.GetCount() == 0 )
+                                continue;
+                            uint32_t cap = 131072;
+                            while( cap < g.GetCount() )
+                                cap <<= 1;
+                            globalCapacity += cap;
+                        }
+
+                        struct PhenotypeData
+                        {
+                            uint32_t lifecycleState;
+                            float    biomass;
+                            float    timer;
+                            uint32_t cellType;
+                        };
+                        size_t phenotypeSize     = globalCapacity * sizeof( PhenotypeData );
+                        outState.phenotypeBuffer = m_resourceManager->CreateBuffer( { phenotypeSize, BufferType::STORAGE, "PhenotypeBuffer" } );
+
+                        std::vector<PhenotypeData> initPhenotypes( globalCapacity, { 0u, 0.5f, 0.0f, 0u } );
+                        m_streamingManager->UploadBufferImmediate( { { outState.phenotypeBuffer, initPhenotypes.data(), phenotypeSize, 0 } } );
+                    }
+
+                    // Allocate vessel edge buffers (once per simulation — accumulate across frames)
+                    if( !outState.vesselEdgeBuffer.IsValid() )
+                    {
+                        struct VesselEdge
+                        {
+                            uint32_t agentA;
+                            uint32_t agentB;
+                            float    dist;
+                            uint32_t flags;
+                        };
+                        size_t edgeBufferSize    = paddedCount * sizeof( VesselEdge );
+                        outState.vesselEdgeBuffer = m_resourceManager->CreateBuffer( { edgeBufferSize, BufferType::STORAGE, "VesselEdgeBuffer" } );
+
+                        outState.vesselEdgeCountBuffer =
+                            m_resourceManager->CreateBuffer( { sizeof( uint32_t ), BufferType::STORAGE, "VesselEdgeCountBuffer" } );
+                        uint32_t zero = 0;
+                        m_streamingManager->UploadBufferImmediate( { { outState.vesselEdgeCountBuffer, &zero, sizeof( uint32_t ) } } );
+                    }
+
+                    ComputePipelineDesc   anastomosisDesc{ m_resourceManager->CreateShader( "shaders/compute/biology/anastomosis.comp" ),
+                                                          "AnastomosisPipeline" };
+                    ComputePipelineHandle anastomosisPipeHandle = m_resourceManager->CreatePipeline( anastomosisDesc );
+                    ComputePipeline*      anastomosisPipe       = m_resourceManager->GetPipeline( anastomosisPipeHandle );
+
+                    BindingGroup* bgAnastomosis0 =
+                        m_resourceManager->GetBindingGroup( m_resourceManager->CreateBindingGroup( anastomosisPipeHandle, 0 ) );
+                    bgAnastomosis0->Bind( 0, m_resourceManager->GetBuffer( outState.agentBuffers[ 0 ] ) );
+                    bgAnastomosis0->Bind( 1, m_resourceManager->GetBuffer( outState.phenotypeBuffer ) );
+                    bgAnastomosis0->Bind( 2, m_resourceManager->GetBuffer( outState.hashBuffer ) );
+                    bgAnastomosis0->Bind( 3, m_resourceManager->GetBuffer( outState.offsetBuffer ) );
+                    bgAnastomosis0->Bind( 4, m_resourceManager->GetBuffer( outState.agentCountBuffer ) );
+                    bgAnastomosis0->Bind( 5, m_resourceManager->GetBuffer( outState.vesselEdgeBuffer ) );
+                    bgAnastomosis0->Bind( 6, m_resourceManager->GetBuffer( outState.vesselEdgeCountBuffer ) );
+                    bgAnastomosis0->Build();
+
+                    BindingGroup* bgAnastomosis1 =
+                        m_resourceManager->GetBindingGroup( m_resourceManager->CreateBindingGroup( anastomosisPipeHandle, 0 ) );
+                    bgAnastomosis1->Bind( 0, m_resourceManager->GetBuffer( outState.agentBuffers[ 1 ] ) );
+                    bgAnastomosis1->Bind( 1, m_resourceManager->GetBuffer( outState.phenotypeBuffer ) );
+                    bgAnastomosis1->Bind( 2, m_resourceManager->GetBuffer( outState.hashBuffer ) );
+                    bgAnastomosis1->Bind( 3, m_resourceManager->GetBuffer( outState.offsetBuffer ) );
+                    bgAnastomosis1->Bind( 4, m_resourceManager->GetBuffer( outState.agentCountBuffer ) );
+                    bgAnastomosis1->Bind( 5, m_resourceManager->GetBuffer( outState.vesselEdgeBuffer ) );
+                    bgAnastomosis1->Bind( 6, m_resourceManager->GetBuffer( outState.vesselEdgeCountBuffer ) );
+                    bgAnastomosis1->Build();
+
+                    float hashCellSize = blueprint.GetSpatialPartitioning().cellSize;
+
+                    ComputePushConstants anastomosisPC{};
+                    anastomosisPC.fParam0     = anastomosis.contactDistance;
+                    anastomosisPC.offset      = currentOffset;
+                    anastomosisPC.maxCapacity = paddedCount;
+                    anastomosisPC.uParam0     = offsetArraySize;
+                    anastomosisPC.uParam1     = groupIndex;
+                    anastomosisPC.domainSize  = glm::vec4( blueprint.GetDomainSize(), hashCellSize );
+
+                    glm::uvec3  anastomosisDispatch( ( paddedCount + 255 ) / 256, 1, 1 );
+                    ComputeTask anastomosisTask( anastomosisPipe, bgAnastomosis0, bgAnastomosis1, record.targetHz, anastomosisPC,
+                                                anastomosisDispatch );
+                    anastomosisTask.SetTag( "anastomosis" + tagBase );
+                    // No ChainFlip — reads positions only, writes phenotype and edge buffers
+                    outState.computeGraph.AddTask( anastomosisTask );
+
+                    DT_INFO( "[SimulationBuilder] Compiled Anastomosis for '{}' at {}Hz", group.GetName(), record.targetHz );
+                }
                 behaviourIndex++;
             }
             currentOffset += paddedCount;
@@ -1191,6 +1294,17 @@ namespace DigitalTwin
                         pc.fParam3                 = notch.vegfr2BaseExpression;
                         pc.fParam4                 = notch.tipThreshold;
                         pc.fParam5                 = notch.stalkThreshold;
+                        task->UpdatePushConstants( pc );
+                    }
+                }
+                else if( std::holds_alternative<Behaviours::Anastomosis>( record.behaviour ) )
+                {
+                    ComputeTask* task = state.computeGraph.FindTask( "anastomosis" + tagBase );
+                    if( task )
+                    {
+                        const auto&          anastomosis = std::get<Behaviours::Anastomosis>( record.behaviour );
+                        ComputePushConstants pc          = task->GetPushConstants();
+                        pc.fParam0                       = anastomosis.contactDistance;
                         task->UpdatePushConstants( pc );
                     }
                 }

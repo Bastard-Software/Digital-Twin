@@ -46,6 +46,10 @@ namespace DigitalTwin
         // Angiogenesis signaling (Notch-Dll4 pathway state per agent)
         BufferHandle signalingBuffer;
 
+        // Anastomosis — vessel edge graph
+        BufferHandle vesselEdgeBuffer;      // VesselEdge[paddedCount]: {agentA, agentB, dist, flags}
+        BufferHandle vesselEdgeCountBuffer; // uint32_t: count of recorded edges
+
         // Biomechanics
         BufferHandle hashBuffer;
         BufferHandle offsetBuffer;

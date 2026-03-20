@@ -985,3 +985,69 @@ TEST_F( SimulationBuilderTest, Behaviour_NotchDll4_LateralInhibition )
 
     state.Destroy( m_resourceManager.get() );
 }
+
+// ===========================================================================================
+// SpatialDistribution::VesselLine — CPU-only, no GPU fixture needed
+// ===========================================================================================
+
+TEST( SpatialDistribution_VesselLine, EvenSpacing )
+{
+    const uint32_t  count = 5;
+    const glm::vec3 start( -10.0f, 5.0f, 0.0f );
+    const glm::vec3 end( 10.0f, 5.0f, 0.0f );
+
+    auto positions = SpatialDistribution::VesselLine( count, start, end );
+
+    ASSERT_EQ( positions.size(), count );
+
+    // First position should be start
+    EXPECT_FLOAT_EQ( positions.front().x, start.x );
+    EXPECT_FLOAT_EQ( positions.front().y, start.y );
+    EXPECT_FLOAT_EQ( positions.front().z, start.z );
+
+    // Last position should be end
+    EXPECT_FLOAT_EQ( positions.back().x, end.x );
+    EXPECT_FLOAT_EQ( positions.back().y, end.y );
+    EXPECT_FLOAT_EQ( positions.back().z, end.z );
+
+    // All w components should be 1.0
+    for( const auto& p: positions )
+        EXPECT_FLOAT_EQ( p.w, 1.0f );
+
+    // Positions should be evenly spaced along the segment
+    float expectedSpacing = glm::length( end - start ) / static_cast<float>( count - 1 );
+    for( uint32_t i = 1; i < count; ++i )
+    {
+        float dist = glm::length( glm::vec3( positions[ i ] ) - glm::vec3( positions[ i - 1 ] ) );
+        EXPECT_NEAR( dist, expectedSpacing, 1e-5f );
+    }
+}
+
+TEST( SpatialDistribution_VesselLine, SingleAgent )
+{
+    const glm::vec3 start( -5.0f, 0.0f, 0.0f );
+    const glm::vec3 end( 5.0f, 0.0f, 0.0f );
+
+    auto positions = SpatialDistribution::VesselLine( 1, start, end );
+
+    ASSERT_EQ( positions.size(), 1u );
+    EXPECT_FLOAT_EQ( positions[ 0 ].x, 0.0f ); // midpoint
+    EXPECT_FLOAT_EQ( positions[ 0 ].y, 0.0f );
+    EXPECT_FLOAT_EQ( positions[ 0 ].z, 0.0f );
+    EXPECT_FLOAT_EQ( positions[ 0 ].w, 1.0f );
+}
+
+TEST( SpatialDistribution_VesselLine, FixedSpacing )
+{
+    const glm::vec3 start( 0.0f, 0.0f, 0.0f );
+    const glm::vec3 end( 10.0f, 0.0f, 0.0f );
+
+    // Request 100 agents with spacing=3.0 — line length is 10, so only 4 fit (0,3,6,9)
+    auto positions = SpatialDistribution::VesselLine( 100, start, end, 3.0f );
+
+    ASSERT_EQ( positions.size(), 4u );
+    EXPECT_FLOAT_EQ( positions[ 0 ].x, 0.0f );
+    EXPECT_FLOAT_EQ( positions[ 1 ].x, 3.0f );
+    EXPECT_FLOAT_EQ( positions[ 2 ].x, 6.0f );
+    EXPECT_FLOAT_EQ( positions[ 3 ].x, 9.0f );
+}

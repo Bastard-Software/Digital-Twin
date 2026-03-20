@@ -59,4 +59,48 @@ namespace DigitalTwin
         return positions;
     }
 
+    std::vector<glm::vec4> SpatialDistribution::VesselLine( uint32_t count, const glm::vec3& start, const glm::vec3& end, float spacing )
+    {
+        std::vector<glm::vec4> positions;
+        if( count == 0 )
+            return positions;
+
+        positions.reserve( count );
+
+        if( count == 1 )
+        {
+            glm::vec3 mid = ( start + end ) * 0.5f;
+            positions.push_back( { mid.x, mid.y, mid.z, 1.0f } );
+            return positions;
+        }
+
+        glm::vec3 dir        = end - start;
+        float     lineLength = glm::length( dir );
+
+        if( spacing > 0.0f && lineLength > 0.0f )
+        {
+            glm::vec3 step = glm::normalize( dir ) * spacing;
+            for( uint32_t i = 0; i < count; ++i )
+            {
+                float dist = spacing * static_cast<float>( i );
+                if( dist > lineLength )
+                    break;
+                glm::vec3 p = start + step * static_cast<float>( i );
+                positions.push_back( { p.x, p.y, p.z, 1.0f } );
+            }
+        }
+        else
+        {
+            // Even spacing: step = (end - start) / (count - 1)
+            glm::vec3 step = dir / static_cast<float>( count - 1 );
+            for( uint32_t i = 0; i < count; ++i )
+            {
+                glm::vec3 p = start + step * static_cast<float>( i );
+                positions.push_back( { p.x, p.y, p.z, 1.0f } );
+            }
+        }
+
+        return positions;
+    }
+
 } // namespace DigitalTwin

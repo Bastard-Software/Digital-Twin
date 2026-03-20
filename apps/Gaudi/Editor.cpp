@@ -122,11 +122,11 @@ namespace Gaudi
         // 5. Endothelial Tip Cells — migrate toward VEGF secreted by Hypoxic tumour cells
         // ==========================================================================================
 
-        // Spawned at domain periphery (simulating vessel walls at ~r=20 inside a 50³ domain)
+        // Pre-formed vessel line — horizontal segment offset above tumour center
         auto& endo = m_blueprint.AddAgentGroup( "EndothelialCells" )
-                         .SetCount( 50 )
+                         .SetCount( 20 )
                          .SetMorphology( DigitalTwin::MorphologyGenerator::CreateSphere( 1.0f ) )
-                         .SetDistribution( DigitalTwin::SpatialDistribution::UniformInSphere( 50, 20.0f ) )
+                         .SetDistribution( DigitalTwin::SpatialDistribution::VesselLine( 20, glm::vec3( -15, 5, 0 ), glm::vec3( 15, 5, 0 ) ) )
                          .SetColor( glm::vec4( 1.0f, 0.3f, 0.3f, 1.0f ) ); // Red
 
         // Notch-Dll4 lateral inhibition — differentiates Tip vs Stalk cells each frame

@@ -47,8 +47,11 @@ namespace DigitalTwin
         BufferHandle signalingBuffer;
 
         // Anastomosis — vessel edge graph
-        BufferHandle vesselEdgeBuffer;      // VesselEdge[paddedCount]: {agentA, agentB, dist, flags}
-        BufferHandle vesselEdgeCountBuffer; // uint32_t: count of recorded edges
+        BufferHandle vesselEdgeBuffer;       // VesselEdge[paddedCount]: {agentA, agentB, dist, flags}
+        BufferHandle vesselEdgeCountBuffer;  // uint32_t: count of recorded edges
+
+        // Vessel connected components — uint32_t label per agent, labels[i]=i initially
+        BufferHandle vesselComponentBuffer;
 
         // Biomechanics
         BufferHandle hashBuffer;

@@ -2040,3 +2040,140 @@ TEST_F( ComputeTest, Shader_Anastomosis_NonTipCells_Skipped )
     m_rm->DestroyBuffer( edgeBuf      );
     m_rm->DestroyBuffer( edgeCountBuf );
 }
+
+// ===========================================================================================
+// vessel_components.comp — raw shader tests (no Builder)
+// ===========================================================================================
+
+// One edge between agent 0 and agent 1 → single dispatch → both receive label 0.
+TEST_F( ComputeTest, Shader_VesselComponents_IsolatedPair )
+{
+    if( !m_device )
+        GTEST_SKIP();
+
+    struct VesselEdge { uint32_t agentA; uint32_t agentB; float dist; uint32_t flags; };
+
+    // One edge: (0, 1)
+    std::vector<VesselEdge> edgeData  = { { 0u, 1u, 2.0f, 0u } };
+    uint32_t                edgeCount = 1;
+
+    // Identity labels: labels[i] = i
+    std::vector<uint32_t> labelData = { 0u, 1u };
+    size_t                labelSize = 2 * sizeof( uint32_t );
+
+    BufferHandle edgeBuf      = m_rm->CreateBuffer( { sizeof( VesselEdge ),   BufferType::STORAGE, "VCIEdges"      } );
+    BufferHandle edgeCountBuf = m_rm->CreateBuffer( { sizeof( uint32_t ),     BufferType::STORAGE, "VCIEdgeCount"  } );
+    BufferHandle componentBuf = m_rm->CreateBuffer( { labelSize,              BufferType::STORAGE, "VCIComponents" } );
+
+    m_stream->UploadBufferImmediate( {
+        { edgeBuf,      edgeData.data(),  sizeof( VesselEdge ), 0 },
+        { edgeCountBuf, &edgeCount,       sizeof( uint32_t ),   0 },
+        { componentBuf, labelData.data(), labelSize,            0 },
+    } );
+
+    ComputePipelineDesc   pipeDesc{ m_rm->CreateShader( "shaders/compute/biology/vessel_components.comp" ), "TestVCIsolated" };
+    ComputePipelineHandle pipeHandle = m_rm->CreatePipeline( pipeDesc );
+    ComputePipeline*      pipeline   = m_rm->GetPipeline( pipeHandle );
+
+    BindingGroup* bg = m_rm->GetBindingGroup( m_rm->CreateBindingGroup( pipeHandle, 0 ) );
+    bg->Bind( 0, m_rm->GetBuffer( edgeBuf      ) );
+    bg->Bind( 1, m_rm->GetBuffer( edgeCountBuf ) );
+    bg->Bind( 2, m_rm->GetBuffer( componentBuf ) );
+    bg->Build();
+
+    ComputePushConstants pc{};
+    pc.maxCapacity = 2; // safety cap
+
+    auto compCtxHandle = m_device->CreateThreadContext( QueueType::COMPUTE );
+    auto compCtx       = m_device->GetThreadContext( compCtxHandle );
+    auto compCmd       = compCtx->GetCommandBuffer( compCtx->CreateCommandBuffer() );
+
+    compCmd->Begin();
+    compCmd->SetPipeline( pipeline );
+    compCmd->SetBindingGroup( bg, pipeline->GetLayout(), VK_PIPELINE_BIND_POINT_COMPUTE );
+    compCmd->PushConstants( pipeline->GetLayout(), VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof( pc ), &pc );
+    compCmd->Dispatch( 1, 1, 1 );
+    compCmd->End();
+
+    m_device->GetComputeQueue()->Submit( { compCmd } );
+    m_device->GetComputeQueue()->WaitIdle();
+
+    std::vector<uint32_t> resultLabels( 2 );
+    m_stream->ReadbackBufferImmediate( componentBuf, resultLabels.data(), labelSize );
+
+    EXPECT_EQ( resultLabels[ 0 ], resultLabels[ 1 ] ) << "Both agents must share the same component label after 1 pass";
+    EXPECT_EQ( resultLabels[ 0 ], 0u )               << "Minimum label (0) must propagate to agent 1";
+
+    m_rm->DestroyBuffer( edgeBuf      );
+    m_rm->DestroyBuffer( edgeCountBuf );
+    m_rm->DestroyBuffer( componentBuf );
+}
+
+// Three agents in a chain: edges (0,1) and (1,2). Two passes must propagate label 0 to all.
+TEST_F( ComputeTest, Shader_VesselComponents_Chain_ThreeAgents )
+{
+    if( !m_device )
+        GTEST_SKIP();
+
+    struct VesselEdge { uint32_t agentA; uint32_t agentB; float dist; uint32_t flags; };
+
+    // Chain: 0─1─2
+    std::vector<VesselEdge> edgeData  = { { 0u, 1u, 2.0f, 0u }, { 1u, 2u, 2.0f, 0u } };
+    uint32_t                edgeCount = 2;
+
+    // Identity labels
+    std::vector<uint32_t> labelData = { 0u, 1u, 2u };
+    size_t                labelSize = 3 * sizeof( uint32_t );
+
+    BufferHandle edgeBuf      = m_rm->CreateBuffer( { 2 * sizeof( VesselEdge ), BufferType::STORAGE, "VCCEdges"      } );
+    BufferHandle edgeCountBuf = m_rm->CreateBuffer( { sizeof( uint32_t ),       BufferType::STORAGE, "VCCEdgeCount"  } );
+    BufferHandle componentBuf = m_rm->CreateBuffer( { labelSize,                BufferType::STORAGE, "VCCComponents" } );
+
+    m_stream->UploadBufferImmediate( {
+        { edgeBuf,      edgeData.data(),  2 * sizeof( VesselEdge ), 0 },
+        { edgeCountBuf, &edgeCount,       sizeof( uint32_t ),       0 },
+        { componentBuf, labelData.data(), labelSize,                0 },
+    } );
+
+    ComputePipelineDesc   pipeDesc{ m_rm->CreateShader( "shaders/compute/biology/vessel_components.comp" ), "TestVCChain3" };
+    ComputePipelineHandle pipeHandle = m_rm->CreatePipeline( pipeDesc );
+    ComputePipeline*      pipeline   = m_rm->GetPipeline( pipeHandle );
+
+    BindingGroup* bg = m_rm->GetBindingGroup( m_rm->CreateBindingGroup( pipeHandle, 0 ) );
+    bg->Bind( 0, m_rm->GetBuffer( edgeBuf      ) );
+    bg->Bind( 1, m_rm->GetBuffer( edgeCountBuf ) );
+    bg->Bind( 2, m_rm->GetBuffer( componentBuf ) );
+    bg->Build();
+
+    ComputePushConstants pc{};
+    pc.maxCapacity = 2; // 2 edges max
+
+    auto compCtxHandle = m_device->CreateThreadContext( QueueType::COMPUTE );
+    auto compCtx       = m_device->GetThreadContext( compCtxHandle );
+
+    // Two sequential submissions — a chain of length 2 needs 2 passes to converge.
+    // Each submission is separated by WaitIdle so atomic writes from pass N are visible to pass N+1.
+    for( int pass = 0; pass < 2; ++pass )
+    {
+        auto compCmd = compCtx->GetCommandBuffer( compCtx->CreateCommandBuffer() );
+        compCmd->Begin();
+        compCmd->SetPipeline( pipeline );
+        compCmd->SetBindingGroup( bg, pipeline->GetLayout(), VK_PIPELINE_BIND_POINT_COMPUTE );
+        compCmd->PushConstants( pipeline->GetLayout(), VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof( pc ), &pc );
+        compCmd->Dispatch( 1, 1, 1 );
+        compCmd->End();
+        m_device->GetComputeQueue()->Submit( { compCmd } );
+        m_device->GetComputeQueue()->WaitIdle();
+    }
+
+    std::vector<uint32_t> resultLabels( 3 );
+    m_stream->ReadbackBufferImmediate( componentBuf, resultLabels.data(), labelSize );
+
+    EXPECT_EQ( resultLabels[ 0 ], 0u ) << "Agent 0 must have label 0";
+    EXPECT_EQ( resultLabels[ 1 ], 0u ) << "Agent 1 must have label 0 after 2 passes";
+    EXPECT_EQ( resultLabels[ 2 ], 0u ) << "Agent 2 must have label 0 after 2 passes";
+
+    m_rm->DestroyBuffer( edgeBuf      );
+    m_rm->DestroyBuffer( edgeCountBuf );
+    m_rm->DestroyBuffer( componentBuf );
+}

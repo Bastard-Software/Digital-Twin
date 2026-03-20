@@ -6,6 +6,7 @@
 #include "rhi/BindingGroup.h"
 #include "simulation/SimulationBlueprint.h"
 #include "simulation/SimulationValidator.h"
+#include <numeric>
 #include <tuple>
 #include <volk.h>
 
@@ -50,6 +51,8 @@ namespace DigitalTwin
             resourceManager->DestroyBuffer( vesselEdgeBuffer );
         if( vesselEdgeCountBuffer.IsValid() )
             resourceManager->DestroyBuffer( vesselEdgeCountBuffer );
+        if( vesselComponentBuffer.IsValid() )
+            resourceManager->DestroyBuffer( vesselComponentBuffer );
 
         for( auto& field: gridFields )
         {
@@ -74,8 +77,9 @@ namespace DigitalTwin
         agentCountBuffer  = {};
         phenotypeBuffer       = {};
         signalingBuffer       = {};
-        vesselEdgeBuffer      = {};
-        vesselEdgeCountBuffer = {};
+        vesselEdgeBuffer       = {};
+        vesselEdgeCountBuffer  = {};
+        vesselComponentBuffer  = {};
     }
 
     SimulationState SimulationBuilder::Build( const SimulationBlueprint& blueprint )
@@ -1165,6 +1169,60 @@ namespace DigitalTwin
                     anastomosisTask.SetTag( "anastomosis" + tagBase );
                     // No ChainFlip — reads positions only, writes phenotype and edge buffers
                     outState.computeGraph.AddTask( anastomosisTask );
+
+                    // Vessel Connected Components: 8-pass iterative label propagation over edges
+                    // Each pass propagates the minimum label one hop further; 8 passes handles
+                    // chains up to 8 anastomosis events long.
+                    if( !outState.vesselComponentBuffer.IsValid() )
+                    {
+                        // Component label buffer is global — indexed by absolute agent index
+                        uint32_t globalCapacity = 0;
+                        for( const auto& g: blueprint.GetGroups() )
+                        {
+                            if( g.GetCount() == 0 )
+                                continue;
+                            uint32_t cap = 131072;
+                            while( cap < g.GetCount() )
+                                cap <<= 1;
+                            globalCapacity += cap;
+                        }
+
+                        size_t componentBufferSize    = globalCapacity * sizeof( uint32_t );
+                        outState.vesselComponentBuffer = m_resourceManager->CreateBuffer(
+                            { componentBufferSize, BufferType::STORAGE, "VesselComponentBuffer" } );
+
+                        // Initialize: labels[i] = i  (each agent is its own component)
+                        std::vector<uint32_t> initLabels( globalCapacity );
+                        std::iota( initLabels.begin(), initLabels.end(), 0u );
+                        m_streamingManager->UploadBufferImmediate(
+                            { { outState.vesselComponentBuffer, initLabels.data(), componentBufferSize } } );
+
+                        ComputePipelineDesc   vcDesc{ m_resourceManager->CreateShader( "shaders/compute/biology/vessel_components.comp" ),
+                                                      "VesselComponentsPipeline" };
+                        ComputePipelineHandle vcPipeHandle = m_resourceManager->CreatePipeline( vcDesc );
+                        ComputePipeline*      vcPipe       = m_resourceManager->GetPipeline( vcPipeHandle );
+
+                        // No ping-pong: vessel_components doesn't read/write agent positions
+                        BindingGroup* bgVC =
+                            m_resourceManager->GetBindingGroup( m_resourceManager->CreateBindingGroup( vcPipeHandle, 0 ) );
+                        bgVC->Bind( 0, m_resourceManager->GetBuffer( outState.vesselEdgeBuffer ) );
+                        bgVC->Bind( 1, m_resourceManager->GetBuffer( outState.vesselEdgeCountBuffer ) );
+                        bgVC->Bind( 2, m_resourceManager->GetBuffer( outState.vesselComponentBuffer ) );
+                        bgVC->Build();
+
+                        ComputePushConstants vcPC{};
+                        vcPC.maxCapacity = paddedCount; // max edges bounded by this group's paddedCount
+
+                        glm::uvec3 vcDispatch( ( paddedCount + 255 ) / 256, 1, 1 );
+                        for( int pass = 0; pass < 8; ++pass )
+                        {
+                            ComputeTask vcTask( vcPipe, bgVC, bgVC, record.targetHz, vcPC, vcDispatch );
+                            vcTask.SetTag( "vessel_components_" + std::to_string( pass ) + tagBase );
+                            outState.computeGraph.AddTask( vcTask );
+                        }
+
+                        DT_INFO( "[SimulationBuilder] Compiled VesselComponents (8 passes) for '{}'", group.GetName() );
+                    }
 
                     DT_INFO( "[SimulationBuilder] Compiled Anastomosis for '{}' at {}Hz", group.GetName(), record.targetHz );
                 }

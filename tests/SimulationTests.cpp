@@ -1175,3 +1175,58 @@ TEST( SpatialDistribution_VesselLine, FixedSpacing )
     EXPECT_FLOAT_EQ( positions[ 2 ].x, 6.0f );
     EXPECT_FLOAT_EQ( positions[ 3 ].x, 9.0f );
 }
+
+// ===========================================================================================
+// Vessel Connected Components — integration tests (Builder + GPU)
+// ===========================================================================================
+
+// Two TipCells anastomose → vessel_components assigns them the same label.
+TEST_F( SimulationBuilderTest, Behaviour_Anastomosis_ComponentLabels )
+{
+    if( !m_device )
+        GTEST_SKIP();
+
+    SimulationBlueprint blueprint;
+    blueprint.SetDomainSize( glm::vec3( 100.0f ), 1.0f )
+        .ConfigureSpatialPartitioning()
+        .SetCellSize( 30.0f )
+        .SetComputeHz( 60.0f );
+
+    // Two agents 2µm apart — contactDistance = 5µm → they anastomose
+    std::vector<glm::vec4> pos = {
+        glm::vec4( 0.0f, 0.0f, 0.0f, 1.0f ),
+        glm::vec4( 2.0f, 0.0f, 0.0f, 1.0f )
+    };
+
+    blueprint.AddAgentGroup( "Endothelial" )
+        .SetCount( 2 )
+        .SetDistribution( pos )
+        .AddBehaviour( Behaviours::Anastomosis{ /* contactDistance */ 5.0f } )
+        .SetHz( 60.0f );
+
+    SimulationBuilder builder( m_resourceManager.get(), m_streamingManager.get() );
+    SimulationState   state = builder.Build( blueprint );
+
+    // Force both agents to TipCell so anastomosis fires immediately
+    ForceAllCellType( m_streamingManager.get(), state.phenotypeBuffer, 1u, 131072 );
+
+    auto compCtxHandle = m_device->CreateThreadContext( QueueType::COMPUTE );
+    auto compCtx       = m_device->GetThreadContext( compCtxHandle );
+    auto compCmd       = compCtx->GetCommandBuffer( compCtx->CreateCommandBuffer() );
+
+    GraphDispatcher dispatcher;
+    compCmd->Begin();
+    dispatcher.Dispatch( &state.computeGraph, compCmd, nullptr, 1.0f / 60.0f, 0.0f, 0 );
+    compCmd->End();
+
+    m_device->GetComputeQueue()->Submit( { compCmd } );
+    m_device->GetComputeQueue()->WaitIdle();
+
+    // Read back component labels for the first two agents (absolute indices 0 and 1)
+    std::vector<uint32_t> labels( 2 );
+    m_streamingManager->ReadbackBufferImmediate( state.vesselComponentBuffer, labels.data(), 2 * sizeof( uint32_t ) );
+
+    EXPECT_EQ( labels[ 0 ], labels[ 1 ] ) << "Anastomosed agents must share the same component label";
+
+    state.Destroy( m_resourceManager.get() );
+}

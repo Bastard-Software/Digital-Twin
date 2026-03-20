@@ -61,17 +61,17 @@ namespace Gaudi
                 {
                     ImGui::LabelText( "Field", "%s", b.fieldName.c_str() );
                     changed |= ImGui::SliderFloat( "Rate", &b.rate, 0.0f, 200.0f );
-                    changed |= ImGui::InputInt( "Required State", &b.requiredState );
-                    if( b.requiredState < -1 )
-                        b.requiredState = -1;
+                    changed |= ImGui::InputInt( "Required Lifecycle State", &b.requiredLifecycleState );
+                    if( b.requiredLifecycleState < -1 )
+                        b.requiredLifecycleState = -1;
                 }
                 else if constexpr( std::is_same_v<T, DigitalTwin::Behaviours::SecreteField> )
                 {
                     ImGui::LabelText( "Field", "%s", b.fieldName.c_str() );
                     changed |= ImGui::SliderFloat( "Rate", &b.rate, 0.0f, 200.0f );
-                    changed |= ImGui::InputInt( "Required State", &b.requiredState );
-                    if( b.requiredState < -1 )
-                        b.requiredState = -1;
+                    changed |= ImGui::InputInt( "Required Lifecycle State", &b.requiredLifecycleState );
+                    if( b.requiredLifecycleState < -1 )
+                        b.requiredLifecycleState = -1;
                 }
                 else if constexpr( std::is_same_v<T, DigitalTwin::Behaviours::Biomechanics> )
                 {
@@ -102,11 +102,37 @@ namespace Gaudi
                     changed |= ImGui::SliderFloat( "Saturation",   &b.receptorSaturation,     0.0f,  1.0f, "%.4f" );
                     changed |= ImGui::SliderFloat( "Max Velocity", &b.maxVelocity,            0.1f,  50.0f );
                 }
+                else if constexpr( std::is_same_v<T, DigitalTwin::Behaviours::NotchDll4> )
+                {
+                    changed |= ImGui::SliderFloat( "Dll4 Production Rate",   &b.dll4ProductionRate,   0.0f, 10.0f );
+                    changed |= ImGui::SliderFloat( "Dll4 Decay Rate",        &b.dll4DecayRate,        0.0f, 1.0f, "%.3f" );
+                    changed |= ImGui::SliderFloat( "Notch Inhibition Gain",  &b.notchInhibitionGain,  0.0f, 10.0f );
+                    changed |= ImGui::SliderFloat( "VEGFR2 Base Expression", &b.vegfr2BaseExpression, 0.0f, 5.0f );
+                    changed |= ImGui::SliderFloat( "Tip Threshold",          &b.tipThreshold,         0.0f, 1.0f );
+                    changed |= ImGui::SliderFloat( "Stalk Threshold",        &b.stalkThreshold,       0.0f, 1.0f );
+                    ImGui::TextDisabled( "stalkThreshold < tipThreshold required" );
+                }
+                else if constexpr( std::is_same_v<T, DigitalTwin::Behaviours::Anastomosis> )
+                {
+                    changed |= ImGui::SliderFloat( "Contact Distance", &b.contactDistance, 0.1f, 10.0f );
+                }
+                else if constexpr( std::is_same_v<T, DigitalTwin::Behaviours::Perfusion> )
+                {
+                    ImGui::LabelText( "Field", "%s", b.fieldName.c_str() );
+                    changed |= ImGui::SliderFloat( "Flow Rate", &b.baseFlowRate, 0.0f, 10.0f );
+                }
             },
             record.behaviour );
 
         ImGui::Spacing();
         ImGui::SliderFloat( "Target Hz", &record.targetHz, 1.0f, 120.0f );
+
+        ImGui::Spacing();
+        ImGui::SeparatorText( "State Filtering" );
+        changed |= ImGui::InputInt( "Required Lifecycle State", &record.requiredLifecycleState );
+        if( record.requiredLifecycleState < -1 ) record.requiredLifecycleState = -1;
+        changed |= ImGui::InputInt( "Required Cell Type", &record.requiredCellType );
+        if( record.requiredCellType < -1 ) record.requiredCellType = -1;
 
         if( live )
         {

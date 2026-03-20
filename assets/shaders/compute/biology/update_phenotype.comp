@@ -24,10 +24,10 @@ layout(set = 0, binding = 2, r32f) uniform readonly image3D u_OxygenGrid;
 
 // 0: Live, 1: Quiescent, 2: Hypoxic, 3: Apoptotic, 4: Necrotic  5: Dead_PendingRemoval
 struct PhenotypeData {
-    uint  state;   
+    uint  lifecycleState;
     float biomass;
     float timer;
-    uint  padding;
+    uint  cellType;
 };
 layout(std430, binding = 3) buffer Phenotypes { PhenotypeData data[]; } outPhenotypes;
 layout(std430, binding = 4) readonly buffer CounterBuffer { uint counts[]; } counters;
@@ -43,7 +43,7 @@ void main()
     // --- GPU-Driven: Skip unallocated / dead slots ---
     if(inAgents.positions[globalIdx].w == 0.0) return;
     
-    uint  currentState = outPhenotypes.data[globalIdx].state;
+    uint  currentState = outPhenotypes.data[globalIdx].lifecycleState;
     float currentMass  = outPhenotypes.data[globalIdx].biomass;
     float pressure     = inPressures.pressures[globalIdx];
     
@@ -65,25 +65,25 @@ void main()
     // Necrosis
     if(localO2 < pc.necrosisO2) 
     {
-        outPhenotypes.data[globalIdx].state = 4; // Necrotic
+        outPhenotypes.data[globalIdx].lifecycleState = 4; // Necrotic
         return;
     }
 
     // Starvation / Hypoxia Check
     if(localO2 < pc.hypoxiaO2) {
-        outPhenotypes.data[globalIdx].state = 2; // Hypoxic
+        outPhenotypes.data[globalIdx].lifecycleState = 2; // Hypoxic
         return;
     }
 
     // Contact Inhibition
     if(pressure >= pc.arrestPressure) 
     {
-        outPhenotypes.data[globalIdx].state = 1; // Quiescent
+        outPhenotypes.data[globalIdx].lifecycleState = 1; // Quiescent
         return;
     }
     
     // If conditions are good, ensure state is Live
-    outPhenotypes.data[globalIdx].state = 0; // Live
+    outPhenotypes.data[globalIdx].lifecycleState = 0; // Live
 
     // --- 3. Biomass Accumulation ---
     // Growth is modulated by available oxygen (Warburg effect simplification)

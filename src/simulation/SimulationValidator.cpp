@@ -9,10 +9,11 @@
 
 namespace DigitalTwin
 {
-    // Valid requiredState values: -1 (no requirement) or 0-4 (Live through Necrotic).
+    // Valid requiredLifecycleState values: -1 (no requirement) or 0-4 (Live through Necrotic).
     // Dead_PendingRemoval (5) is a transient GPU-side state — behaviours conditioned on it never fire.
     static constexpr int k_MinRequiredState = -1;
     static constexpr int k_MaxRequiredState = 4;
+    static constexpr int k_MaxCellType      = 3; // PhalanxCell
 
     ValidationResult SimulationValidator::Validate( const SimulationBlueprint& blueprint )
     {
@@ -120,6 +121,17 @@ namespace DigitalTwin
                                                  "': Chemotaxis references unknown field '" + behaviour.fieldName +
                                                  "'. Available fields: " + availableFields );
                         }
+
+                        if constexpr( std::is_same_v<T, Behaviours::Perfusion> )
+                        {
+                            if( behaviour.fieldName.empty() )
+                                result.AddError( "AgentGroup '" + group.GetName() +
+                                                 "': Perfusion fieldName must not be empty" );
+                            else if( declaredFields.find( behaviour.fieldName ) == declaredFields.end() )
+                                result.AddError( "AgentGroup '" + group.GetName() +
+                                                 "': Perfusion references unknown field '" + behaviour.fieldName +
+                                                 "'. Available fields: " + availableFields );
+                        }
                     },
                     record.behaviour );
             }
@@ -147,6 +159,19 @@ namespace DigitalTwin
                     result.AddWarning( "AgentGroup '" + group.GetName() +
                                        "': duplicate behaviour type detected. Only the first instance will be effective." );
 
+                // BehaviourRecord-level lifecycle and cell type filtering
+                if( record.requiredLifecycleState < -1 || record.requiredLifecycleState > k_MaxRequiredState )
+                    result.AddError( "AgentGroup '" + group.GetName() +
+                                     "': BehaviourRecord requiredLifecycleState out of range (got: " +
+                                     std::to_string( record.requiredLifecycleState ) +
+                                     ", valid range: -1 to 4)" );
+
+                if( record.requiredCellType < -1 || record.requiredCellType > k_MaxCellType )
+                    result.AddError( "AgentGroup '" + group.GetName() +
+                                     "': BehaviourRecord requiredCellType out of range (got: " +
+                                     std::to_string( record.requiredCellType ) +
+                                     ", valid range: -1 to 3)" );
+
                 // Per-type parameter checks
                 std::visit(
                     [ & ]( const auto& behaviour )
@@ -167,12 +192,12 @@ namespace DigitalTwin
                             const std::string typeName =
                                 std::is_same_v<T, Behaviours::ConsumeField> ? "ConsumeField" : "SecreteField";
 
-                            if( behaviour.requiredState < k_MinRequiredState ||
-                                behaviour.requiredState > k_MaxRequiredState )
+                            if( behaviour.requiredLifecycleState < k_MinRequiredState ||
+                                behaviour.requiredLifecycleState > k_MaxRequiredState )
                             {
                                 result.AddError( "AgentGroup '" + group.GetName() + "': " + typeName +
-                                                 " requiredState is out of range (got: " +
-                                                 std::to_string( behaviour.requiredState ) +
+                                                 " requiredLifecycleState is out of range (got: " +
+                                                 std::to_string( behaviour.requiredLifecycleState ) +
                                                  ", valid range: -1 to 4)" );
                             }
 
@@ -199,6 +224,32 @@ namespace DigitalTwin
                             if( behaviour.maxVelocity <= 0.0f )
                                 result.AddError( "AgentGroup '" + group.GetName() +
                                                  "': Chemotaxis maxVelocity must be > 0" );
+                        }
+
+                        if constexpr( std::is_same_v<T, Behaviours::NotchDll4> )
+                        {
+                            if( behaviour.dll4ProductionRate <= 0.0f )
+                                result.AddError( "AgentGroup '" + group.GetName() + "': NotchDll4 dll4ProductionRate must be > 0" );
+                            if( behaviour.dll4DecayRate <= 0.0f )
+                                result.AddError( "AgentGroup '" + group.GetName() + "': NotchDll4 dll4DecayRate must be > 0" );
+                            if( behaviour.notchInhibitionGain <= 0.0f )
+                                result.AddError( "AgentGroup '" + group.GetName() + "': NotchDll4 notchInhibitionGain must be > 0" );
+                            if( behaviour.vegfr2BaseExpression <= 0.0f )
+                                result.AddError( "AgentGroup '" + group.GetName() + "': NotchDll4 vegfr2BaseExpression must be > 0" );
+                            if( behaviour.tipThreshold <= behaviour.stalkThreshold )
+                                result.AddError( "AgentGroup '" + group.GetName() + "': NotchDll4 tipThreshold must be > stalkThreshold" );
+                        }
+
+                        if constexpr( std::is_same_v<T, Behaviours::Anastomosis> )
+                        {
+                            if( behaviour.contactDistance <= 0.0f )
+                                result.AddError( "AgentGroup '" + group.GetName() + "': Anastomosis contactDistance must be > 0" );
+                        }
+
+                        if constexpr( std::is_same_v<T, Behaviours::Perfusion> )
+                        {
+                            if( behaviour.baseFlowRate <= 0.0f )
+                                result.AddError( "AgentGroup '" + group.GetName() + "': Perfusion baseFlowRate must be > 0" );
                         }
                     },
                     record.behaviour );

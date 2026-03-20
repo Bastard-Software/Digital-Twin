@@ -738,6 +738,9 @@ TEST_F( ComputeTest, Shader_JKRForces_Logic )
     ComputePipelineHandle pipeHandle = m_rm->CreatePipeline( pipeDesc );
     ComputePipeline*      pipeline   = m_rm->GetPipeline( pipeHandle );
 
+    // Dummy phenotype buffer for binding 6 (state filtering disabled via push constants)
+    BufferHandle phenotypeDummyBuf = m_rm->CreateBuffer( { sizeof( uint32_t ) * 4, BufferType::STORAGE, "TestPhenotypeDummy" } );
+
     BindingGroupHandle bgHandle = m_rm->CreateBindingGroup( pipeHandle, 0 );
     BindingGroup*      bg       = m_rm->GetBindingGroup( bgHandle );
     bg->Bind( 0, m_rm->GetBuffer( inAgentsBuf ) );
@@ -746,6 +749,7 @@ TEST_F( ComputeTest, Shader_JKRForces_Logic )
     bg->Bind( 3, m_rm->GetBuffer( hashesBuf ) );
     bg->Bind( 4, m_rm->GetBuffer( offsetsBuf ) );
     bg->Bind( 5, m_rm->GetBuffer( countBuf ) );
+    bg->Bind( 6, m_rm->GetBuffer( phenotypeDummyBuf ) );
     bg->Build();
 
     // 4. Setup Push Constants (Packed exactly as in SimulationBuilder)
@@ -753,8 +757,10 @@ TEST_F( ComputeTest, Shader_JKRForces_Logic )
     pc.dt          = 0.016f; // Standard 60Hz frame time
     pc.maxCapacity = agentCount;
     pc.offset      = 0;
-    pc.fParam0     = 50.0f; // Repulsion Stiffness
-    pc.fParam1     = 0.0f;  // Adhesion Strength (ignore for this test)
+    pc.fParam0     = 50.0f;  // Repulsion Stiffness
+    pc.fParam1     = 0.0f;   // Adhesion Strength (ignore for this test)
+    pc.fParam2     = -1.0f;  // reqLC = -1 (no filtering)
+    pc.fParam3     = -1.0f;  // reqCT = -1 (no filtering)
     pc.uParam0     = offsetArraySize;
     pc.uParam1     = 0;
     // Pack maxRadius into domainSize.w
@@ -824,10 +830,10 @@ TEST_F( ComputeTest, Shader_Biology_UpdatePhenotype )
 
     struct PhenotypeData
     {
-        uint32_t state;
+        uint32_t lifecycleState;
         float    biomass;
         float    timer;
-        uint32_t padding;
+        uint32_t cellType;
     };
     std::vector<PhenotypeData> phenotypes     = { { 0, 0.5f, 0.0f, 0 }, { 0, 0.5f, 0.0f, 0 }, { 0, 0.5f, 0.0f, 0 } };
     size_t                     phenotypesSize = agentCount * sizeof( PhenotypeData );
@@ -891,8 +897,8 @@ TEST_F( ComputeTest, Shader_Biology_UpdatePhenotype )
     std::vector<PhenotypeData> pass1Result( agentCount );
     m_stream->ReadbackBufferImmediate( phenotypeBuf, pass1Result.data(), phenotypesSize );
 
-    EXPECT_EQ( pass1Result[ 0 ].state, 1 ) << "Agent 0 should be Quiescent (1) due to pressure!";
-    EXPECT_EQ( pass1Result[ 1 ].state, 0 ) << "Agent 1 should remain Live (0)!";
+    EXPECT_EQ( pass1Result[ 0 ].lifecycleState, 1 ) << "Agent 0 should be Quiescent (1) due to pressure!";
+    EXPECT_EQ( pass1Result[ 1 ].lifecycleState, 0 ) << "Agent 1 should remain Live (0)!";
     EXPECT_FLOAT_EQ( pass1Result[ 2 ].biomass, 0.7f ) << "Agent 2 should have grown by 0.2!";
 
     // Dispatch Pass 2: Hypoxia (Tests Necrosis on Agent 1)
@@ -911,7 +917,7 @@ TEST_F( ComputeTest, Shader_Biology_UpdatePhenotype )
     std::vector<PhenotypeData> pass2Result( agentCount );
     m_stream->ReadbackBufferImmediate( phenotypeBuf, pass2Result.data(), phenotypesSize );
 
-    EXPECT_EQ( pass2Result[ 1 ].state, 4 ) << "Agent 1 should be Necrotic (4) due to Hypoxia!";
+    EXPECT_EQ( pass2Result[ 1 ].lifecycleState, 4 ) << "Agent 1 should be Necrotic (4) due to Hypoxia!";
 
     // 6. Cleanup
     m_rm->DestroyBuffer( agentsBuf );
@@ -938,10 +944,10 @@ TEST_F( ComputeTest, Shader_Biology_MitosisAppend )
 
     struct PhenotypeData
     {
-        uint32_t state;
+        uint32_t lifecycleState;
         float    biomass;
         float    timer;
-        uint32_t padding;
+        uint32_t cellType;
     };
     size_t                     phenotypesSize = maxCapacity * sizeof( PhenotypeData );
     std::vector<PhenotypeData> phenotypes( maxCapacity, { 0, 0.0f, 0.0f, 0 } );
@@ -1205,11 +1211,15 @@ TEST_F( ComputeTest, Chemotaxis_PureGradient_MovesInGradientDirection )
     ComputePipelineHandle pipeHandle = m_rm->CreatePipeline( pipeDesc );
     ComputePipeline*      pipeline   = m_rm->GetPipeline( pipeHandle );
 
+    // Dummy phenotype buffer for binding 4 (state filtering disabled via push constants)
+    BufferHandle phenotypeDummyBuf = m_rm->CreateBuffer( { sizeof( uint32_t ) * 4, BufferType::STORAGE, "ChemoPhenotypeDummy" } );
+
     BindingGroup* bg = m_rm->GetBindingGroup( m_rm->CreateBindingGroup( pipeHandle, 0 ) );
     bg->Bind( 0, m_rm->GetBuffer( inBuf ) );
     bg->Bind( 1, m_rm->GetBuffer( outBuf ) );
     bg->Bind( 2, m_rm->GetTexture( fieldTex ), VK_IMAGE_LAYOUT_GENERAL );
     bg->Bind( 3, m_rm->GetBuffer( countBuf ) );
+    bg->Bind( 4, m_rm->GetBuffer( phenotypeDummyBuf ) );
     bg->Build();
 
     // Domain 10x10x10, voxels 10x10x10, dt=1.0, sensitivity=1, saturation=0, maxVelocity=100
@@ -1218,8 +1228,10 @@ TEST_F( ComputeTest, Chemotaxis_PureGradient_MovesInGradientDirection )
     pc.fParam0     = 1.0f;   // sensitivity
     pc.fParam1     = 0.0f;   // saturation (linear)
     pc.fParam2     = 100.0f; // maxVelocity (no clamp)
+    pc.fParam3     = -1.0f;  // reqCT = -1 (no filtering)
     pc.offset      = 0;
     pc.maxCapacity = 1;
+    pc.uParam0     = static_cast<uint32_t>( -1 ); // reqLC = -1 (no filtering)
     pc.uParam1     = 0; // grpNdx
     pc.domainSize  = glm::vec4( 10.0f, 10.0f, 10.0f, 0.0f );
     pc.gridSize    = glm::uvec4( 10, 10, 10, 0 );
@@ -1298,11 +1310,15 @@ TEST_F( ComputeTest, Chemotaxis_HighGradient_ClampedToMaxVelocity )
     ComputePipelineHandle pipeHandle = m_rm->CreatePipeline( pipeDesc );
     ComputePipeline*      pipeline   = m_rm->GetPipeline( pipeHandle );
 
+    // Dummy phenotype buffer for binding 4 (state filtering disabled via push constants)
+    BufferHandle phenotypeDummyBuf = m_rm->CreateBuffer( { sizeof( uint32_t ) * 4, BufferType::STORAGE, "ChemoHighPhenotypeDummy" } );
+
     BindingGroup* bg = m_rm->GetBindingGroup( m_rm->CreateBindingGroup( pipeHandle, 0 ) );
     bg->Bind( 0, m_rm->GetBuffer( inBuf ) );
     bg->Bind( 1, m_rm->GetBuffer( outBuf ) );
     bg->Bind( 2, m_rm->GetTexture( fieldTex ), VK_IMAGE_LAYOUT_GENERAL );
     bg->Bind( 3, m_rm->GetBuffer( countBuf ) );
+    bg->Bind( 4, m_rm->GetBuffer( phenotypeDummyBuf ) );
     bg->Build();
 
     const float          maxVelocity = 5.0f;
@@ -1312,8 +1328,10 @@ TEST_F( ComputeTest, Chemotaxis_HighGradient_ClampedToMaxVelocity )
     pc.fParam0     = 1.0f;        // sensitivity
     pc.fParam1     = 0.0f;        // saturation
     pc.fParam2     = maxVelocity; // maxVelocity
+    pc.fParam3     = -1.0f;       // reqCT = -1 (no filtering)
     pc.offset      = 0;
     pc.maxCapacity = 1;
+    pc.uParam0     = static_cast<uint32_t>( -1 ); // reqLC = -1 (no filtering)
     pc.uParam1     = 0;
     pc.domainSize  = glm::vec4( 10.0f, 10.0f, 10.0f, 0.0f );
     pc.gridSize    = glm::uvec4( 10, 10, 10, 0 );

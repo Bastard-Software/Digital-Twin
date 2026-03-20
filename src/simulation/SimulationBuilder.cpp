@@ -555,6 +555,10 @@ namespace DigitalTwin
                     bg0->Bind( 0, m_resourceManager->GetBuffer( outState.agentBuffers[ 0 ] ) ); // readonly
                     bg0->Bind( 1, m_resourceManager->GetBuffer( outState.agentBuffers[ 1 ] ) ); // writeonly
                     bg0->Bind( 2, m_resourceManager->GetBuffer( outState.agentCountBuffer ) );
+                    if( outState.phenotypeBuffer.IsValid() )
+                        bg0->Bind( 3, m_resourceManager->GetBuffer( outState.phenotypeBuffer ) );
+                    else
+                        bg0->Bind( 3, m_resourceManager->GetBuffer( outState.agentBuffers[ 0 ] ) );
                     bg0->Build();
 
                     // 2. Create Binding Group 1 (Read from 1, Write to 0)
@@ -563,12 +567,18 @@ namespace DigitalTwin
                     bg1->Bind( 0, m_resourceManager->GetBuffer( outState.agentBuffers[ 1 ] ) ); // readonly
                     bg1->Bind( 1, m_resourceManager->GetBuffer( outState.agentBuffers[ 0 ] ) ); // writeonly
                     bg1->Bind( 2, m_resourceManager->GetBuffer( outState.agentCountBuffer ) );
+                    if( outState.phenotypeBuffer.IsValid() )
+                        bg1->Bind( 3, m_resourceManager->GetBuffer( outState.phenotypeBuffer ) );
+                    else
+                        bg1->Bind( 3, m_resourceManager->GetBuffer( outState.agentBuffers[ 1 ] ) );
                     bg1->Build();
 
                     ComputePushConstants pc{};
                     pc.fParam0     = brownian.speed;
+                    pc.fParam1     = static_cast<float>( record.requiredCellType );
                     pc.offset      = currentOffset;
                     pc.maxCapacity = paddedCount;
+                    pc.uParam0     = static_cast<uint32_t>( record.requiredLifecycleState ); // -1 → 0xFFFFFFFF
                     pc.uParam1     = groupIndex;
 
                     glm::uvec3 agentDispatch( ( paddedCount + 255 ) / 256, 1, 1 );
@@ -600,6 +610,10 @@ namespace DigitalTwin
                     bgJkr0->Bind( 3, m_resourceManager->GetBuffer( outState.hashBuffer ) );
                     bgJkr0->Bind( 4, m_resourceManager->GetBuffer( outState.offsetBuffer ) );
                     bgJkr0->Bind( 5, m_resourceManager->GetBuffer( outState.agentCountBuffer ) );
+                    if( outState.phenotypeBuffer.IsValid() )
+                        bgJkr0->Bind( 6, m_resourceManager->GetBuffer( outState.phenotypeBuffer ) );
+                    else
+                        bgJkr0->Bind( 6, m_resourceManager->GetBuffer( outState.agentBuffers[ 0 ] ) );
                     bgJkr0->Build();
 
                     BindingGroup* bgJkr1 = m_resourceManager->GetBindingGroup( m_resourceManager->CreateBindingGroup( jkrPipeHandle, 0 ) );
@@ -609,6 +623,10 @@ namespace DigitalTwin
                     bgJkr1->Bind( 3, m_resourceManager->GetBuffer( outState.hashBuffer ) );
                     bgJkr1->Bind( 4, m_resourceManager->GetBuffer( outState.offsetBuffer ) );
                     bgJkr1->Bind( 5, m_resourceManager->GetBuffer( outState.agentCountBuffer ) );
+                    if( outState.phenotypeBuffer.IsValid() )
+                        bgJkr1->Bind( 6, m_resourceManager->GetBuffer( outState.phenotypeBuffer ) );
+                    else
+                        bgJkr1->Bind( 6, m_resourceManager->GetBuffer( outState.agentBuffers[ 1 ] ) );
                     bgJkr1->Build();
 
                     // 3. Configure Task specific parameters
@@ -617,6 +635,8 @@ namespace DigitalTwin
                     jkrPC.maxCapacity          = paddedCount;
                     jkrPC.fParam0              = biomechanics.repulsionStiffness;
                     jkrPC.fParam1              = biomechanics.adhesionStrength;
+                    jkrPC.fParam2              = static_cast<float>( record.requiredLifecycleState );
+                    jkrPC.fParam3              = static_cast<float>( record.requiredCellType );
                     jkrPC.uParam0              = offsetArraySize;
                     jkrPC.uParam1              = groupIndex;
                     jkrPC.domainSize           = glm::vec4( blueprint.GetDomainSize(), biomechanics.maxRadius );
@@ -655,10 +675,10 @@ namespace DigitalTwin
 
                         struct PhenotypeData
                         {
-                            uint32_t state;
+                            uint32_t lifecycleState;
                             float    biomass;
                             float    timer;
-                            uint32_t padding;
+                            uint32_t cellType;
                         };
                         std::vector<PhenotypeData> initialPhenotypes( paddedCount, { 0, 0.5f, 0.0f, 0 } );
 
@@ -775,9 +795,10 @@ namespace DigitalTwin
                     float rate = isConsume ? -std::get<Behaviours::ConsumeField>( record.behaviour ).rate
                                            : std::get<Behaviours::SecreteField>( record.behaviour ).rate;
 
-                    // Require state
-                    int requiredState = isConsume ? std::get<Behaviours::ConsumeField>( record.behaviour ).requiredState
-                                                  : std::get<Behaviours::SecreteField>( record.behaviour ).requiredState;
+                    // Require lifecycle state
+                    int requiredLifecycleState = isConsume
+                                                     ? std::get<Behaviours::ConsumeField>( record.behaviour ).requiredLifecycleState
+                                                     : std::get<Behaviours::SecreteField>( record.behaviour ).requiredLifecycleState;
 
                     // Find target grid
                     GridFieldState* targetGrid = nullptr;
@@ -792,7 +813,7 @@ namespace DigitalTwin
 
                     if( targetGrid )
                     {
-                        if( requiredState != -1 && !outState.phenotypeBuffer.IsValid() )
+                        if( requiredLifecycleState != -1 && !outState.phenotypeBuffer.IsValid() )
                         {
                             uint32_t globalCapacity = 0;
                             for( const auto& g: blueprint.GetGroups() )
@@ -809,10 +830,10 @@ namespace DigitalTwin
                             outState.phenotypeBuffer = m_resourceManager->CreateBuffer( { phenotypeSize, BufferType::STORAGE, "PhenotypeBuffer" } );
                             struct PhenotypeData
                             {
-                                uint32_t state;
+                                uint32_t lifecycleState;
                                 float    biomass;
                                 float    timer;
-                                uint32_t padding;
+                                uint32_t cellType;
                             };
                             std::vector<PhenotypeData> initialPhenotypes( globalCapacity, { 0, 0.5f, 0.0f, 0 } );
                             m_streamingManager->UploadBufferImmediate( { { outState.phenotypeBuffer, initialPhenotypes.data(), phenotypeSize, 0 } } );
@@ -850,7 +871,7 @@ namespace DigitalTwin
 
                         ComputePushConstants pc{};
                         pc.fParam0     = rate;
-                        pc.fParam1     = static_cast<float>( requiredState );
+                        pc.fParam1     = static_cast<float>( requiredLifecycleState );
                         pc.offset      = currentOffset;
                         pc.maxCapacity = paddedCount;
                         pc.uParam1     = groupIndex;
@@ -891,6 +912,10 @@ namespace DigitalTwin
                         bg0->Bind( 1, m_resourceManager->GetBuffer( outState.agentBuffers[ 1 ] ) );
                         bg0->Bind( 2, m_resourceManager->GetTexture( targetGrid->textures[ 0 ] ), VK_IMAGE_LAYOUT_GENERAL );
                         bg0->Bind( 3, m_resourceManager->GetBuffer( outState.agentCountBuffer ) );
+                        if( outState.phenotypeBuffer.IsValid() )
+                            bg0->Bind( 4, m_resourceManager->GetBuffer( outState.phenotypeBuffer ) );
+                        else
+                            bg0->Bind( 4, m_resourceManager->GetBuffer( outState.agentBuffers[ 0 ] ) );
                         bg0->Build();
 
                         BindingGroup* bg1 = m_resourceManager->GetBindingGroup( m_resourceManager->CreateBindingGroup( pipe, 0 ) );
@@ -898,14 +923,20 @@ namespace DigitalTwin
                         bg1->Bind( 1, m_resourceManager->GetBuffer( outState.agentBuffers[ 0 ] ) );
                         bg1->Bind( 2, m_resourceManager->GetTexture( targetGrid->textures[ 1 ] ), VK_IMAGE_LAYOUT_GENERAL );
                         bg1->Bind( 3, m_resourceManager->GetBuffer( outState.agentCountBuffer ) );
+                        if( outState.phenotypeBuffer.IsValid() )
+                            bg1->Bind( 4, m_resourceManager->GetBuffer( outState.phenotypeBuffer ) );
+                        else
+                            bg1->Bind( 4, m_resourceManager->GetBuffer( outState.agentBuffers[ 1 ] ) );
                         bg1->Build();
 
                         ComputePushConstants pc{};
                         pc.fParam0     = chemo.chemotacticSensitivity;
                         pc.fParam1     = chemo.receptorSaturation;
                         pc.fParam2     = chemo.maxVelocity;
+                        pc.fParam3     = static_cast<float>( record.requiredCellType );
                         pc.offset      = currentOffset;
                         pc.maxCapacity = paddedCount;
+                        pc.uParam0     = static_cast<uint32_t>( record.requiredLifecycleState ); // -1 → 0xFFFFFFFF
                         pc.uParam1     = groupIndex;
                         pc.domainSize  = glm::vec4( blueprint.GetDomainSize(), 0.0f );
                         pc.gridSize    = glm::uvec4( targetGrid->width, targetGrid->height, targetGrid->depth, 0 );
@@ -966,6 +997,8 @@ namespace DigitalTwin
                     {
                         ComputePushConstants pc    = task->GetPushConstants();
                         pc.fParam0                 = std::get<Behaviours::BrownianMotion>( record.behaviour ).speed;
+                        pc.fParam1                 = static_cast<float>( record.requiredCellType );
+                        pc.uParam0                 = static_cast<uint32_t>( record.requiredLifecycleState );
                         task->UpdatePushConstants( pc );
                     }
                 }
@@ -978,6 +1011,8 @@ namespace DigitalTwin
                         ComputePushConstants pc   = task->GetPushConstants();
                         pc.fParam0                = bio.repulsionStiffness;
                         pc.fParam1                = bio.adhesionStrength;
+                        pc.fParam2                = static_cast<float>( record.requiredLifecycleState );
+                        pc.fParam3                = static_cast<float>( record.requiredCellType );
                         pc.domainSize.w           = bio.maxRadius; // w holds maxRadius for JKR
                         task->UpdatePushConstants( pc );
                     }
@@ -1004,15 +1039,16 @@ namespace DigitalTwin
                     ComputeTask* task = state.computeGraph.FindTask( "chemfield" + tagBase );
                     if( task )
                     {
-                        bool  isConsume = std::holds_alternative<Behaviours::ConsumeField>( record.behaviour );
-                        float rate      = isConsume ? -std::get<Behaviours::ConsumeField>( record.behaviour ).rate
-                                                    : std::get<Behaviours::SecreteField>( record.behaviour ).rate;
-                        int reqState    = isConsume ? std::get<Behaviours::ConsumeField>( record.behaviour ).requiredState
-                                                    : std::get<Behaviours::SecreteField>( record.behaviour ).requiredState;
+                        bool  isConsume         = std::holds_alternative<Behaviours::ConsumeField>( record.behaviour );
+                        float rate              = isConsume ? -std::get<Behaviours::ConsumeField>( record.behaviour ).rate
+                                                            : std::get<Behaviours::SecreteField>( record.behaviour ).rate;
+                        int   reqLifecycleState = isConsume
+                                                      ? std::get<Behaviours::ConsumeField>( record.behaviour ).requiredLifecycleState
+                                                      : std::get<Behaviours::SecreteField>( record.behaviour ).requiredLifecycleState;
 
                         ComputePushConstants pc = task->GetPushConstants();
                         pc.fParam0              = rate;
-                        pc.fParam1              = static_cast<float>( reqState );
+                        pc.fParam1              = static_cast<float>( reqLifecycleState );
                         task->UpdatePushConstants( pc );
                     }
                 }
@@ -1026,6 +1062,8 @@ namespace DigitalTwin
                         pc.fParam0                 = chemo.chemotacticSensitivity;
                         pc.fParam1                 = chemo.receptorSaturation;
                         pc.fParam2                 = chemo.maxVelocity;
+                        pc.fParam3                 = static_cast<float>( record.requiredCellType );
+                        pc.uParam0                 = static_cast<uint32_t>( record.requiredLifecycleState );
                         task->UpdatePushConstants( pc );
                     }
                 }

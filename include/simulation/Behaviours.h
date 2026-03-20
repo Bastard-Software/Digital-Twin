@@ -16,15 +16,15 @@ namespace DigitalTwin::Behaviours
     struct ConsumeField
     {
         std::string fieldName;
-        float       rate          = 1.0f;
-        int         requiredState = -1; // -1 no requirements
+        float       rate                  = 1.0f;
+        int         requiredLifecycleState = -1; // -1 no requirements
     };
 
     struct SecreteField
     {
         std::string fieldName;
-        float       rate          = 1.0f;
-        int         requiredState = -1; // -1 no requirements
+        float       rate                  = 1.0f;
+        int         requiredLifecycleState = -1; // -1 no requirements
     };
 
     /**
@@ -60,6 +60,27 @@ namespace DigitalTwin::Behaviours
         float       maxVelocity            = 5.0f;   // Hard clamp on resultant speed (µm/s)
     };
 
+    struct NotchDll4
+    {
+        float dll4ProductionRate   = 1.0f;
+        float dll4DecayRate        = 0.1f;
+        float notchInhibitionGain  = 1.0f;
+        float vegfr2BaseExpression = 1.0f;
+        float tipThreshold         = 0.8f;
+        float stalkThreshold       = 0.3f;
+    };
+
+    struct Anastomosis
+    {
+        float contactDistance = 3.0f;
+    };
+
+    struct Perfusion
+    {
+        std::string fieldName;
+        float       baseFlowRate = 1.0f;
+    };
+
 } // namespace DigitalTwin::Behaviours
 
 namespace DigitalTwin
@@ -71,18 +92,35 @@ namespace DigitalTwin
         Behaviours::SecreteField,
         Behaviours::Biomechanics,
         Behaviours::CellCycle,
-        Behaviours::Chemotaxis>;
+        Behaviours::Chemotaxis,
+        Behaviours::NotchDll4,
+        Behaviours::Anastomosis,
+        Behaviours::Perfusion>;
 
     // Wrapper to attach execution parameters (like frequency) to a behaviour
     struct BehaviourRecord
     {
         BehaviourVariant behaviour;
-        float            targetHz = 60.0f; // Default to 60 executions per second
+        float            targetHz              = 60.0f; // Default to 60 executions per second
+        int              requiredLifecycleState = -1;   // -1 = any lifecycle state
+        int              requiredCellType       = -1;   // -1 = any cell type
 
         // Fluent API for frequency
         BehaviourRecord& SetHz( float hz )
         {
             targetHz = hz;
+            return *this;
+        }
+
+        BehaviourRecord& SetRequiredLifecycleState( int s )
+        {
+            requiredLifecycleState = s;
+            return *this;
+        }
+
+        BehaviourRecord& SetRequiredCellType( int t )
+        {
+            requiredCellType = t;
             return *this;
         }
     };

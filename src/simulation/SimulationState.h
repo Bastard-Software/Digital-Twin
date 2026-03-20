@@ -43,6 +43,9 @@ namespace DigitalTwin
         BufferHandle agentCountBuffer;
         BufferHandle phenotypeBuffer;
 
+        // Angiogenesis signaling (Notch-Dll4 pathway state per agent)
+        BufferHandle signalingBuffer;
+
         // Biomechanics
         BufferHandle hashBuffer;
         BufferHandle offsetBuffer;

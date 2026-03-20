@@ -1368,3 +1368,356 @@ TEST_F( ComputeTest, Chemotaxis_HighGradient_ClampedToMaxVelocity )
     m_rm->DestroyBuffer( countBuf );
     m_rm->DestroyTexture( fieldTex );
 }
+
+// =================================================================================================
+// NotchDll4 shader tests
+// =================================================================================================
+
+// Isolated agent (no hash neighbors) — verify exact Euler ODE step and TipCell assignment.
+// With no neighbor suppression: vegfr2_eff = vegfr2Base = 1.0
+// new_dll4 = clamp(0.5 + dt*(production*vegfr2_eff - decay*dll4), 0, 1)
+//          = clamp(0.5 + 1.0*(1.0*1.0 - 0.1*0.5), 0, 1)
+//          = clamp(1.45, 0, 1) = 1.0  →  cellType = TipCell (1)
+TEST_F( ComputeTest, Shader_NotchDll4_IsolatedAgent_ODE )
+{
+    if( !m_device )
+        GTEST_SKIP();
+
+    // ── Raw data ──────────────────────────────────────────────────────────────
+    // 1 alive agent at origin
+    std::vector<glm::vec4> agents     = { glm::vec4( 0.0f, 0.0f, 0.0f, 1.0f ) };
+    size_t                 agentsSize = sizeof( glm::vec4 );
+
+    struct SignalingData { float dll4; float nicd; float vegfr2; float pad; };
+    std::vector<SignalingData> signaling     = { { 0.5f, 0.0f, 1.0f, 0.0f } }; // initial dll4 = 0.5
+    size_t                     signalingSize = sizeof( SignalingData );
+
+    struct PhenotypeData { uint32_t lifecycleState; float biomass; float timer; uint32_t cellType; };
+    std::vector<PhenotypeData> phenotypes     = { { 0u, 0.5f, 0.0f, 0u } }; // Live, Default
+    size_t                     phenotypesSize = sizeof( PhenotypeData );
+
+    // Minimal spatial hash: 1 entry, offsets all 0xFFFFFFFF → no neighbors found
+    struct AgentHash { uint32_t hash; uint32_t agentIndex; };
+    std::vector<AgentHash> sortedHashes = { { 0u, 0u } };
+    size_t                 hashesSize   = sizeof( AgentHash );
+
+    uint32_t              offsetArraySize = 256;
+    std::vector<uint32_t> cellOffsets( offsetArraySize, 0xFFFFFFFF ); // all empty
+    size_t                offsetsSize = offsetArraySize * sizeof( uint32_t );
+
+    uint32_t agentCount = 1;
+    size_t   countSize  = sizeof( uint32_t );
+
+    // ── Allocate & Upload ─────────────────────────────────────────────────────
+    BufferHandle agentBuf  = m_rm->CreateBuffer( { agentsSize,     BufferType::STORAGE,  "NotchAgents"    } );
+    BufferHandle signalBuf = m_rm->CreateBuffer( { signalingSize,  BufferType::STORAGE,  "NotchSignaling" } );
+    BufferHandle phenoBuf  = m_rm->CreateBuffer( { phenotypesSize, BufferType::STORAGE,  "NotchPheno"     } );
+    BufferHandle hashBuf   = m_rm->CreateBuffer( { hashesSize,     BufferType::STORAGE,  "NotchHash"      } );
+    BufferHandle offsetBuf = m_rm->CreateBuffer( { offsetsSize,    BufferType::STORAGE,  "NotchOffsets"   } );
+    BufferHandle countBuf  = m_rm->CreateBuffer( { countSize,      BufferType::INDIRECT, "NotchCount"     } );
+
+    m_stream->UploadBufferImmediate( {
+        { agentBuf,  agents.data(),       agentsSize,     0 },
+        { signalBuf, signaling.data(),    signalingSize,  0 },
+        { phenoBuf,  phenotypes.data(),   phenotypesSize, 0 },
+        { hashBuf,   sortedHashes.data(), hashesSize,     0 },
+        { offsetBuf, cellOffsets.data(),  offsetsSize,    0 },
+        { countBuf,  &agentCount,         countSize,      0 },
+    } );
+
+    // ── Pipeline & BindingGroup ───────────────────────────────────────────────
+    ComputePipelineDesc   pipeDesc{ m_rm->CreateShader( "shaders/compute/biology/notch_dll4.comp" ), "TestNotchDll4" };
+    ComputePipelineHandle pipeHandle = m_rm->CreatePipeline( pipeDesc );
+    ComputePipeline*      pipeline   = m_rm->GetPipeline( pipeHandle );
+
+    BindingGroup* bg = m_rm->GetBindingGroup( m_rm->CreateBindingGroup( pipeHandle, 0 ) );
+    bg->Bind( 0, m_rm->GetBuffer( agentBuf   ) );
+    bg->Bind( 1, m_rm->GetBuffer( signalBuf  ) );
+    bg->Bind( 2, m_rm->GetBuffer( phenoBuf   ) );
+    bg->Bind( 3, m_rm->GetBuffer( hashBuf    ) );
+    bg->Bind( 4, m_rm->GetBuffer( offsetBuf  ) );
+    bg->Bind( 5, m_rm->GetBuffer( countBuf   ) );
+    bg->Build();
+
+    // ── Push Constants ────────────────────────────────────────────────────────
+    ComputePushConstants pc{};
+    pc.dt          = 1.0f;
+    pc.fParam0     = 1.0f;  // dll4ProductionRate
+    pc.fParam1     = 0.1f;  // dll4DecayRate
+    pc.fParam2     = 1.0f;  // notchInhibitionGain
+    pc.fParam3     = 1.0f;  // vegfr2BaseExpression
+    pc.fParam4     = 0.8f;  // tipThreshold
+    pc.fParam5     = 0.3f;  // stalkThreshold
+    pc.offset      = 0;
+    pc.maxCapacity = 1;
+    pc.uParam0     = offsetArraySize; // hash slot count
+    pc.uParam1     = 0;               // grpNdx
+    pc.domainSize  = glm::vec4( 100.0f, 100.0f, 100.0f, 15.0f ); // signalingRadius = 15
+
+    // ── Dispatch ──────────────────────────────────────────────────────────────
+    auto compCtxHandle = m_device->CreateThreadContext( QueueType::COMPUTE );
+    auto compCtx       = m_device->GetThreadContext( compCtxHandle );
+    auto compCmd       = compCtx->GetCommandBuffer( compCtx->CreateCommandBuffer() );
+
+    compCmd->Begin();
+    compCmd->SetPipeline( pipeline );
+    compCmd->SetBindingGroup( bg, pipeline->GetLayout(), VK_PIPELINE_BIND_POINT_COMPUTE );
+    compCmd->PushConstants( pipeline->GetLayout(), VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof( pc ), &pc );
+    compCmd->Dispatch( 1, 1, 1 );
+    compCmd->End();
+
+    m_device->GetComputeQueue()->Submit( { compCmd } );
+    m_device->GetComputeQueue()->WaitIdle();
+
+    // ── Readback & Assert ─────────────────────────────────────────────────────
+    SignalingData resultSignal{};
+    PhenotypeData resultPheno{};
+    m_stream->ReadbackBufferImmediate( signalBuf, &resultSignal, signalingSize );
+    m_stream->ReadbackBufferImmediate( phenoBuf,  &resultPheno,  phenotypesSize );
+
+    // Exact ODE: new_dll4 = clamp(0.5 + 1.0*(1.0*1.0 - 0.1*0.5), 0, 1) = 1.0
+    EXPECT_NEAR( resultSignal.dll4,   1.0f, 1e-4f ) << "Notch ODE incorrect: isolated agent Dll4 should clamp to 1.0";
+    EXPECT_EQ(   resultPheno.cellType, 1u )         << "Isolated agent with dll4=1.0 > tipThreshold should be TipCell (1)";
+
+    // Non-Dll4 fields in signaling buffer must be untouched
+    EXPECT_NEAR( resultSignal.nicd,   0.0f, 1e-4f );
+    EXPECT_NEAR( resultSignal.vegfr2, 1.0f, 1e-4f );
+
+    m_rm->DestroyBuffer( agentBuf  );
+    m_rm->DestroyBuffer( signalBuf );
+    m_rm->DestroyBuffer( phenoBuf  );
+    m_rm->DestroyBuffer( hashBuf   );
+    m_rm->DestroyBuffer( offsetBuf );
+    m_rm->DestroyBuffer( countBuf  );
+}
+
+// Dead slot guard: agent with w=0 must be skipped entirely — dll4 and cellType unchanged.
+TEST_F( ComputeTest, Shader_NotchDll4_DeadSlot_Skipped )
+{
+    if( !m_device )
+        GTEST_SKIP();
+
+    // Dead agent: w = 0.0
+    std::vector<glm::vec4> agents     = { glm::vec4( 0.0f, 0.0f, 0.0f, 0.0f ) };
+    size_t                 agentsSize = sizeof( glm::vec4 );
+
+    struct SignalingData { float dll4; float nicd; float vegfr2; float pad; };
+    std::vector<SignalingData> signaling     = { { 0.5f, 0.0f, 1.0f, 0.0f } };
+    size_t                     signalingSize = sizeof( SignalingData );
+
+    struct PhenotypeData { uint32_t lifecycleState; float biomass; float timer; uint32_t cellType; };
+    std::vector<PhenotypeData> phenotypes     = { { 0u, 0.5f, 0.0f, 0u } };
+    size_t                     phenotypesSize = sizeof( PhenotypeData );
+
+    struct AgentHash { uint32_t hash; uint32_t agentIndex; };
+    std::vector<AgentHash> sortedHashes = { { 0u, 0u } };
+    size_t                 hashesSize   = sizeof( AgentHash );
+
+    uint32_t              offsetArraySize = 256;
+    std::vector<uint32_t> cellOffsets( offsetArraySize, 0xFFFFFFFF );
+    size_t                offsetsSize = offsetArraySize * sizeof( uint32_t );
+
+    uint32_t agentCount = 1;
+    size_t   countSize  = sizeof( uint32_t );
+
+    BufferHandle agentBuf  = m_rm->CreateBuffer( { agentsSize,     BufferType::STORAGE,  "DeadNotchAgents"  } );
+    BufferHandle signalBuf = m_rm->CreateBuffer( { signalingSize,  BufferType::STORAGE,  "DeadNotchSignal"  } );
+    BufferHandle phenoBuf  = m_rm->CreateBuffer( { phenotypesSize, BufferType::STORAGE,  "DeadNotchPheno"   } );
+    BufferHandle hashBuf   = m_rm->CreateBuffer( { hashesSize,     BufferType::STORAGE,  "DeadNotchHash"    } );
+    BufferHandle offsetBuf = m_rm->CreateBuffer( { offsetsSize,    BufferType::STORAGE,  "DeadNotchOffsets" } );
+    BufferHandle countBuf  = m_rm->CreateBuffer( { countSize,      BufferType::INDIRECT, "DeadNotchCount"   } );
+
+    m_stream->UploadBufferImmediate( {
+        { agentBuf,  agents.data(),       agentsSize,     0 },
+        { signalBuf, signaling.data(),    signalingSize,  0 },
+        { phenoBuf,  phenotypes.data(),   phenotypesSize, 0 },
+        { hashBuf,   sortedHashes.data(), hashesSize,     0 },
+        { offsetBuf, cellOffsets.data(),  offsetsSize,    0 },
+        { countBuf,  &agentCount,         countSize,      0 },
+    } );
+
+    ComputePipelineDesc   pipeDesc{ m_rm->CreateShader( "shaders/compute/biology/notch_dll4.comp" ), "TestNotchDll4Dead" };
+    ComputePipelineHandle pipeHandle = m_rm->CreatePipeline( pipeDesc );
+    ComputePipeline*      pipeline   = m_rm->GetPipeline( pipeHandle );
+
+    BindingGroup* bg = m_rm->GetBindingGroup( m_rm->CreateBindingGroup( pipeHandle, 0 ) );
+    bg->Bind( 0, m_rm->GetBuffer( agentBuf   ) );
+    bg->Bind( 1, m_rm->GetBuffer( signalBuf  ) );
+    bg->Bind( 2, m_rm->GetBuffer( phenoBuf   ) );
+    bg->Bind( 3, m_rm->GetBuffer( hashBuf    ) );
+    bg->Bind( 4, m_rm->GetBuffer( offsetBuf  ) );
+    bg->Bind( 5, m_rm->GetBuffer( countBuf   ) );
+    bg->Build();
+
+    ComputePushConstants pc{};
+    pc.dt          = 1.0f;
+    pc.fParam0     = 1.0f;
+    pc.fParam1     = 0.1f;
+    pc.fParam2     = 1.0f;
+    pc.fParam3     = 1.0f;
+    pc.fParam4     = 0.8f;
+    pc.fParam5     = 0.3f;
+    pc.offset      = 0;
+    pc.maxCapacity = 1;
+    pc.uParam0     = offsetArraySize;
+    pc.uParam1     = 0;
+    pc.domainSize  = glm::vec4( 100.0f, 100.0f, 100.0f, 15.0f );
+
+    auto compCtxHandle = m_device->CreateThreadContext( QueueType::COMPUTE );
+    auto compCtx       = m_device->GetThreadContext( compCtxHandle );
+    auto compCmd       = compCtx->GetCommandBuffer( compCtx->CreateCommandBuffer() );
+
+    compCmd->Begin();
+    compCmd->SetPipeline( pipeline );
+    compCmd->SetBindingGroup( bg, pipeline->GetLayout(), VK_PIPELINE_BIND_POINT_COMPUTE );
+    compCmd->PushConstants( pipeline->GetLayout(), VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof( pc ), &pc );
+    compCmd->Dispatch( 1, 1, 1 );
+    compCmd->End();
+
+    m_device->GetComputeQueue()->Submit( { compCmd } );
+    m_device->GetComputeQueue()->WaitIdle();
+
+    SignalingData resultSignal{};
+    PhenotypeData resultPheno{};
+    m_stream->ReadbackBufferImmediate( signalBuf, &resultSignal, signalingSize );
+    m_stream->ReadbackBufferImmediate( phenoBuf,  &resultPheno,  phenotypesSize );
+
+    // Dead slot must be untouched
+    EXPECT_NEAR( resultSignal.dll4,    0.5f, 1e-4f ) << "Dead slot: dll4 must not change";
+    EXPECT_EQ(   resultPheno.cellType, 0u )          << "Dead slot: cellType must remain Default (0)";
+
+    m_rm->DestroyBuffer( agentBuf  );
+    m_rm->DestroyBuffer( signalBuf );
+    m_rm->DestroyBuffer( phenoBuf  );
+    m_rm->DestroyBuffer( hashBuf   );
+    m_rm->DestroyBuffer( offsetBuf );
+    m_rm->DestroyBuffer( countBuf  );
+}
+
+// Lateral inhibition with asymmetric initial Dll4 — verifiable in a single dispatch (dt=1.0).
+//
+// Agent 0: dll4=0.9 (dominant)  Agent 1: dll4=0.1 (suppressed)  gain=5, dt=1.0
+//
+// Agent 0 sees neighbor dll4=0.1:
+//   vegfr2_eff = 1/(1 + 5*0.1) = 0.667
+//   new_dll4   = clamp(0.9 + (1.0*0.667 - 0.1*0.9)) = clamp(1.477) = 1.0  → TipCell (1)
+//
+// Agent 1 sees neighbor dll4=0.9:
+//   vegfr2_eff = 1/(1 + 5*0.9) = 0.182
+//   new_dll4   = clamp(0.1 + (1.0*0.182 - 0.1*0.1)) = clamp(0.272) → StalkCell (2) since 0.272 < stalkThreshold 0.3
+TEST_F( ComputeTest, Shader_NotchDll4_LateralInhibition_Asymmetric )
+{
+    if( !m_device )
+        GTEST_SKIP();
+
+    // ── Raw data ──────────────────────────────────────────────────────────────
+    // 2 alive agents at (0,0,0) and (1,0,0) — within signaling radius
+    std::vector<glm::vec4> agents     = { glm::vec4( 0.0f, 0.0f, 0.0f, 1.0f ), glm::vec4( 1.0f, 0.0f, 0.0f, 1.0f ) };
+    size_t                 agentsSize = 2 * sizeof( glm::vec4 );
+
+    struct SignalingData { float dll4; float nicd; float vegfr2; float pad; };
+    // Agent 0 starts dominant (high Dll4), Agent 1 starts suppressed (low Dll4)
+    std::vector<SignalingData> signaling     = { { 0.9f, 0.0f, 1.0f, 0.0f }, { 0.1f, 0.0f, 1.0f, 0.0f } };
+    size_t                     signalingSize = 2 * sizeof( SignalingData );
+
+    struct PhenotypeData { uint32_t lifecycleState; float biomass; float timer; uint32_t cellType; };
+    std::vector<PhenotypeData> phenotypes     = { { 0u, 0.5f, 0.0f, 0u }, { 0u, 0.5f, 0.0f, 0u } };
+    size_t                     phenotypesSize = 2 * sizeof( PhenotypeData );
+
+    // Hash: both agents in same cell (0,0,0) → hash = 0
+    struct AgentHash { uint32_t hash; uint32_t agentIndex; };
+    std::vector<AgentHash> sortedHashes = { { 0u, 0u }, { 0u, 1u } };
+    size_t                 hashesSize   = 2 * sizeof( AgentHash );
+
+    // Offset: hash 0 starts at index 0 in sortedHashes
+    uint32_t              offsetArraySize = 256;
+    std::vector<uint32_t> cellOffsets( offsetArraySize, 0xFFFFFFFF );
+    cellOffsets[ 0 ] = 0; // hash 0 → sortedHashes[0]
+    size_t offsetsSize = offsetArraySize * sizeof( uint32_t );
+
+    // Count: process 2 agents from group 0
+    uint32_t agentCount = 2;
+    size_t   countSize  = sizeof( uint32_t );
+
+    // ── Allocate & Upload ─────────────────────────────────────────────────────
+    BufferHandle agentBuf  = m_rm->CreateBuffer( { agentsSize,     BufferType::STORAGE,  "LIAgents"   } );
+    BufferHandle signalBuf = m_rm->CreateBuffer( { signalingSize,  BufferType::STORAGE,  "LISignal"   } );
+    BufferHandle phenoBuf  = m_rm->CreateBuffer( { phenotypesSize, BufferType::STORAGE,  "LIPheno"    } );
+    BufferHandle hashBuf   = m_rm->CreateBuffer( { hashesSize,     BufferType::STORAGE,  "LIHash"     } );
+    BufferHandle offsetBuf = m_rm->CreateBuffer( { offsetsSize,    BufferType::STORAGE,  "LIOffsets"  } );
+    BufferHandle countBuf  = m_rm->CreateBuffer( { countSize,      BufferType::INDIRECT, "LICount"    } );
+
+    m_stream->UploadBufferImmediate( {
+        { agentBuf,  agents.data(),       agentsSize,     0 },
+        { signalBuf, signaling.data(),    signalingSize,  0 },
+        { phenoBuf,  phenotypes.data(),   phenotypesSize, 0 },
+        { hashBuf,   sortedHashes.data(), hashesSize,     0 },
+        { offsetBuf, cellOffsets.data(),  offsetsSize,    0 },
+        { countBuf,  &agentCount,         countSize,      0 },
+    } );
+
+    // ── Pipeline & BindingGroup ───────────────────────────────────────────────
+    ComputePipelineDesc   pipeDesc{ m_rm->CreateShader( "shaders/compute/biology/notch_dll4.comp" ), "TestNotchDll4LI" };
+    ComputePipelineHandle pipeHandle = m_rm->CreatePipeline( pipeDesc );
+    ComputePipeline*      pipeline   = m_rm->GetPipeline( pipeHandle );
+
+    BindingGroup* bg = m_rm->GetBindingGroup( m_rm->CreateBindingGroup( pipeHandle, 0 ) );
+    bg->Bind( 0, m_rm->GetBuffer( agentBuf   ) );
+    bg->Bind( 1, m_rm->GetBuffer( signalBuf  ) );
+    bg->Bind( 2, m_rm->GetBuffer( phenoBuf   ) );
+    bg->Bind( 3, m_rm->GetBuffer( hashBuf    ) );
+    bg->Bind( 4, m_rm->GetBuffer( offsetBuf  ) );
+    bg->Bind( 5, m_rm->GetBuffer( countBuf   ) );
+    bg->Build();
+
+    // ── Push Constants ────────────────────────────────────────────────────────
+    ComputePushConstants pc{};
+    pc.dt          = 1.0f;
+    pc.fParam0     = 1.0f;  // dll4ProductionRate
+    pc.fParam1     = 0.1f;  // dll4DecayRate
+    pc.fParam2     = 5.0f;  // notchInhibitionGain
+    pc.fParam3     = 1.0f;  // vegfr2BaseExpression
+    pc.fParam4     = 0.8f;  // tipThreshold
+    pc.fParam5     = 0.3f;  // stalkThreshold
+    pc.offset      = 0;
+    pc.maxCapacity = 2;
+    pc.uParam0     = offsetArraySize;
+    pc.uParam1     = 0;
+    pc.domainSize  = glm::vec4( 100.0f, 100.0f, 100.0f, 15.0f ); // signalingRadius = 15
+
+    // ── Dispatch ──────────────────────────────────────────────────────────────
+    auto compCtxHandle = m_device->CreateThreadContext( QueueType::COMPUTE );
+    auto compCtx       = m_device->GetThreadContext( compCtxHandle );
+    auto compCmd       = compCtx->GetCommandBuffer( compCtx->CreateCommandBuffer() );
+
+    compCmd->Begin();
+    compCmd->SetPipeline( pipeline );
+    compCmd->SetBindingGroup( bg, pipeline->GetLayout(), VK_PIPELINE_BIND_POINT_COMPUTE );
+    compCmd->PushConstants( pipeline->GetLayout(), VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof( pc ), &pc );
+    compCmd->Dispatch( 1, 1, 1 );
+    compCmd->End();
+
+    m_device->GetComputeQueue()->Submit( { compCmd } );
+    m_device->GetComputeQueue()->WaitIdle();
+
+    // ── Readback & Assert ─────────────────────────────────────────────────────
+    std::vector<SignalingData> resultSignal( 2 );
+    std::vector<PhenotypeData> resultPheno( 2 );
+    m_stream->ReadbackBufferImmediate( signalBuf, resultSignal.data(), signalingSize );
+    m_stream->ReadbackBufferImmediate( phenoBuf,  resultPheno.data(),  phenotypesSize );
+
+    // Agent 0: dominant → TipCell (dll4 clamped to 1.0)
+    EXPECT_NEAR( resultSignal[ 0 ].dll4,   1.0f, 1e-4f ) << "Dominant agent dll4 should clamp to 1.0";
+    EXPECT_EQ(   resultPheno[ 0 ].cellType, 1u )         << "Dominant agent should be TipCell (1)";
+
+    // Agent 1: suppressed → StalkCell (dll4 = 0.272 < stalkThreshold 0.3)
+    EXPECT_LT( resultSignal[ 1 ].dll4,    0.3f ) << "Suppressed agent dll4 should fall below stalkThreshold";
+    EXPECT_EQ( resultPheno[ 1 ].cellType, 2u )   << "Suppressed agent should be StalkCell (2)";
+
+    m_rm->DestroyBuffer( agentBuf  );
+    m_rm->DestroyBuffer( signalBuf );
+    m_rm->DestroyBuffer( phenoBuf  );
+    m_rm->DestroyBuffer( hashBuf   );
+    m_rm->DestroyBuffer( offsetBuf );
+    m_rm->DestroyBuffer( countBuf  );
+}

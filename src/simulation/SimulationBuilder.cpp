@@ -44,6 +44,8 @@ namespace DigitalTwin
             resourceManager->DestroyBuffer( agentCountBuffer );
         if( phenotypeBuffer.IsValid() )
             resourceManager->DestroyBuffer( phenotypeBuffer );
+        if( signalingBuffer.IsValid() )
+            resourceManager->DestroyBuffer( signalingBuffer );
 
         for( auto& field: gridFields )
         {
@@ -67,6 +69,7 @@ namespace DigitalTwin
         agentBuffers[ 1 ] = {};
         agentCountBuffer  = {};
         phenotypeBuffer   = {};
+        signalingBuffer   = {};
     }
 
     SimulationState SimulationBuilder::Build( const SimulationBlueprint& blueprint )
@@ -954,6 +957,114 @@ namespace DigitalTwin
                         DT_WARN( "[SimulationBuilder] Chemotaxis: target field '{}' not found!", chemo.fieldName );
                     }
                 }
+                if( std::holds_alternative<Behaviours::NotchDll4>( record.behaviour ) )
+                {
+                    const auto& notch = std::get<Behaviours::NotchDll4>( record.behaviour );
+
+                    // Allocate signaling buffer once (global, covers all agent slots)
+                    if( !outState.signalingBuffer.IsValid() )
+                    {
+                        uint32_t globalCapacity = 0;
+                        for( const auto& g: blueprint.GetGroups() )
+                        {
+                            if( g.GetCount() == 0 )
+                                continue;
+                            uint32_t cap = 131072;
+                            while( cap < g.GetCount() )
+                                cap <<= 1;
+                            globalCapacity += cap;
+                        }
+
+                        struct SignalingData
+                        {
+                            float dll4;
+                            float nicd;
+                            float vegfr2;
+                            float pad;
+                        };
+                        size_t signalingSize    = globalCapacity * sizeof( SignalingData );
+                        outState.signalingBuffer = m_resourceManager->CreateBuffer( { signalingSize, BufferType::STORAGE, "SignalingBuffer" } );
+
+                        // Initial state: dll4=0.5 (mid-range), vegfr2=1.0 (fully expressed)
+                        std::vector<SignalingData> initSignaling( globalCapacity, { 0.5f, 0.0f, 1.0f, 0.0f } );
+                        m_streamingManager->UploadBufferImmediate( { { outState.signalingBuffer, initSignaling.data(), signalingSize, 0 } } );
+                    }
+
+                    // Allocate phenotype buffer if no CellCycle behaviour did so
+                    if( !outState.phenotypeBuffer.IsValid() )
+                    {
+                        uint32_t globalCapacity = 0;
+                        for( const auto& g: blueprint.GetGroups() )
+                        {
+                            if( g.GetCount() == 0 )
+                                continue;
+                            uint32_t cap = 131072;
+                            while( cap < g.GetCount() )
+                                cap <<= 1;
+                            globalCapacity += cap;
+                        }
+
+                        struct PhenotypeData
+                        {
+                            uint32_t lifecycleState;
+                            float    biomass;
+                            float    timer;
+                            uint32_t cellType;
+                        };
+                        size_t phenotypeSize     = globalCapacity * sizeof( PhenotypeData );
+                        outState.phenotypeBuffer = m_resourceManager->CreateBuffer( { phenotypeSize, BufferType::STORAGE, "PhenotypeBuffer" } );
+
+                        std::vector<PhenotypeData> initPhenotypes( globalCapacity, { 0u, 0.5f, 0.0f, 0u } );
+                        m_streamingManager->UploadBufferImmediate( { { outState.phenotypeBuffer, initPhenotypes.data(), phenotypeSize, 0 } } );
+                    }
+
+                    // Pipeline
+                    ComputePipelineDesc   notchDesc{ m_resourceManager->CreateShader( "shaders/compute/biology/notch_dll4.comp" ), "NotchDll4Pipeline" };
+                    ComputePipelineHandle notchPipeHandle = m_resourceManager->CreatePipeline( notchDesc );
+                    ComputePipeline*      notchPipe       = m_resourceManager->GetPipeline( notchPipeHandle );
+
+                    // Binding groups — ping-pong on agent read buffer; signaling/phenotype are single shared buffers
+                    BindingGroup* bgNotch0 = m_resourceManager->GetBindingGroup( m_resourceManager->CreateBindingGroup( notchPipeHandle, 0 ) );
+                    bgNotch0->Bind( 0, m_resourceManager->GetBuffer( outState.agentBuffers[ 0 ] ) );
+                    bgNotch0->Bind( 1, m_resourceManager->GetBuffer( outState.signalingBuffer ) );
+                    bgNotch0->Bind( 2, m_resourceManager->GetBuffer( outState.phenotypeBuffer ) );
+                    bgNotch0->Bind( 3, m_resourceManager->GetBuffer( outState.hashBuffer ) );
+                    bgNotch0->Bind( 4, m_resourceManager->GetBuffer( outState.offsetBuffer ) );
+                    bgNotch0->Bind( 5, m_resourceManager->GetBuffer( outState.agentCountBuffer ) );
+                    bgNotch0->Build();
+
+                    BindingGroup* bgNotch1 = m_resourceManager->GetBindingGroup( m_resourceManager->CreateBindingGroup( notchPipeHandle, 0 ) );
+                    bgNotch1->Bind( 0, m_resourceManager->GetBuffer( outState.agentBuffers[ 1 ] ) );
+                    bgNotch1->Bind( 1, m_resourceManager->GetBuffer( outState.signalingBuffer ) );
+                    bgNotch1->Bind( 2, m_resourceManager->GetBuffer( outState.phenotypeBuffer ) );
+                    bgNotch1->Bind( 3, m_resourceManager->GetBuffer( outState.hashBuffer ) );
+                    bgNotch1->Bind( 4, m_resourceManager->GetBuffer( outState.offsetBuffer ) );
+                    bgNotch1->Bind( 5, m_resourceManager->GetBuffer( outState.agentCountBuffer ) );
+                    bgNotch1->Build();
+
+                    // Push constants
+                    float signalingRadius = blueprint.GetSpatialPartitioning().cellSize * 0.5f;
+
+                    ComputePushConstants notchPC{};
+                    notchPC.fParam0     = notch.dll4ProductionRate;
+                    notchPC.fParam1     = notch.dll4DecayRate;
+                    notchPC.fParam2     = notch.notchInhibitionGain;
+                    notchPC.fParam3     = notch.vegfr2BaseExpression;
+                    notchPC.fParam4     = notch.tipThreshold;
+                    notchPC.fParam5     = notch.stalkThreshold;
+                    notchPC.offset      = currentOffset;
+                    notchPC.maxCapacity = paddedCount;
+                    notchPC.uParam0     = offsetArraySize;
+                    notchPC.uParam1     = groupIndex;
+                    notchPC.domainSize  = glm::vec4( blueprint.GetDomainSize(), signalingRadius );
+
+                    glm::uvec3  notchDispatch( ( paddedCount + 255 ) / 256, 1, 1 );
+                    ComputeTask notchTask( notchPipe, bgNotch0, bgNotch1, record.targetHz, notchPC, notchDispatch );
+                    notchTask.SetTag( "notch" + tagBase );
+                    outState.computeGraph.AddTask( notchTask );
+
+                    DT_INFO( "[SimulationBuilder] Compiled NotchDll4 for '{}' at {}Hz", group.GetName(), record.targetHz );
+                }
                 behaviourIndex++;
             }
             currentOffset += paddedCount;
@@ -1064,6 +1175,22 @@ namespace DigitalTwin
                         pc.fParam2                 = chemo.maxVelocity;
                         pc.fParam3                 = static_cast<float>( record.requiredCellType );
                         pc.uParam0                 = static_cast<uint32_t>( record.requiredLifecycleState );
+                        task->UpdatePushConstants( pc );
+                    }
+                }
+                else if( std::holds_alternative<Behaviours::NotchDll4>( record.behaviour ) )
+                {
+                    ComputeTask* task = state.computeGraph.FindTask( "notch" + tagBase );
+                    if( task )
+                    {
+                        const auto&          notch = std::get<Behaviours::NotchDll4>( record.behaviour );
+                        ComputePushConstants pc    = task->GetPushConstants();
+                        pc.fParam0                 = notch.dll4ProductionRate;
+                        pc.fParam1                 = notch.dll4DecayRate;
+                        pc.fParam2                 = notch.notchInhibitionGain;
+                        pc.fParam3                 = notch.vegfr2BaseExpression;
+                        pc.fParam4                 = notch.tipThreshold;
+                        pc.fParam5                 = notch.stalkThreshold;
                         task->UpdatePushConstants( pc );
                     }
                 }

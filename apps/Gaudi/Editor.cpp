@@ -129,6 +129,16 @@ namespace Gaudi
                          .SetDistribution( DigitalTwin::SpatialDistribution::UniformInSphere( 50, 20.0f ) )
                          .SetColor( glm::vec4( 1.0f, 0.3f, 0.3f, 1.0f ) ); // Red
 
+        // Notch-Dll4 lateral inhibition — differentiates Tip vs Stalk cells each frame
+        endo.AddBehaviour( DigitalTwin::Behaviours::NotchDll4{
+                /* dll4ProductionRate   */ 1.0f,
+                /* dll4DecayRate        */ 0.1f,
+                /* notchInhibitionGain  */ 1.0f,
+                /* vegfr2BaseExpression */ 1.0f,
+                /* tipThreshold         */ 0.8f,
+                /* stalkThreshold       */ 0.3f } )
+            .SetHz( 60.0f );
+
         // Chemotaxis toward VEGF — MUST be before Biomechanics for correct ComputeGraph order
         endo.AddBehaviour( DigitalTwin::Behaviours::Chemotaxis{ "VEGF", 2.0f, 0.005f, 8.0f } ).SetHz( 60.0f );
         endo.AddBehaviour( DigitalTwin::Behaviours::BrownianMotion{ 0.1f } ).SetHz( 60.0f );

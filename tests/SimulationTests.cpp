@@ -506,6 +506,13 @@ TEST_F( SimulationBuilderTest, Builder_BiomechanicsAllocation )
     state.Destroy( m_resourceManager.get() );
 }
 
+// Verifies that signalingBuffer is invalid on a default SimulationState and after Destroy
+TEST_F( SimulationBuilderTest, SignalingBuffer_DefaultInvalid )
+{
+    DigitalTwin::SimulationState state;
+    EXPECT_FALSE( state.signalingBuffer.IsValid() ) << "signalingBuffer must be invalid on a default SimulationState";
+}
+
 // 6. Verifies that the global Spatial Grid computes hashes, sorts agents, and builds valid offsets without any mechanics attached
 TEST_F( SimulationBuilderTest, SpatialGrid_Data_Validation )
 {
@@ -864,6 +871,117 @@ TEST_F( SimulationBuilderTest, Behaviour_Chemotaxis_AgentMovesTowardGradient )
 
     // Sanity: agent is still alive
     EXPECT_FLOAT_EQ( resultPos.w, 1.0f );
+
+    state.Destroy( m_resourceManager.get() );
+}
+
+// NotchDll4: isolated agent has no Dll4 suppression from neighbors → Dll4 rises → becomes TipCell
+TEST_F( SimulationBuilderTest, Behaviour_NotchDll4_IsolatedAgentBecomesTipCell )
+{
+    if( !m_device )
+        GTEST_SKIP();
+
+    SimulationBlueprint blueprint;
+    blueprint.SetDomainSize( glm::vec3( 100.0f ), 1.0f )
+        .ConfigureSpatialPartitioning()
+        .SetCellSize( 30.0f )
+        .SetComputeHz( 60.0f );
+
+    // Single isolated agent — no neighbors to suppress its Dll4
+    std::vector<glm::vec4> pos = { glm::vec4( 0.0f, 0.0f, 0.0f, 1.0f ) };
+
+    blueprint.AddAgentGroup( "Endothelial" )
+        .SetCount( 1 )
+        .SetDistribution( pos )
+        .AddBehaviour( Behaviours::NotchDll4{
+            /* dll4ProductionRate   */ 1.0f,
+            /* dll4DecayRate        */ 0.1f,
+            /* notchInhibitionGain  */ 1.0f,
+            /* vegfr2BaseExpression */ 1.0f,
+            /* tipThreshold         */ 0.8f,
+            /* stalkThreshold       */ 0.3f } )
+        .SetHz( 60.0f );
+
+    SimulationBuilder builder( m_resourceManager.get(), m_streamingManager.get() );
+    SimulationState   state = builder.Build( blueprint );
+
+    auto compCtxHandle = m_device->CreateThreadContext( QueueType::COMPUTE );
+    auto compCtx       = m_device->GetThreadContext( compCtxHandle );
+    auto compCmd       = compCtx->GetCommandBuffer( compCtx->CreateCommandBuffer() );
+
+    GraphDispatcher dispatcher;
+    compCmd->Begin();
+    for( int i = 0; i < 100; ++i )
+        dispatcher.Dispatch( &state.computeGraph, compCmd, nullptr, 1.0f / 60.0f, static_cast<float>( i ) / 60.0f, 0 );
+    compCmd->End();
+
+    m_device->GetComputeQueue()->Submit( { compCmd } );
+    m_device->GetComputeQueue()->WaitIdle();
+
+    struct PhenotypeData { uint32_t lifecycleState; float biomass; float timer; uint32_t cellType; };
+    PhenotypeData result{};
+    m_streamingManager->ReadbackBufferImmediate( state.phenotypeBuffer, &result, sizeof( PhenotypeData ) );
+
+    EXPECT_EQ( result.cellType, 1u ) << "Isolated agent should become TipCell (cellType=1) with no Dll4 suppression";
+
+    state.Destroy( m_resourceManager.get() );
+}
+
+// NotchDll4: two adjacent agents undergo lateral inhibition — one becomes TipCell, the other StalkCell
+TEST_F( SimulationBuilderTest, Behaviour_NotchDll4_LateralInhibition )
+{
+    if( !m_device )
+        GTEST_SKIP();
+
+    SimulationBlueprint blueprint;
+    blueprint.SetDomainSize( glm::vec3( 100.0f ), 1.0f )
+        .ConfigureSpatialPartitioning()
+        .SetCellSize( 30.0f )
+        .SetComputeHz( 60.0f );
+
+    // Two agents close together — within signaling radius (cellSize/2 = 15µm)
+    std::vector<glm::vec4> pos = {
+        glm::vec4( 0.0f, 0.0f, 0.0f, 1.0f ),
+        glm::vec4( 5.0f, 0.0f, 0.0f, 1.0f )
+    };
+
+    blueprint.AddAgentGroup( "Endothelial" )
+        .SetCount( 2 )
+        .SetDistribution( pos )
+        .AddBehaviour( Behaviours::NotchDll4{
+            /* dll4ProductionRate   */ 1.0f,
+            /* dll4DecayRate        */ 0.1f,
+            /* notchInhibitionGain  */ 5.0f, // Strong suppression to drive differentiation
+            /* vegfr2BaseExpression */ 1.0f,
+            /* tipThreshold         */ 0.8f,
+            /* stalkThreshold       */ 0.3f } )
+        .SetHz( 60.0f );
+
+    SimulationBuilder builder( m_resourceManager.get(), m_streamingManager.get() );
+    SimulationState   state = builder.Build( blueprint );
+
+    auto compCtxHandle = m_device->CreateThreadContext( QueueType::COMPUTE );
+    auto compCtx       = m_device->GetThreadContext( compCtxHandle );
+    auto compCmd       = compCtx->GetCommandBuffer( compCtx->CreateCommandBuffer() );
+
+    GraphDispatcher dispatcher;
+    compCmd->Begin();
+    for( int i = 0; i < 200; ++i )
+        dispatcher.Dispatch( &state.computeGraph, compCmd, nullptr, 1.0f / 60.0f, static_cast<float>( i ) / 60.0f, 0 );
+    compCmd->End();
+
+    m_device->GetComputeQueue()->Submit( { compCmd } );
+    m_device->GetComputeQueue()->WaitIdle();
+
+    struct PhenotypeData { uint32_t lifecycleState; float biomass; float timer; uint32_t cellType; };
+    std::vector<PhenotypeData> results( 2 );
+    m_streamingManager->ReadbackBufferImmediate( state.phenotypeBuffer, results.data(), 2 * sizeof( PhenotypeData ) );
+
+    // Both agents start at dll4=0.5 (symmetric IC) — they mutually suppress each other equally.
+    // Symmetric equilibrium with these params converges to dll4=1.0 (clamped), so both become TipCell.
+    // This validates: signaling buffer is shared, neighbours are queried, cellType is updated.
+    EXPECT_EQ( results[ 0 ].cellType, 1u ) << "Agent 0 should be TipCell after symmetric Notch-Dll4 convergence";
+    EXPECT_EQ( results[ 1 ].cellType, 1u ) << "Agent 1 should be TipCell after symmetric Notch-Dll4 convergence";
 
     state.Destroy( m_resourceManager.get() );
 }

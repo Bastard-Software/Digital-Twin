@@ -53,6 +53,10 @@ namespace DigitalTwin
             resourceManager->DestroyBuffer( vesselEdgeCountBuffer );
         if( vesselComponentBuffer.IsValid() )
             resourceManager->DestroyBuffer( vesselComponentBuffer );
+        if( agentReorderBuffer.IsValid() )
+            resourceManager->DestroyBuffer( agentReorderBuffer );
+        if( drawMetaBuffer.IsValid() )
+            resourceManager->DestroyBuffer( drawMetaBuffer );
 
         for( auto& field: gridFields )
         {
@@ -80,6 +84,8 @@ namespace DigitalTwin
         vesselEdgeBuffer       = {};
         vesselEdgeCountBuffer  = {};
         vesselComponentBuffer  = {};
+        agentReorderBuffer     = {};
+        drawMetaBuffer         = {};
     }
 
     SimulationState SimulationBuilder::Build( const SimulationBlueprint& blueprint )
@@ -126,11 +132,22 @@ namespace DigitalTwin
     {
         const auto& groups = blueprint.GetGroups();
 
+        // DrawMeta: one per draw command, tells build_indirect.comp which group/cellType each command targets
+        struct DrawMeta
+        {
+            uint32_t groupIndex;
+            uint32_t targetCellType; // 0xFFFFFFFF = default (any unmatched cellType)
+            uint32_t groupOffset;    // first agent slot for this group in agent buffer
+            uint32_t groupCapacity;  // padded capacity of this group
+        };
+
         // 1. Calculate required capacities for the Mega-Buffers
-        uint32_t totalVertices   = 0;
-        uint32_t totalIndices    = 0;
-        uint32_t totalAgents     = 0;
-        uint32_t validGroupCount = 0;
+        uint32_t totalVertices      = 0;
+        uint32_t totalIndices       = 0;
+        uint32_t totalAgents        = 0;
+        uint32_t totalReorderSlots  = 0;
+        uint32_t totalDrawCommands  = 0;
+        uint32_t validGroupCount    = 0;
 
         std::vector<uint32_t> groupCapacities;
         for( const auto& group: groups )
@@ -138,8 +155,16 @@ namespace DigitalTwin
             if( group.GetCount() == 0 || group.GetPositions().empty() )
                 continue;
 
+            // Default mesh
             totalVertices += static_cast<uint32_t>( group.GetMorphology().vertices.size() );
-            totalIndices += static_cast<uint32_t>( group.GetMorphology().indices.size() );
+            totalIndices  += static_cast<uint32_t>( group.GetMorphology().indices.size() );
+
+            // Cell-type morphology meshes
+            for( const auto& entry: group.GetCellTypeMorphologies() )
+            {
+                totalVertices += static_cast<uint32_t>( entry.mesh.vertices.size() );
+                totalIndices  += static_cast<uint32_t>( entry.mesh.indices.size() );
+            }
 
             uint32_t paddedCount = 131072;
             while( paddedCount < group.GetCount() )
@@ -147,6 +172,14 @@ namespace DigitalTwin
 
             groupCapacities.push_back( paddedCount );
             totalAgents += paddedCount;
+
+            // Draw commands: 1 (default) + N (cell-type morphologies)
+            uint32_t drawsForGroup = 1 + static_cast<uint32_t>( group.GetCellTypeMorphologies().size() );
+            totalDrawCommands += drawsForGroup;
+
+            // Reorder slots: each draw command gets capacity slots (worst case all agents have same cellType)
+            totalReorderSlots += drawsForGroup * paddedCount;
+
             validGroupCount++;
         }
 
@@ -156,7 +189,9 @@ namespace DigitalTwin
             return;
         }
 
-        outState.groupCount = validGroupCount;
+        outState.groupCount       = validGroupCount;
+        outState.drawCommandCount = totalDrawCommands;
+        outState.totalPaddedAgents = totalAgents;
 
         // 2. Allocate CPU-side continuous memory blocks
         std::vector<Vertex>                       megaVertices;
@@ -164,17 +199,20 @@ namespace DigitalTwin
         std::vector<glm::vec4>                    megaPositions;
         std::vector<VkDrawIndexedIndirectCommand> indirectCommands;
         std::vector<glm::vec4>                    groupColors;
+        std::vector<DrawMeta>                     drawMetaEntries;
 
         megaVertices.reserve( totalVertices );
         megaIndices.reserve( totalIndices );
         megaPositions.reserve( totalAgents );
-        indirectCommands.reserve( validGroupCount );
-        groupColors.reserve( validGroupCount );
+        indirectCommands.reserve( totalDrawCommands );
+        groupColors.reserve( totalDrawCommands );
+        drawMetaEntries.reserve( totalDrawCommands );
 
         // 3. Compile data and calculate offsets
         uint32_t currentVertexOffset   = 0;
         uint32_t currentIndexOffset    = 0;
-        uint32_t currentInstanceOffset = 0;
+        uint32_t currentAgentOffset    = 0; // offset into agent position buffer
+        uint32_t currentReorderOffset  = 0; // offset into reorder buffer
         uint32_t groupIdx              = 0;
 
         for( const auto& group: groups )
@@ -182,38 +220,57 @@ namespace DigitalTwin
             if( group.GetCount() == 0 || group.GetPositions().empty() )
                 continue;
 
-            uint32_t    capacity = groupCapacities[ groupIdx++ ];
-            const auto& morph    = group.GetMorphology();
+            uint32_t    capacity       = groupCapacities[ groupIdx ];
+            const auto& morph          = group.GetMorphology();
+            const auto& cellTypeMorphs = group.GetCellTypeMorphologies();
 
-            // Append Geometry
+            // --- Default mesh (catches any cellType not in cellTypeMorphs) ---
             megaVertices.insert( megaVertices.end(), morph.vertices.begin(), morph.vertices.end() );
             megaIndices.insert( megaIndices.end(), morph.indices.begin(), morph.indices.end() );
 
-            // Append Initial State (Positions)
-            uint32_t copyCount = std::min( group.GetCount(), static_cast<uint32_t>( group.GetPositions().size() ) );
-            megaPositions.insert( megaPositions.end(), group.GetPositions().begin(), group.GetPositions().begin() + copyCount );
+            VkDrawIndexedIndirectCommand defaultCmd{};
+            defaultCmd.indexCount    = static_cast<uint32_t>( morph.indices.size() );
+            defaultCmd.instanceCount = 0; // filled by build_indirect.comp
+            defaultCmd.firstIndex    = currentIndexOffset;
+            defaultCmd.vertexOffset  = currentVertexOffset;
+            defaultCmd.firstInstance  = currentReorderOffset;
+            indirectCommands.push_back( defaultCmd );
+            groupColors.push_back( group.GetColor() );
+            drawMetaEntries.push_back( { groupIdx, 0xFFFFFFFF, currentAgentOffset, capacity } );
 
-            // Pad with zeros if the user provided fewer positions than the requested count
-            for( uint32_t i = copyCount; i < capacity; ++i )
+            currentVertexOffset += static_cast<uint32_t>( morph.vertices.size() );
+            currentIndexOffset  += static_cast<uint32_t>( morph.indices.size() );
+            currentReorderOffset += capacity;
+
+            // --- Cell-type-specific meshes ---
+            for( const auto& entry: cellTypeMorphs )
             {
-                megaPositions.push_back( glm::vec4( 0.0f, 0.0f, 0.0f, 0.0f ) );
+                megaVertices.insert( megaVertices.end(), entry.mesh.vertices.begin(), entry.mesh.vertices.end() );
+                megaIndices.insert( megaIndices.end(), entry.mesh.indices.begin(), entry.mesh.indices.end() );
+
+                VkDrawIndexedIndirectCommand ctCmd{};
+                ctCmd.indexCount    = static_cast<uint32_t>( entry.mesh.indices.size() );
+                ctCmd.instanceCount = 0; // filled by build_indirect.comp
+                ctCmd.firstIndex    = currentIndexOffset;
+                ctCmd.vertexOffset  = currentVertexOffset;
+                ctCmd.firstInstance  = currentReorderOffset;
+                indirectCommands.push_back( ctCmd );
+                groupColors.push_back( group.GetColor() ); // base color; shader overrides per cellType
+                drawMetaEntries.push_back( { groupIdx, static_cast<uint32_t>( entry.cellTypeIndex ), currentAgentOffset, capacity } );
+
+                currentVertexOffset  += static_cast<uint32_t>( entry.mesh.vertices.size() );
+                currentIndexOffset   += static_cast<uint32_t>( entry.mesh.indices.size() );
+                currentReorderOffset += capacity;
             }
 
-            // Create Indirect Draw Command for this specific group
-            VkDrawIndexedIndirectCommand cmd{};
-            cmd.indexCount    = static_cast<uint32_t>( morph.indices.size() );
-            cmd.instanceCount = group.GetCount();
-            cmd.firstIndex    = currentIndexOffset;
-            cmd.vertexOffset  = currentVertexOffset;
-            cmd.firstInstance = currentInstanceOffset;
+            // --- Agent positions (unchanged — one region per group) ---
+            uint32_t copyCount = std::min( group.GetCount(), static_cast<uint32_t>( group.GetPositions().size() ) );
+            megaPositions.insert( megaPositions.end(), group.GetPositions().begin(), group.GetPositions().begin() + copyCount );
+            for( uint32_t i = copyCount; i < capacity; ++i )
+                megaPositions.push_back( glm::vec4( 0.0f ) );
 
-            indirectCommands.push_back( cmd );
-            groupColors.push_back( group.GetColor() );
-
-            // Advance offsets for the next group
-            currentVertexOffset += static_cast<uint32_t>( morph.vertices.size() );
-            currentIndexOffset += static_cast<uint32_t>( morph.indices.size() );
-            currentInstanceOffset += capacity;
+            currentAgentOffset += capacity;
+            groupIdx++;
         }
 
         // 4. Create core GPU Buffers via ResourceManager
@@ -239,6 +296,14 @@ namespace DigitalTwin
         outState.agentBuffers[ 1 ] = m_resourceManager->CreateBuffer( agentDesc );
         outState.agentCountBuffer =
             m_resourceManager->CreateBuffer( { outState.groupCount * sizeof( uint32_t ), BufferType::INDIRECT, "AgentCountBuffer" } );
+
+        // Reorder buffer: maps draw-command instance indices → global agent indices
+        outState.agentReorderBuffer = m_resourceManager->CreateBuffer(
+            { totalReorderSlots * sizeof( uint32_t ), BufferType::STORAGE, "AgentReorderBuffer" } );
+
+        // Draw meta buffer: per-draw-command metadata for build_indirect.comp
+        outState.drawMetaBuffer = m_resourceManager->CreateBuffer(
+            { drawMetaEntries.size() * sizeof( DrawMeta ), BufferType::STORAGE, "DrawMetaBuffer" } );
 
         // 5. Upload Data to VRAM synchronously
         std::vector<BufferUploadRequest> uploads;
@@ -266,9 +331,13 @@ namespace DigitalTwin
         }
         uploads.push_back( { outState.agentCountBuffer, initialCounts.data(), initialCounts.size() * sizeof( uint32_t ), 0 } );
 
+        // Upload reorder buffer (identity init not needed — shader fills it every frame)
+        // Upload draw meta
+        uploads.push_back( { outState.drawMetaBuffer, drawMetaEntries.data(), drawMetaEntries.size() * sizeof( DrawMeta ) } );
+
         m_streamingManager->UploadBufferImmediate( uploads );
 
-        DT_INFO( "[SimulationBuilder] Agent Mega-Buffers allocated. Total Agents: {}", totalAgents );
+        DT_INFO( "[SimulationBuilder] Agent Mega-Buffers allocated. Total Agents: {}, Draw Commands: {}", totalAgents, totalDrawCommands );
     }
 
     void SimulationBuilder::CompileSpatialGrid( const SimulationBlueprint& blueprint, SimulationState& outState )

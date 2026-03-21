@@ -339,9 +339,12 @@ namespace DigitalTwin
             renderScene.agentBuffers[ 0 ] = state->agentBuffers[ 0 ];
             renderScene.agentBuffers[ 1 ] = state->agentBuffers[ 1 ];
             renderScene.readIndex         = state->latestAgentBuffer;
-            renderScene.agentCountBuffer  = state->agentCountBuffer;
-            renderScene.phenotypeBuffer   = state->phenotypeBuffer;
-            renderScene.drawCount         = state->groupCount;
+            renderScene.agentCountBuffer   = state->agentCountBuffer;
+            renderScene.phenotypeBuffer    = state->phenotypeBuffer;
+            renderScene.agentReorderBuffer = state->agentReorderBuffer;
+            renderScene.drawMetaBuffer     = state->drawMetaBuffer;
+            renderScene.drawCount          = state->drawCommandCount;
+            renderScene.totalPaddedAgents  = state->totalPaddedAgents;
 
             if( profiler )
                 profiler->BeginZone( cmd, flightIndex, "Build Indirect Pass" );

@@ -2462,3 +2462,149 @@ TEST_F( ComputeTest, Shader_Perfusion_NonStalkCell_Skipped )
     PERFUSION_RAW_TEST_SETUP( 0u, +5.0f, "PFSkip" )
     EXPECT_EQ( result, 0 ) << "Default cell must not modify the delta buffer";
 }
+
+// build_indirect.comp: 2 agents with different cellTypes scattered into correct draw commands.
+// 3 draw commands: default (group 0), default (group 0 fallback), TipCell (group 0, cellType=1), StalkCell (group 0, cellType=2)
+// Actually: 1 group with 3 draw commands: default (0xFFFFFFFF), TipCell (1), StalkCell (2).
+// Agent 0 = TipCell, Agent 1 = StalkCell → TipCell cmd gets 1 instance, StalkCell cmd gets 1 instance, default gets 0.
+TEST_F( ComputeTest, Shader_BuildIndirect_ClassifyCellTypes )
+{
+    if( !m_device )
+        GTEST_SKIP();
+
+    // Create pipeline
+    ShaderHandle          sh   = m_rm->CreateShader( "shaders/graphics/build_indirect.comp" );
+    ComputePipelineDesc   desc{};
+    desc.shader                = sh;
+    ComputePipelineHandle pipe = m_rm->CreatePipeline( desc );
+    ComputePipeline*      pipePtr = m_rm->GetPipeline( pipe );
+
+    const uint32_t agentCount    = 2;
+    const uint32_t drawCmdCount  = 3; // default + TipCell + StalkCell
+    const uint32_t groupCapacity = 64; // padded
+
+    // Draw meta: {groupIndex, targetCellType, groupOffset, groupCapacity}
+    struct DrawMeta { uint32_t groupIndex, targetCellType, groupOffset, groupCapacity; };
+    std::vector<DrawMeta> metaData = {
+        { 0, 0xFFFFFFFF, 0, groupCapacity }, // default: catches any unmatched cellType
+        { 0, 1,          0, groupCapacity }, // TipCell
+        { 0, 2,          0, groupCapacity }, // StalkCell
+    };
+
+    // Indirect commands: instanceCount=0 (will be filled), firstInstance points to reorder regions
+    struct DrawCommand { uint32_t indexCount, instanceCount, firstIndex, vertexOffset, firstInstance; };
+    std::vector<DrawCommand> cmds = {
+        { 36, 0, 0, 0, 0 * groupCapacity },                // default  → reorder[0..63]
+        { 36, 0, 0, 0, 1 * groupCapacity },                // TipCell  → reorder[64..127]
+        { 36, 0, 0, 0, 2 * groupCapacity },                // StalkCell→ reorder[128..191]
+    };
+
+    // Agent count buffer (1 group with 2 live agents)
+    std::vector<uint32_t> counts = { agentCount };
+
+    // Agent positions: both alive (w=1)
+    std::vector<glm::vec4> positions( groupCapacity, glm::vec4( 0 ) );
+    positions[ 0 ] = glm::vec4( 0, 0, 0, 1 );
+    positions[ 1 ] = glm::vec4( 1, 0, 0, 1 );
+
+    // Phenotype data: agent 0 = TipCell, agent 1 = StalkCell
+    struct PhenotypeData { uint32_t lifecycleState; float biomass; float timer; uint32_t cellType; };
+    std::vector<PhenotypeData> phenotypes( groupCapacity, { 0, 0.5f, 0.0f, 0 } );
+    phenotypes[ 0 ].cellType = 1; // TipCell
+    phenotypes[ 1 ].cellType = 2; // StalkCell
+
+    // Reorder buffer (3 * groupCapacity slots)
+    uint32_t reorderSize = 3 * groupCapacity;
+    std::vector<uint32_t> reorderInit( reorderSize, 0xDEADBEEF );
+
+    // Create GPU buffers
+    auto countBuf     = m_rm->CreateBuffer( { sizeof( uint32_t ), BufferType::STORAGE, "BI_Counts" } );
+    auto indirectBuf  = m_rm->CreateBuffer( { cmds.size() * sizeof( DrawCommand ), BufferType::STORAGE, "BI_Indirect" } );
+    auto phenoBuf     = m_rm->CreateBuffer( { phenotypes.size() * sizeof( PhenotypeData ), BufferType::STORAGE, "BI_Pheno" } );
+    auto reorderBuf   = m_rm->CreateBuffer( { reorderSize * sizeof( uint32_t ), BufferType::STORAGE, "BI_Reorder" } );
+    auto metaBuf      = m_rm->CreateBuffer( { metaData.size() * sizeof( DrawMeta ), BufferType::STORAGE, "BI_Meta" } );
+    auto agentBuf     = m_rm->CreateBuffer( { positions.size() * sizeof( glm::vec4 ), BufferType::STORAGE, "BI_Agents" } );
+
+    m_stream->UploadBufferImmediate( {
+        { countBuf,    counts.data(),      counts.size() * sizeof( uint32_t ) },
+        { indirectBuf, cmds.data(),        cmds.size() * sizeof( DrawCommand ) },
+        { phenoBuf,    phenotypes.data(),  phenotypes.size() * sizeof( PhenotypeData ) },
+        { reorderBuf,  reorderInit.data(), reorderInit.size() * sizeof( uint32_t ) },
+        { metaBuf,     metaData.data(),    metaData.size() * sizeof( DrawMeta ) },
+        { agentBuf,    positions.data(),   positions.size() * sizeof( glm::vec4 ) },
+    } );
+
+    // Bind
+    BindingGroup* bg = m_rm->GetBindingGroup( m_rm->CreateBindingGroup( pipe, 0 ) );
+    bg->Bind( 0, m_rm->GetBuffer( countBuf ) );
+    bg->Bind( 1, m_rm->GetBuffer( indirectBuf ) );
+    bg->Bind( 2, m_rm->GetBuffer( phenoBuf ) );
+    bg->Bind( 3, m_rm->GetBuffer( reorderBuf ) );
+    bg->Bind( 4, m_rm->GetBuffer( metaBuf ) );
+    bg->Bind( 5, m_rm->GetBuffer( agentBuf ) );
+    bg->Build();
+
+    // Record command buffer: dispatch RESET then CLASSIFY
+    auto ctxH   = m_device->CreateThreadContext( QueueType::COMPUTE );
+    auto ctx    = m_device->GetThreadContext( ctxH );
+    auto cmdBuf = ctx->GetCommandBuffer( ctx->CreateCommandBuffer() );
+
+    ComputePushConstants resetPC{};
+    resetPC.uParam0 = 0; // reset mode
+    resetPC.uParam1 = drawCmdCount; // grpNdx = draw command count
+
+    ComputePushConstants classifyPC{};
+    classifyPC.uParam0     = 1; // classify mode
+    classifyPC.uParam1     = drawCmdCount;
+    classifyPC.maxCapacity = groupCapacity;
+
+    cmdBuf->Begin();
+
+    // Reset dispatch
+    cmdBuf->SetPipeline( pipePtr );
+    cmdBuf->SetBindingGroup( bg, pipePtr->GetLayout(), VK_PIPELINE_BIND_POINT_COMPUTE );
+    cmdBuf->PushConstants( pipePtr->GetLayout(), VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof( ComputePushConstants ), &resetPC );
+    cmdBuf->Dispatch( 1, 1, 1 );
+
+    // Barrier between reset and classify
+    VkMemoryBarrier2 barrier = { VK_STRUCTURE_TYPE_MEMORY_BARRIER_2 };
+    barrier.srcStageMask     = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT;
+    barrier.srcAccessMask    = VK_ACCESS_2_SHADER_WRITE_BIT;
+    barrier.dstStageMask     = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT;
+    barrier.dstAccessMask    = VK_ACCESS_2_SHADER_READ_BIT | VK_ACCESS_2_SHADER_WRITE_BIT;
+    VkDependencyInfo dep     = { VK_STRUCTURE_TYPE_DEPENDENCY_INFO };
+    dep.memoryBarrierCount   = 1;
+    dep.pMemoryBarriers      = &barrier;
+    cmdBuf->PipelineBarrier( &dep );
+
+    // Classify dispatch
+    cmdBuf->PushConstants( pipePtr->GetLayout(), VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof( ComputePushConstants ), &classifyPC );
+    cmdBuf->Dispatch( ( groupCapacity + 255 ) / 256, 1, 1 );
+
+    cmdBuf->End();
+    m_device->GetComputeQueue()->Submit( { cmdBuf } );
+    m_device->GetComputeQueue()->WaitIdle();
+
+    // Readback indirect commands
+    std::vector<DrawCommand> resultCmds( drawCmdCount );
+    m_stream->ReadbackBufferImmediate( indirectBuf, resultCmds.data(), drawCmdCount * sizeof( DrawCommand ) );
+
+    // Default command: should have 0 instances (both agents matched specific cellType commands)
+    EXPECT_EQ( resultCmds[ 0 ].instanceCount, 0u ) << "Default draw: no agents with unmatched cellType";
+
+    // TipCell command: agent 0
+    EXPECT_EQ( resultCmds[ 1 ].instanceCount, 1u ) << "TipCell draw: exactly 1 agent";
+
+    // StalkCell command: agent 1
+    EXPECT_EQ( resultCmds[ 2 ].instanceCount, 1u ) << "StalkCell draw: exactly 1 agent";
+
+    // Readback reorder buffer and verify the agent indices
+    std::vector<uint32_t> reorderResult( reorderSize );
+    m_stream->ReadbackBufferImmediate( reorderBuf, reorderResult.data(), reorderSize * sizeof( uint32_t ) );
+
+    // TipCell region starts at 1*groupCapacity, first entry should be agent 0
+    EXPECT_EQ( reorderResult[ 1 * groupCapacity ], 0u ) << "TipCell reorder slot 0 should be agent index 0";
+
+    // StalkCell region starts at 2*groupCapacity, first entry should be agent 1
+    EXPECT_EQ( reorderResult[ 2 * groupCapacity ], 1u ) << "StalkCell reorder slot 0 should be agent index 1";
+}

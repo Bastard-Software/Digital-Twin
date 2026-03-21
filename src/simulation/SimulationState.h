@@ -53,6 +53,12 @@ namespace DigitalTwin
         // Vessel connected components — uint32_t label per agent, labels[i]=i initially
         BufferHandle vesselComponentBuffer;
 
+        // Multi-mesh rendering — per-cellType draw commands
+        BufferHandle agentReorderBuffer;  // uint32_t per reorder slot: maps instance → agent index
+        BufferHandle drawMetaBuffer;      // DrawMeta per draw command: {groupIndex, targetCellType, groupOffset, groupCapacity}
+        uint32_t     drawCommandCount = 0;
+        uint32_t     totalPaddedAgents = 0;
+
         // Biomechanics
         BufferHandle hashBuffer;
         BufferHandle offsetBuffer;

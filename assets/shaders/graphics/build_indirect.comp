@@ -1,5 +1,5 @@
 #version 460
-layout(local_size_x = 64) in;
+layout(local_size_x = 256) in;
 
 layout(push_constant) uniform PushConstants {
     float dt; float totalTime;
@@ -8,9 +8,10 @@ layout(push_constant) uniform PushConstants {
     vec4  domainSize; uvec4 gridSize;
 } pc;
 
-// Binding 0: GPU-Driven Atomic Counter
+// Binding 0: Agent count buffer (per group)
 layout(std430, binding = 0) readonly buffer CounterBuffer { uint counts[]; } counters;
 
+// Binding 1: Indirect command buffer
 struct DrawCommand {
     uint indexCount;
     uint instanceCount;
@@ -18,14 +19,99 @@ struct DrawCommand {
     uint vertexOffset;
     uint firstInstance;
 };
-
-// Binding 1: Indirect Command Buffer for Renderer
 layout(std430, binding = 1) buffer IndirectCommandBuffer { DrawCommand commands[]; } indirectCmds;
 
+// Binding 2: Phenotype buffer
+struct PhenotypeData {
+    uint  lifecycleState;
+    float biomass;
+    float timer;
+    uint  cellType;
+};
+layout(std430, binding = 2) readonly buffer PhenotypeBuffer { PhenotypeData data[]; } phenotypes;
+
+// Binding 3: Reorder buffer (uint32_t per slot)
+layout(std430, binding = 3) writeonly buffer ReorderBuffer { uint indices[]; } reorder;
+
+// Binding 4: Draw meta buffer
+struct DrawMeta {
+    uint groupIndex;
+    uint targetCellType; // 0xFFFFFFFF = default (any unmatched cellType)
+    uint groupOffset;    // first agent slot for this group in agent buffer
+    uint groupCapacity;  // padded capacity of this group
+};
+layout(std430, binding = 4) readonly buffer DrawMetaBuffer { DrawMeta meta[]; } drawMeta;
+
+// Binding 5: Agent positions (check alive: w > 0)
+layout(std430, binding = 5) readonly buffer AgentBuffer { vec4 positions[]; } agents;
+
+// pc.uParam0: 0 = RESET mode (one thread per draw command), 1 = CLASSIFY mode (one thread per agent)
+// pc.grpNdx:  total draw command count (RESET mode) or total draw command count (CLASSIFY mode)
+// pc.maxCapacity: total padded agent count (CLASSIFY mode only)
+
 void main() {
-    uint idx = gl_GlobalInvocationID.x;
-    if(idx >= pc.grpNdx) return; // uParam1 is the number of agent groups
-    
-    // Dynamically overwrite the instanceCount for the Geometry Pass!
-    indirectCmds.commands[idx].instanceCount = counters.counts[idx];
+    uint gid = gl_GlobalInvocationID.x;
+
+    if (pc.uParam0 == 0u) {
+        // RESET MODE: zero instanceCount for each draw command
+        if (gid >= pc.grpNdx) return;
+        indirectCmds.commands[gid].instanceCount = 0u;
+        return;
+    }
+
+    // CLASSIFY MODE: one thread per agent slot
+    if (gid >= pc.maxCapacity) return;
+
+    // Check if agent is alive
+    if (agents.positions[gid].w <= 0.0) return;
+
+    // Find which group this agent belongs to using draw meta
+    // Each group may have multiple draw commands, but they all share the same groupOffset/groupCapacity.
+    // We search for the first draw command matching this agent's group.
+    uint foundGroup    = 0xFFFFFFFFu;
+    uint localIdx      = 0u;
+    uint groupCmdStart = 0xFFFFFFFFu; // first draw command index for this group
+
+    for (uint d = 0u; d < pc.grpNdx; d++) {
+        DrawMeta m = drawMeta.meta[d];
+        if (gid >= m.groupOffset && gid < m.groupOffset + m.groupCapacity) {
+            foundGroup    = m.groupIndex;
+            localIdx      = gid - m.groupOffset;
+            groupCmdStart = d;
+            break;
+        }
+    }
+    if (foundGroup == 0xFFFFFFFFu) return;
+
+    // Check against live count for this group
+    if (localIdx >= counters.counts[foundGroup]) return;
+
+    // Read cellType from phenotype buffer
+    uint cellType = phenotypes.data[gid].cellType;
+
+    // Find draw command matching this (group, cellType)
+    uint targetCmd    = 0xFFFFFFFFu;
+    uint defaultCmd   = 0xFFFFFFFFu;
+
+    for (uint d = groupCmdStart; d < pc.grpNdx; d++) {
+        DrawMeta m = drawMeta.meta[d];
+        if (m.groupIndex != foundGroup) break; // past this group's commands
+
+        if (m.targetCellType == cellType) {
+            targetCmd = d;
+            break;
+        }
+        if (m.targetCellType == 0xFFFFFFFFu) {
+            defaultCmd = d;
+        }
+    }
+
+    // Fall back to default command if no exact cellType match
+    if (targetCmd == 0xFFFFFFFFu)
+        targetCmd = defaultCmd;
+    if (targetCmd == 0xFFFFFFFFu) return;
+
+    // Scatter: atomicAdd on instanceCount to get a slot, write global agent index to reorder buffer
+    uint slot = atomicAdd(indirectCmds.commands[targetCmd].instanceCount, 1u);
+    reorder.indices[indirectCmds.commands[targetCmd].firstInstance + slot] = gid;
 }

@@ -1339,3 +1339,59 @@ TEST_F( SimulationBuilderTest, Behaviour_Drain_StalkCell_RemovesLactate )
     state.Destroy( m_resourceManager.get() );
 }
 
+// Multi-mesh rendering: group with cell-type morphologies generates per-cellType draw commands
+TEST_F( SimulationBuilderTest, MultiMesh_DrawCommandCount )
+{
+    if( !m_device )
+        GTEST_SKIP();
+
+    SimulationBlueprint blueprint;
+    blueprint.SetDomainSize( glm::vec3( 100.0f ), 1.0f );
+
+    // Group A: no cell-type morphologies → 1 draw command
+    std::vector<glm::vec4> posA = { glm::vec4( 0, 0, 0, 1 ) };
+    blueprint.AddAgentGroup( "GroupA" )
+        .SetCount( 1 )
+        .SetDistribution( posA );
+
+    // Group B: 2 cell-type morphologies (TipCell + StalkCell) → 3 draw commands
+    std::vector<glm::vec4> posB = { glm::vec4( 10, 0, 0, 1 ), glm::vec4( 20, 0, 0, 1 ) };
+    blueprint.AddAgentGroup( "GroupB" )
+        .SetCount( 2 )
+        .SetDistribution( posB )
+        .AddCellTypeMorphology( 1, MorphologyGenerator::CreateSpikySphere() )
+        .AddCellTypeMorphology( 2, MorphologyGenerator::CreateCylinder() );
+
+    SimulationBuilder builder( m_resourceManager.get(), m_streamingManager.get() );
+    SimulationState   state = builder.Build( blueprint );
+
+    EXPECT_TRUE( state.IsValid() );
+    EXPECT_EQ( state.groupCount, 2u );
+    EXPECT_EQ( state.drawCommandCount, 4u ) << "1 (GroupA default) + 3 (GroupB default + TipCell + StalkCell)";
+    EXPECT_TRUE( state.agentReorderBuffer.IsValid() );
+    EXPECT_TRUE( state.drawMetaBuffer.IsValid() );
+
+    // Verify draw meta: readback and check group indices + target cell types
+    struct DrawMeta { uint32_t groupIndex, targetCellType, groupOffset, groupCapacity; };
+    std::vector<DrawMeta> meta( 4 );
+    m_streamingManager->ReadbackBufferImmediate( state.drawMetaBuffer, meta.data(), 4 * sizeof( DrawMeta ) );
+
+    // Command 0: GroupA default
+    EXPECT_EQ( meta[ 0 ].groupIndex, 0u );
+    EXPECT_EQ( meta[ 0 ].targetCellType, 0xFFFFFFFFu ) << "Default (any) cellType";
+
+    // Command 1: GroupB default
+    EXPECT_EQ( meta[ 1 ].groupIndex, 1u );
+    EXPECT_EQ( meta[ 1 ].targetCellType, 0xFFFFFFFFu ) << "Default (any) cellType";
+
+    // Command 2: GroupB TipCell
+    EXPECT_EQ( meta[ 2 ].groupIndex, 1u );
+    EXPECT_EQ( meta[ 2 ].targetCellType, 1u ) << "TipCell";
+
+    // Command 3: GroupB StalkCell
+    EXPECT_EQ( meta[ 3 ].groupIndex, 1u );
+    EXPECT_EQ( meta[ 3 ].targetCellType, 2u ) << "StalkCell";
+
+    state.Destroy( m_resourceManager.get() );
+}
+

@@ -75,4 +75,10 @@ namespace DigitalTwin
         glm::vec4             colorMap     = glm::vec4( 0.0f, 0.5f, 1.0f, 1.0f ); // Base color of the substance
     };
 
+    struct VesselVisualizationSettings
+    {
+        bool      active    = false;
+        glm::vec4 lineColor = glm::vec4( 1.0f, 0.85f, 0.0f, 1.0f ); // Gold
+    };
+
 } // namespace DigitalTwin

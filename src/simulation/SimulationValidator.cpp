@@ -240,6 +240,8 @@ namespace DigitalTwin
                                 result.AddError( "AgentGroup '" + group.GetName() + "': NotchDll4 vegfr2BaseExpression must be > 0" );
                             if( behaviour.tipThreshold <= behaviour.stalkThreshold )
                                 result.AddError( "AgentGroup '" + group.GetName() + "': NotchDll4 tipThreshold must be > stalkThreshold" );
+                            if( behaviour.subSteps < 1 )
+                                result.AddError( "AgentGroup '" + group.GetName() + "': NotchDll4 subSteps must be >= 1" );
                         }
 
                         if constexpr( std::is_same_v<T, Behaviours::Anastomosis> )

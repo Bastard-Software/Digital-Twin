@@ -128,8 +128,8 @@ namespace DigitalTwin
         for( uint32_t i = 0; i < sectors; ++i )
         {
             uint32_t t0 = i * 2, b0 = i * 2 + 1, t1 = ( i + 1 ) * 2, b1 = ( i + 1 ) * 2 + 1;
-            data.indices.push_back( t0 ); data.indices.push_back( b0 ); data.indices.push_back( t1 );
-            data.indices.push_back( t1 ); data.indices.push_back( b0 ); data.indices.push_back( b1 );
+            data.indices.push_back( t0 ); data.indices.push_back( t1 ); data.indices.push_back( b0 );
+            data.indices.push_back( t1 ); data.indices.push_back( b1 ); data.indices.push_back( b0 );
         }
 
         // Top cap (normal +Y, flat)
@@ -145,8 +145,8 @@ namespace DigitalTwin
         for( uint32_t i = 0; i < sectors; ++i )
         {
             data.indices.push_back( topCenter );
-            data.indices.push_back( topRim + i );
             data.indices.push_back( topRim + i + 1 );
+            data.indices.push_back( topRim + i );
         }
 
         // Bottom cap (normal -Y, flat, reversed winding)
@@ -162,8 +162,8 @@ namespace DigitalTwin
         for( uint32_t i = 0; i < sectors; ++i )
         {
             data.indices.push_back( botCenter );
-            data.indices.push_back( botRim + i + 1 );
             data.indices.push_back( botRim + i );
+            data.indices.push_back( botRim + i + 1 );
         }
 
         return data;
@@ -198,7 +198,10 @@ namespace DigitalTwin
             }
         }
 
-        // Indices identical to CreateSphere
+        // The checkerboard spike pattern creates concave valley faces whose projected winding
+        // flips depending on viewing angle. Generate each triangle in both winding orders
+        // (double-sided) so concave valley faces are never culled. Triangle count doubles
+        // but is negligible for a handful of TipCells.
         for( uint32_t i = 0; i < stacks; ++i )
         {
             uint32_t k1 = i * ( sectors + 1 );
@@ -211,12 +214,18 @@ namespace DigitalTwin
                     data.indices.push_back( k1 );
                     data.indices.push_back( k2 );
                     data.indices.push_back( k1 + 1 );
+                    data.indices.push_back( k1 );
+                    data.indices.push_back( k1 + 1 );
+                    data.indices.push_back( k2 );
                 }
                 if( i != ( stacks - 1 ) )
                 {
                     data.indices.push_back( k1 + 1 );
                     data.indices.push_back( k2 );
                     data.indices.push_back( k2 + 1 );
+                    data.indices.push_back( k1 + 1 );
+                    data.indices.push_back( k2 + 1 );
+                    data.indices.push_back( k2 );
                 }
             }
         }

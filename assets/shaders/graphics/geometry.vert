@@ -60,14 +60,6 @@ void main()
 
     vec4 baseColor = groupData.colors[gl_DrawIDARB];
     uint state = phenotypes.data[agentIdx].lifecycleState;
-    uint cellType = phenotypes.data[agentIdx].cellType;
-
-    // Cell-type color overrides for angiogenesis visualization
-    if (cellType == 1u) {
-        baseColor = vec4(0.9, 0.15, 0.15, 1.0); // Bright red — TipCell (leading sprout)
-    } else if (cellType == 2u) {
-        baseColor = vec4(0.85, 0.55, 0.2, 1.0);  // Orange — StalkCell (vessel tube)
-    }
 
     // Lifecycle state modulation
     if (state == 0u) {

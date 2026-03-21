@@ -26,8 +26,13 @@ struct PhenotypeData {
 };
 layout(std430, binding = 2) buffer Phenotypes { PhenotypeData data[]; } inOutPhenotypes;
 
-// Binding 2: GPU-Driven Atomic Counters (tracks active instances per group)
+// Binding 3: GPU-Driven Atomic Counters (tracks active instances per group)
 layout(std430, binding = 3) buffer CounterBuffer { uint counts[]; } counters;
+
+// Bindings 4-5: Vessel edge recording (StalkCell division creates a new vessel segment)
+struct VesselEdge { uint agentA; uint agentB; float dist; uint flags; };
+layout(std430, binding = 4) buffer Edges { VesselEdge data[]; } edges;
+layout(std430, binding = 5) coherent buffer EdgeCountBuffer { uint count; } edgeCount;
 
 // RNG functions
 uint pcg_hash(uint seed) 
@@ -101,7 +106,21 @@ void main()
             inOutPhenotypes.data[globalChildIdx].lifecycleState = 0;   // Set to Live
             inOutPhenotypes.data[globalChildIdx].biomass        = 0.5; // Start with half the mother's mass
             inOutPhenotypes.data[globalChildIdx].timer          = 0.0; // Reset internal clock
-            inOutPhenotypes.data[globalChildIdx].cellType       = 0;   // Inherit Default cell type
+            inOutPhenotypes.data[globalChildIdx].cellType       = inOutPhenotypes.data[globalIdx].cellType; // Inherit mother's cell type
+
+            // StalkCell division: record the new vessel segment between mother and daughter
+            if( inOutPhenotypes.data[globalIdx].cellType == 2u )
+            {
+                float dist    = length( agentsRead.positions[globalChildIdx].xyz - motherPos );
+                uint  edgeIdx = atomicAdd( edgeCount.count, 1u );
+                if( edgeIdx < pc.maxCapacity )
+                {
+                    edges.data[edgeIdx].agentA = globalIdx;
+                    edges.data[edgeIdx].agentB = globalChildIdx;
+                    edges.data[edgeIdx].dist   = dist;
+                    edges.data[edgeIdx].flags  = 0u;
+                }
+            }
         } 
         else 
         {

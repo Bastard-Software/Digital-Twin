@@ -33,8 +33,10 @@ namespace Gaudi
         static const ImWchar iconRanges[] = { ICON_MIN_FA, ICON_MAX_FA, 0 };
         io.Fonts->AddFontFromFileTTF( faSolid.c_str(), 16.0f, &iconCfg, iconRanges );
 
-        SetupInitialBlueprint();
+        // SetupInitialBlueprint();
         // SetupChemotaxisDemo();
+        // SetupCellCycleDemo();
+        SetupAngiogenesisDemo();
     }
 
     void Editor::SetupInitialBlueprint()
@@ -43,7 +45,7 @@ namespace Gaudi
         // 1. Domain & Spatial Partitioning
         // ==========================================================================================
         m_blueprint.SetName( "Angiogenesis" );
-        m_blueprint.SetDomainSize( glm::vec3( 50.0f ), 2.0f );
+        m_blueprint.SetDomainSize( glm::vec3( 30.0f ), 2.0f );
 
         m_blueprint.ConfigureSpatialPartitioning()
             .SetMethod( DigitalTwin::SpatialPartitioningMethod::HashGrid )
@@ -80,10 +82,10 @@ namespace Gaudi
         // ==========================================================================================
         // 3. Tumour cells — dense cluster at origin (20 cells, radius 4)
         // ==========================================================================================
-        auto tumorPositions = DigitalTwin::SpatialDistribution::UniformInSphere( 20, 4.0f );
+        auto tumorPositions = DigitalTwin::SpatialDistribution::UniformInSphere( 10, 3.0f );
 
         auto& tumorCells = m_blueprint.AddAgentGroup( "TumorCells" )
-                               .SetCount( 20 )
+                               .SetCount( 10 )
                                .SetMorphology( DigitalTwin::MorphologyGenerator::CreateSphere( 1.5f ) )
                                .SetDistribution( tumorPositions )
                                .SetColor( glm::vec4( 0.2f, 0.85f, 0.3f, 1.0f ) ); // Bright green
@@ -105,7 +107,7 @@ namespace Gaudi
         // after tumour expands and O2 is consumed.
         tumorCells
             .AddBehaviour( DigitalTwin::BiologyGenerator::StandardCellCycle()
-                               .SetBaseDoublingTime( 8.0f / 3600.0f )
+                               .SetBaseDoublingTime( 2.0f / 3600.0f )
                                .SetProliferationOxygenTarget( 50.0f )
                                .SetArrestPressureThreshold( 15.0f )
                                .SetHypoxiaOxygenThreshold( 25.0f )
@@ -128,12 +130,12 @@ namespace Gaudi
         // 4. Endothelial cells — two vessel lines at y=±15 flanking tumour
         //    18-unit span / 14 gaps ≈ 1.29 spacing < cellSize/2=1.5 → Notch-Dll4 inhibition works
         // ==========================================================================================
-        auto vesselTop    = DigitalTwin::SpatialDistribution::VesselLine( 15, glm::vec3( -9, 15, 0 ), glm::vec3( 9, 15, 0 ) );
-        auto vesselBottom = DigitalTwin::SpatialDistribution::VesselLine( 15, glm::vec3( -9, -15, 0 ), glm::vec3( 9, -15, 0 ) );
+        auto vesselTop    = DigitalTwin::SpatialDistribution::VesselLine( 10, glm::vec3( -6, 8, 0 ), glm::vec3( 6, 8, 0 ) );
+        auto vesselBottom = DigitalTwin::SpatialDistribution::VesselLine( 10, glm::vec3( -6, -8, 0 ), glm::vec3( 6, -8, 0 ) );
         vesselTop.insert( vesselTop.end(), vesselBottom.begin(), vesselBottom.end() );
 
         auto& endo = m_blueprint.AddAgentGroup( "EndothelialCells" )
-                         .SetCount( 30 )
+                         .SetCount( 20 )
                          .SetMorphology( DigitalTwin::MorphologyGenerator::CreateSphere( 1.0f ) )
                          .SetDistribution( vesselTop )
                          .SetColor( glm::vec4( 1.0f, 0.3f, 0.3f, 1.0f ) ) // Red
@@ -146,7 +148,7 @@ namespace Gaudi
                 /* dll4DecayRate        */ 0.1f,
                 /* notchInhibitionGain  */ 20.0f,
                 /* vegfr2BaseExpression */ 1.0f,
-                /* tipThreshold         */ 0.8f,
+                /* tipThreshold         */ 0.55f,
                 /* stalkThreshold       */ 0.3f } )
             .SetHz( 60.0f );
 
@@ -172,18 +174,7 @@ namespace Gaudi
             .SetHz( 60.0f )
             .SetRequiredCellType( static_cast<int>( DigitalTwin::CellType::TipCell ) );
 
-        // 8. CellCycle — O2-dependent proliferation; StalkCells (high O2) divide, TipCells barely grow
-        endo.AddBehaviour( DigitalTwin::BiologyGenerator::StandardCellCycle()
-                               .SetBaseDoublingTime( 15.0f / 3600.0f )
-                               .SetProliferationOxygenTarget( 40.0f )
-                               .SetArrestPressureThreshold( 15.0f )
-                               .SetHypoxiaOxygenThreshold( 1.0f )
-                               .SetNecrosisOxygenThreshold( 0.5f )
-                               .SetApoptosisRate( 0.0f )
-                               .Build() )
-            .SetHz( 60.0f );
-
-        // 9. JKR biomechanics — fills pressure buffer for next frame's CellCycle
+        // 8. JKR biomechanics — fills pressure buffer for next frame's CellCycle
         endo.AddBehaviour( DigitalTwin::BiomechanicsGenerator::JKR()
                                .SetYoungsModulus( 15.0f )
                                .SetPoissonRatio( 0.4f )
@@ -233,6 +224,194 @@ namespace Gaudi
         DT_INFO( "Gaudi Editor closing..." );
         m_engine.Shutdown();
     }
+    void Editor::SetupCellCycleDemo()
+    {
+        m_blueprint = DigitalTwin::SimulationBlueprint{};
+
+        // Small domain — easy to see everything
+        m_blueprint.SetName( "CellCycle Demo" );
+        m_blueprint.SetDomainSize( glm::vec3( 20.0f ), 2.0f );
+
+        m_blueprint.ConfigureSpatialPartitioning()
+            .SetMethod( DigitalTwin::SpatialPartitioningMethod::HashGrid )
+            .SetCellSize( 3.0f )
+            .SetMaxDensity( 64 )
+            .SetComputeHz( 60.0f );
+
+        // Oxygen: moderate initial level — will be consumed by tumor
+        m_blueprint.AddGridField( "Oxygen" )
+            .SetInitializer( DigitalTwin::GridInitializer::Constant( 40.0f ) )
+            .SetDiffusionCoefficient( 2.0f )
+            .SetDecayRate( 0.0f )
+            .SetComputeHz( 60.0f );
+
+        // 5 tumor cells in a tight cluster at origin
+        auto tumorPositions = DigitalTwin::SpatialDistribution::UniformInSphere( 5, 2.0f );
+
+        auto& tumor = m_blueprint.AddAgentGroup( "TumorCells" )
+                           .SetCount( 5 )
+                           .SetMorphology( DigitalTwin::MorphologyGenerator::CreateSphere( 1.5f ) )
+                           .SetDistribution( tumorPositions )
+                           .SetColor( glm::vec4( 0.2f, 0.85f, 0.3f, 1.0f ) ); // Green
+
+        // Brownian jitter — small, just for visual life
+        tumor.AddBehaviour( DigitalTwin::Behaviours::BrownianMotion{ 0.2f } ).SetHz( 60.0f );
+
+        // O2 consumption — aggressive, drives hypoxia quickly in small domain
+        tumor.AddBehaviour( DigitalTwin::Behaviours::ConsumeField{ "Oxygen", 30.0f } ).SetHz( 60.0f );
+
+        // CellCycle: division → hypoxia → necrosis
+        // Low diffusion + small domain means O2 depletes fast → visible lifecycle transitions
+        tumor
+            .AddBehaviour( DigitalTwin::BiologyGenerator::StandardCellCycle()
+                               .SetBaseDoublingTime( 4.0f / 3600.0f )  // Fast division to see it happen
+                               .SetProliferationOxygenTarget( 40.0f )
+                               .SetArrestPressureThreshold( 15.0f )
+                               .SetHypoxiaOxygenThreshold( 20.0f )     // Wide hypoxia window
+                               .SetNecrosisOxygenThreshold( 8.0f )     // Well below hypoxia
+                               .SetApoptosisRate( 0.0f )
+                               .Build() )
+            .SetHz( 60.0f );
+
+        // JKR biomechanics — cells push each other apart
+        tumor
+            .AddBehaviour( DigitalTwin::BiomechanicsGenerator::JKR()
+                               .SetYoungsModulus( 20.0f )
+                               .SetPoissonRatio( 0.4f )
+                               .SetAdhesionEnergy( 1.5f )
+                               .SetMaxInteractionRadius( 1.5f )
+                               .Build() )
+            .SetHz( 60.0f );
+
+        m_engine.SetBlueprint( m_blueprint );
+    }
+
+    void Editor::SetupAngiogenesisDemo()
+    {
+        m_blueprint = DigitalTwin::SimulationBlueprint{};
+
+        m_blueprint.SetName( "Angiogenesis Demo" );
+        m_blueprint.SetDomainSize( glm::vec3( 80.0f ), 2.0f );
+
+        m_blueprint.ConfigureSpatialPartitioning()
+            .SetMethod( DigitalTwin::SpatialPartitioningMethod::HashGrid )
+            .SetCellSize( 4.0f )
+            .SetMaxDensity( 64 )
+            .SetComputeHz( 60.0f );
+
+        // Oxygen — uniform, high enough that nothing goes hypoxic
+        m_blueprint.AddGridField( "Oxygen" )
+            .SetInitializer( DigitalTwin::GridInitializer::Constant( 50.0f ) )
+            .SetDiffusionCoefficient( 5.0f )
+            .SetDecayRate( 0.0f )
+            .SetComputeHz( 60.0f );
+
+        // VEGF — pre-seeded Gaussian so TipCells see a gradient from frame 1
+        // sigma=15 gives a wide cloud; vessels at y=±25 see ~18% of peak — enough gradient
+        m_blueprint.AddGridField( "VEGF" )
+            .SetInitializer( DigitalTwin::GridInitializer::Gaussian( glm::vec3( 0.0f ), 15.0f, 300.0f ) )
+            .SetDiffusionCoefficient( 1.5f )
+            .SetDecayRate( 0.003f )
+            .SetComputeHz( 60.0f );
+
+        // 5 hypoxic source cells spread at origin — continuously emit VEGF
+        std::vector<glm::vec4> sourcePositions = {
+            glm::vec4( -2.0f,  0.0f,  0.0f, 1.0f ),
+            glm::vec4(  2.0f,  0.0f,  0.0f, 1.0f ),
+            glm::vec4(  0.0f,  0.0f,  2.0f, 1.0f ),
+            glm::vec4(  0.0f,  2.0f,  0.0f, 1.0f ),
+            glm::vec4(  0.0f, -2.0f,  0.0f, 1.0f ),
+        };
+
+        auto& sources = m_blueprint.AddAgentGroup( "HypoxicCells" )
+                             .SetCount( 5 )
+                             .SetMorphology( DigitalTwin::MorphologyGenerator::CreateSphere( 1.2f ) )
+                             .SetDistribution( sourcePositions )
+                             .SetColor( glm::vec4( 0.3f, 0.0f, 0.8f, 1.0f ) ); // Purple
+
+        // VEGF secretion only while Hypoxic (lifecycleState=2) — stops automatically when O2 recovers
+        sources.AddBehaviour( DigitalTwin::Behaviours::SecreteField{ "VEGF", 300.0f, /*requiredLifecycleState=*/ 2 } ).SetHz( 60.0f );
+        sources.AddBehaviour( DigitalTwin::BiomechanicsGenerator::JKR()
+                                   .SetYoungsModulus( 20.0f )
+                                   .SetPoissonRatio( 0.4f )
+                                   .SetAdhesionEnergy( 1.5f )
+                                   .SetMaxInteractionRadius( 1.5f )
+                                   .Build() )
+            .SetHz( 60.0f );
+        // CellCycle: hypoxiaO2=55 > ambient O2(50) → cells transition to Hypoxic on frame 1.
+        // When perfusion after anastomosis raises local O2 above 55 → recover to Live → stop secreting.
+        sources.AddBehaviour( DigitalTwin::BiologyGenerator::StandardCellCycle()
+                                   .SetBaseDoublingTime( 1.0f )            // won't grow while Hypoxic
+                                   .SetProliferationOxygenTarget( 60.0f )
+                                   .SetArrestPressureThreshold( 999.0f )   // no pressure arrest
+                                   .SetHypoxiaOxygenThreshold( 55.0f )     // above ambient (50) → instant Hypoxic
+                                   .SetNecrosisOxygenThreshold( 1.0f )
+                                   .SetApoptosisRate( 0.0f )
+                                   .Build() )
+            .SetHz( 10.0f );
+
+        // Two vessel lines at y=±25, 8 cells each — farther from centre gives a clear VEGF gradient
+        // across the vessel; inner-most cell (x≈0) sees highest VEGF and wins the Notch competition
+        auto vesselTop    = DigitalTwin::SpatialDistribution::VesselLine( 8, glm::vec3( -7, 25, 0 ), glm::vec3( 7, 25, 0 ) );
+        auto vesselBottom = DigitalTwin::SpatialDistribution::VesselLine( 8, glm::vec3( -7, -25, 0 ), glm::vec3( 7, -25, 0 ) );
+        vesselTop.insert( vesselTop.end(), vesselBottom.begin(), vesselBottom.end() );
+
+        auto& endo = m_blueprint.AddAgentGroup( "EndothelialCells" )
+                         .SetCount( 16 )
+                         .SetMorphology( DigitalTwin::MorphologyGenerator::CreateSphere( 1.0f ) )
+                         .SetDistribution( vesselTop )
+                         .SetColor( glm::vec4( 1.0f, 0.3f, 0.3f, 1.0f ) )
+                         .AddCellTypeMorphology( static_cast<int>( DigitalTwin::CellType::TipCell ),   DigitalTwin::MorphologyGenerator::CreateSpikySphere( 1.0f, 1.35f ) )
+                         .AddCellTypeMorphology( static_cast<int>( DigitalTwin::CellType::StalkCell ), DigitalTwin::MorphologyGenerator::CreateCylinder( 0.6f, 2.2f ) );
+
+        // NotchDll4 — lateral inhibition picks 1 TipCell per vessel
+        // gain=100 + 20 sub-steps per frame: ODE runs 20 Jacobi iterations per frame,
+        // converging to a clear winner before chemotaxis displaces any cells
+        endo.AddBehaviour( DigitalTwin::Behaviours::NotchDll4{
+                /* dll4ProductionRate   */ 1.0f,
+                /* dll4DecayRate        */ 0.1f,
+                /* notchInhibitionGain  */ 100.0f,
+                /* vegfr2BaseExpression */ 1.0f,
+                /* tipThreshold         */ 0.55f,
+                /* stalkThreshold       */ 0.3f,
+                /* vegfFieldName        */ "VEGF",
+                /* subSteps             */ 20u } )
+            .SetHz( 60.0f );
+
+        // VesselSeed — seed initial vessel edges (8 cells per line → 7 edges per line)
+        endo.AddBehaviour( DigitalTwin::Behaviours::VesselSeed{ std::vector<uint32_t>{ 8u, 8u } } );
+
+        // Anastomosis — TipCell-TipCell fusion when the two sprouts meet at the centre
+        endo.AddBehaviour( DigitalTwin::Behaviours::Anastomosis{ /* contactDistance */ 3.0f } ).SetHz( 60.0f );
+
+        // Perfusion — StalkCells inject O2
+        endo.AddBehaviour( DigitalTwin::Behaviours::Perfusion{ "Oxygen", 4.0f } ).SetHz( 60.0f );
+
+        // CellCycle — StalkCells only: gap-filling division extends the vessel behind the TipCell
+        endo.AddBehaviour( DigitalTwin::BiologyGenerator::StandardCellCycle()
+                               .SetBaseDoublingTime( 6.0f / 3600.0f )
+                               .SetProliferationOxygenTarget( 40.0f )
+                               .SetArrestPressureThreshold( 15.0f )
+                               .SetHypoxiaOxygenThreshold( 5.0f )
+                               .SetNecrosisOxygenThreshold( 1.0f )
+                               .SetApoptosisRate( 0.0f )
+                               .Build() )
+            .SetHz( 10.0f )
+            .SetRequiredCellType( static_cast<int>( DigitalTwin::CellType::StalkCell ) );
+
+        // Chemotaxis toward VEGF — TipCells only; scaled for larger domain
+        endo.AddBehaviour( DigitalTwin::Behaviours::Chemotaxis{ "VEGF", 6.0f, 0.002f, 4.0f } )
+            .SetHz( 60.0f )
+            .SetRequiredCellType( static_cast<int>( DigitalTwin::CellType::TipCell ) );
+
+        // Brownian jitter — TipCells only (reduced to not swamp the directional signal)
+        endo.AddBehaviour( DigitalTwin::Behaviours::BrownianMotion{ 0.05f } )
+            .SetHz( 60.0f )
+            .SetRequiredCellType( static_cast<int>( DigitalTwin::CellType::TipCell ) );
+
+        m_engine.SetBlueprint( m_blueprint );
+    }
+
     void Editor::SetupChemotaxisDemo()
     {
         // Fresh blueprint — wipe any previous state

@@ -21,6 +21,7 @@
 #include "renderer/passes/BuildIndirectPass.h"
 #include "renderer/passes/GeometryPass.h"
 #include "renderer/passes/GridVisualizationPass.h"
+#include "renderer/passes/VesselVisualizationPass.h"
 
 // ImGui
 #include <GLFW/glfw3.h>
@@ -161,6 +162,13 @@ namespace DigitalTwin
             return Result::FAIL;
         }
 
+        m_vesselVisPass = CreateScope<VesselVisualizationPass>( m_device, m_resourceManager );
+        if( m_vesselVisPass->Initialize( VK_FORMAT_R8G8B8A8_UNORM, VK_FORMAT_D32_SFLOAT ) != Result::SUCCESS )
+        {
+            DT_ERROR( "Failed to initialize VesselVisualizationPass." );
+            return Result::FAIL;
+        }
+
         return Result::SUCCESS;
     }
 
@@ -194,6 +202,11 @@ namespace DigitalTwin
         {
             m_gridVisPass->Shutdown();
             m_gridVisPass.reset();
+        }
+        if( m_vesselVisPass )
+        {
+            m_vesselVisPass->Shutdown();
+            m_vesselVisPass.reset();
         }
 
         // 3. Cleanup ImGui
@@ -372,6 +385,18 @@ namespace DigitalTwin
 
                 if( profiler )
                     profiler->EndZone( cmd, flightIndex, "Grid Visualization Pass" );
+            }
+
+            // Vessel lines pass
+            if( m_vesselVisSettings.active && state->vesselEdgeBuffer.IsValid() )
+            {
+                if( profiler )
+                    profiler->BeginZone( cmd, flightIndex, "Vessel Visualization Pass" );
+
+                m_vesselVisPass->Execute( cmd, m_cameraUBOs[ flightIndex ], state, m_vesselVisSettings, flightIndex );
+
+                if( profiler )
+                    profiler->EndZone( cmd, flightIndex, "Vessel Visualization Pass" );
             }
             cmd->EndRendering();
         }

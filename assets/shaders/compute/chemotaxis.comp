@@ -58,6 +58,7 @@ void main()
 
     vec4 pos = inData.positions[globalIdx];
     if (pos.w == 0.0) { outData.positions[globalIdx] = pos; return; } // dead slot
+    if (phenotypes.data[globalIdx].lifecycleState >= 3u) { outData.positions[globalIdx] = pos; return; } // apoptotic/necrotic don't move
 
     vec3 displacement = vec3(0.0);
 

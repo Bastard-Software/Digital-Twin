@@ -59,6 +59,8 @@ namespace Gaudi
                     return "Perfusion: " + b.fieldName;
                 else if constexpr( std::is_same_v<T, DigitalTwin::Behaviours::Drain> )
                     return "Drain: " + b.fieldName;
+                else if constexpr( std::is_same_v<T, DigitalTwin::Behaviours::VesselSeed> )
+                    return "Vessel Seed";
                 else
                     return "Unknown";
             },

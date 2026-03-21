@@ -57,6 +57,12 @@ void main()
     if (reqLC >= 0 && phenotypes.data[globalIdx].lifecycleState != uint(reqLC)) return;
     if (reqCT >= 0 && phenotypes.data[globalIdx].cellType != uint(reqCT)) return;
 
+    // Dead cells don't move
+    if (phenotypes.data[globalIdx].lifecycleState >= 3u) {
+        outData.positions[globalIdx] = inData.positions[globalIdx];
+        return;
+    }
+
     // 1. READ from input buffer
     vec4 pos = inData.positions[globalIdx];
 

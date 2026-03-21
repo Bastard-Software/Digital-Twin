@@ -106,11 +106,21 @@ namespace Gaudi
                 {
                     changed |= ImGui::SliderFloat( "Dll4 Production Rate",   &b.dll4ProductionRate,   0.0f, 10.0f );
                     changed |= ImGui::SliderFloat( "Dll4 Decay Rate",        &b.dll4DecayRate,        0.0f, 1.0f, "%.3f" );
-                    changed |= ImGui::SliderFloat( "Notch Inhibition Gain",  &b.notchInhibitionGain,  0.0f, 10.0f );
+                    changed |= ImGui::SliderFloat( "Notch Inhibition Gain",  &b.notchInhibitionGain,  0.0f, 200.0f );
                     changed |= ImGui::SliderFloat( "VEGFR2 Base Expression", &b.vegfr2BaseExpression, 0.0f, 5.0f );
                     changed |= ImGui::SliderFloat( "Tip Threshold",          &b.tipThreshold,         0.0f, 1.0f );
                     changed |= ImGui::SliderFloat( "Stalk Threshold",        &b.stalkThreshold,       0.0f, 1.0f );
                     ImGui::TextDisabled( "stalkThreshold < tipThreshold required" );
+                    ImGui::BeginDisabled( live );
+                    int subSteps = static_cast<int>( b.subSteps );
+                    if( ImGui::SliderInt( "Sub-Steps", &subSteps, 1, 50 ) )
+                    {
+                        b.subSteps = static_cast<uint32_t>( subSteps );
+                        changed    = true;
+                    }
+                    ImGui::EndDisabled();
+                    if( live )
+                        ImGui::TextDisabled( "Sub-Steps requires Stop + Play to take effect" );
                 }
                 else if constexpr( std::is_same_v<T, DigitalTwin::Behaviours::Anastomosis> )
                 {
@@ -266,6 +276,25 @@ namespace Gaudi
         else
         {
             ImGui::TextDisabled( "Select an item in the Hierarchy" );
+        }
+
+        // Vessel visualization — always visible (allows pre-configuring before Play)
+        {
+            ImGui::Spacing();
+            ImGui::SeparatorText( "Vessel Network" );
+
+            DigitalTwin::VesselVisualizationSettings vesselVis = m_engine.GetVesselVisualization();
+            bool vesselChanged = false;
+
+            vesselChanged |= ImGui::Checkbox( "Show Vessel Lines", &vesselVis.active );
+
+            if( vesselVis.active )
+            {
+                vesselChanged |= ImGui::ColorEdit4( "Line Color", &vesselVis.lineColor.x );
+            }
+
+            if( vesselChanged )
+                m_engine.SetVesselVisualization( vesselVis );
         }
 
         ImGui::End();

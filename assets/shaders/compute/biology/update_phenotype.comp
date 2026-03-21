@@ -43,6 +43,9 @@ void main()
     // --- GPU-Driven: Skip unallocated / dead slots ---
     if(inAgents.positions[globalIdx].w == 0.0) return;
     
+    // Cell type filter: uParam0 = 0xFFFFFFFF means any cell type
+    if( pc.uParam0 != 0xFFFFFFFFu && outPhenotypes.data[globalIdx].cellType != pc.uParam0 ) return;
+
     uint  currentState = outPhenotypes.data[globalIdx].lifecycleState;
     float currentMass  = outPhenotypes.data[globalIdx].biomass;
     float pressure     = inPressures.pressures[globalIdx];
@@ -60,33 +63,41 @@ void main()
         localO2 = imageLoad(u_OxygenGrid, voxelCoord).r;
     }
 
-    // --- 2. Evaluate State Machine ---
+    // --- 2. Evaluate State Machine (sequential transitions) ---
 
-    // Necrosis
-    if(localO2 < pc.necrosisO2) 
-    {
-        outPhenotypes.data[globalIdx].lifecycleState = 4; // Necrotic
-        return;
+    if (currentState == 0u) {
+        // Live → Hypoxic or Quiescent (cannot skip to Necrotic)
+        if (localO2 < pc.hypoxiaO2) {
+            outPhenotypes.data[globalIdx].lifecycleState = 2; // Hypoxic
+            return;
+        }
+        if (pressure >= pc.arrestPressure) {
+            outPhenotypes.data[globalIdx].lifecycleState = 1; // Quiescent
+            return;
+        }
+    } else if (currentState == 1u) {
+        // Quiescent → Hypoxic if O2 drops, or back to Live
+        if (localO2 < pc.hypoxiaO2) {
+            outPhenotypes.data[globalIdx].lifecycleState = 2;
+            return;
+        }
+        if (pressure < pc.arrestPressure) {
+            outPhenotypes.data[globalIdx].lifecycleState = 0;
+        }
+        return; // Quiescent cells don't grow
+    } else if (currentState == 2u) {
+        // Hypoxic → Necrotic if O2 drops further, or recover to Live
+        if (localO2 < pc.necrosisO2) {
+            outPhenotypes.data[globalIdx].lifecycleState = 4; // Necrotic
+            return;
+        }
+        if (localO2 >= pc.hypoxiaO2) {
+            outPhenotypes.data[globalIdx].lifecycleState = 0; // Recovered
+        }
+        return; // Hypoxic cells don't grow
     }
 
-    // Starvation / Hypoxia Check
-    if(localO2 < pc.hypoxiaO2) {
-        outPhenotypes.data[globalIdx].lifecycleState = 2; // Hypoxic
-        return;
-    }
-
-    // Contact Inhibition
-    if(pressure >= pc.arrestPressure) 
-    {
-        outPhenotypes.data[globalIdx].lifecycleState = 1; // Quiescent
-        return;
-    }
-    
-    // If conditions are good, ensure state is Live
-    outPhenotypes.data[globalIdx].lifecycleState = 0; // Live
-
-    // --- 3. Biomass Accumulation ---
-    // Growth is modulated by available oxygen (Warburg effect simplification)
+    // --- 3. Biomass Accumulation (Live cells only) ---
     float o2Multiplier = clamp(localO2 / pc.targetO2, 0.0, 1.0);
     outPhenotypes.data[globalIdx].biomass = currentMass + (pc.growthRate * o2Multiplier * pc.dt);
 }

@@ -7,6 +7,7 @@
 #include "simulation/SimulationBlueprint.h"
 #include "simulation/SimulationValidator.h"
 #include <numeric>
+#include <random>
 #include <tuple>
 #include <volk.h>
 
@@ -622,6 +623,33 @@ namespace DigitalTwin
                 if( std::holds_alternative<Behaviours::BrownianMotion>( record.behaviour ) )
                 {
                     const auto&  brownian     = std::get<Behaviours::BrownianMotion>( record.behaviour );
+
+                    // Brownian always needs the phenotype buffer (dead-cell guard)
+                    if( !outState.phenotypeBuffer.IsValid() )
+                    {
+                        uint32_t globalCapacity = 0;
+                        for( const auto& g: blueprint.GetGroups() )
+                        {
+                            if( g.GetCount() == 0 )
+                                continue;
+                            uint32_t cap = 131072;
+                            while( cap < g.GetCount() )
+                                cap <<= 1;
+                            globalCapacity += cap;
+                        }
+                        size_t phenotypeSize     = globalCapacity * sizeof( uint32_t ) * 4;
+                        outState.phenotypeBuffer = m_resourceManager->CreateBuffer( { phenotypeSize, BufferType::STORAGE, "PhenotypeBuffer" } );
+                        struct PhenotypeData
+                        {
+                            uint32_t lifecycleState;
+                            float    biomass;
+                            float    timer;
+                            uint32_t cellType;
+                        };
+                        std::vector<PhenotypeData> initPhenotypes( globalCapacity, { 0, 0.5f, 0.0f, 0 } );
+                        m_streamingManager->UploadBufferImmediate( { { outState.phenotypeBuffer, initPhenotypes.data(), phenotypeSize, 0 } } );
+                    }
+
                     ShaderHandle shaderHandle = m_resourceManager->CreateShader( "shaders/compute/brownian.comp" );
 
                     ComputePipelineDesc compDesc;
@@ -637,10 +665,7 @@ namespace DigitalTwin
                     bg0->Bind( 0, m_resourceManager->GetBuffer( outState.agentBuffers[ 0 ] ) ); // readonly
                     bg0->Bind( 1, m_resourceManager->GetBuffer( outState.agentBuffers[ 1 ] ) ); // writeonly
                     bg0->Bind( 2, m_resourceManager->GetBuffer( outState.agentCountBuffer ) );
-                    if( outState.phenotypeBuffer.IsValid() )
-                        bg0->Bind( 3, m_resourceManager->GetBuffer( outState.phenotypeBuffer ) );
-                    else
-                        bg0->Bind( 3, m_resourceManager->GetBuffer( outState.agentBuffers[ 0 ] ) );
+                    bg0->Bind( 3, m_resourceManager->GetBuffer( outState.phenotypeBuffer ) );
                     bg0->Build();
 
                     // 2. Create Binding Group 1 (Read from 1, Write to 0)
@@ -649,10 +674,7 @@ namespace DigitalTwin
                     bg1->Bind( 0, m_resourceManager->GetBuffer( outState.agentBuffers[ 1 ] ) ); // readonly
                     bg1->Bind( 1, m_resourceManager->GetBuffer( outState.agentBuffers[ 0 ] ) ); // writeonly
                     bg1->Bind( 2, m_resourceManager->GetBuffer( outState.agentCountBuffer ) );
-                    if( outState.phenotypeBuffer.IsValid() )
-                        bg1->Bind( 3, m_resourceManager->GetBuffer( outState.phenotypeBuffer ) );
-                    else
-                        bg1->Bind( 3, m_resourceManager->GetBuffer( outState.agentBuffers[ 1 ] ) );
+                    bg1->Bind( 3, m_resourceManager->GetBuffer( outState.phenotypeBuffer ) );
                     bg1->Build();
 
                     ComputePushConstants pc{};
@@ -743,16 +765,15 @@ namespace DigitalTwin
                         uint32_t globalCapacity = 0;
                         for( const auto& g: blueprint.GetGroups() )
                         {
-                            uint32_t tc = g.GetCount() * 2;
-                            if( tc < 64 )
-                                tc = 64;
-                            uint32_t pc = 1;
-                            while( pc < tc )
-                                pc <<= 1;
-                            globalCapacity += pc;
+                            if( g.GetCount() == 0 )
+                                continue;
+                            uint32_t cap = 131072;
+                            while( cap < g.GetCount() )
+                                cap <<= 1;
+                            globalCapacity += cap;
                         }
 
-                        size_t phenotypeSize     = globalCapacity * 4 * sizeof( uint32_t );
+                        size_t phenotypeSize     = globalCapacity * sizeof( uint32_t ) * 4;
                         outState.phenotypeBuffer = m_resourceManager->CreateBuffer( { phenotypeSize, BufferType::STORAGE, "PhenotypeBuffer" } );
 
                         struct PhenotypeData
@@ -762,7 +783,7 @@ namespace DigitalTwin
                             float    timer;
                             uint32_t cellType;
                         };
-                        std::vector<PhenotypeData> initialPhenotypes( paddedCount, { 0, 0.5f, 0.0f, 0 } );
+                        std::vector<PhenotypeData> initialPhenotypes( globalCapacity, { 0, 0.5f, 0.0f, 0 } );
 
                         m_streamingManager->UploadBufferImmediate( { { outState.phenotypeBuffer, initialPhenotypes.data(), phenotypeSize, 0 } } );
                     }
@@ -820,12 +841,27 @@ namespace DigitalTwin
                     bgPheno1->Bind( 4, m_resourceManager->GetBuffer( outState.agentCountBuffer ) );
                     bgPheno1->Build();
 
+                    // Ensure vessel edge buffers exist — mitosis writes a new edge for each StalkCell division
+                    if( !outState.vesselEdgeBuffer.IsValid() )
+                    {
+                        struct VesselEdge { uint32_t agentA; uint32_t agentB; float dist; uint32_t flags; };
+                        outState.vesselEdgeBuffer = m_resourceManager->CreateBuffer(
+                            { paddedCount * sizeof( VesselEdge ), BufferType::STORAGE, "VesselEdgeBuffer" } );
+                        outState.vesselEdgeCountBuffer = m_resourceManager->CreateBuffer(
+                            { sizeof( uint32_t ), BufferType::STORAGE, "VesselEdgeCountBuffer" } );
+                        uint32_t zero = 0;
+                        m_streamingManager->UploadBufferImmediate(
+                            { { outState.vesselEdgeCountBuffer, &zero, sizeof( uint32_t ), 0 } } );
+                    }
+
                     // Create Binding Groups (Mitosis)
                     BindingGroup* bgMitosis0 = m_resourceManager->GetBindingGroup( m_resourceManager->CreateBindingGroup( mitosisPipeHandle, 0 ) );
                     bgMitosis0->Bind( 0, m_resourceManager->GetBuffer( outState.agentBuffers[ 0 ] ) );
                     bgMitosis0->Bind( 1, m_resourceManager->GetBuffer( outState.agentBuffers[ 1 ] ) );
                     bgMitosis0->Bind( 2, m_resourceManager->GetBuffer( outState.phenotypeBuffer ) );
                     bgMitosis0->Bind( 3, m_resourceManager->GetBuffer( outState.agentCountBuffer ) );
+                    bgMitosis0->Bind( 4, m_resourceManager->GetBuffer( outState.vesselEdgeBuffer ) );
+                    bgMitosis0->Bind( 5, m_resourceManager->GetBuffer( outState.vesselEdgeCountBuffer ) );
                     bgMitosis0->Build();
 
                     BindingGroup* bgMitosis1 = m_resourceManager->GetBindingGroup( m_resourceManager->CreateBindingGroup( mitosisPipeHandle, 0 ) );
@@ -833,6 +869,8 @@ namespace DigitalTwin
                     bgMitosis1->Bind( 1, m_resourceManager->GetBuffer( outState.agentBuffers[ 0 ] ) );
                     bgMitosis1->Bind( 2, m_resourceManager->GetBuffer( outState.phenotypeBuffer ) );
                     bgMitosis1->Bind( 3, m_resourceManager->GetBuffer( outState.agentCountBuffer ) );
+                    bgMitosis1->Bind( 4, m_resourceManager->GetBuffer( outState.vesselEdgeBuffer ) );
+                    bgMitosis1->Bind( 5, m_resourceManager->GetBuffer( outState.vesselEdgeCountBuffer ) );
                     bgMitosis1->Build();
 
                     // 4. Configure Push Constants
@@ -845,6 +883,7 @@ namespace DigitalTwin
                     phenoPC.fParam3              = cellCycle.necrosisO2;
                     phenoPC.fParam4              = cellCycle.hypoxiaO2;
                     phenoPC.fParam5              = cellCycle.apoptosisProbPerSec;
+                    phenoPC.uParam0              = ( record.requiredCellType < 0 ) ? 0xFFFFFFFFu : static_cast<uint32_t>( record.requiredCellType );
                     phenoPC.uParam1              = groupIndex;
 
                     ComputePushConstants mitosisPC = basePC;
@@ -900,15 +939,14 @@ namespace DigitalTwin
                             uint32_t globalCapacity = 0;
                             for( const auto& g: blueprint.GetGroups() )
                             {
-                                uint32_t tc = g.GetCount() * 2;
-                                if( tc < 64 )
-                                    tc = 64;
-                                uint32_t pc = 1;
-                                while( pc < tc )
-                                    pc <<= 1;
-                                globalCapacity += pc;
+                                if( g.GetCount() == 0 )
+                                    continue;
+                                uint32_t cap = 131072;
+                                while( cap < g.GetCount() )
+                                    cap <<= 1;
+                                globalCapacity += cap;
                             }
-                            size_t phenotypeSize     = globalCapacity * 4 * sizeof( uint32_t );
+                            size_t phenotypeSize     = globalCapacity * sizeof( uint32_t ) * 4;
                             outState.phenotypeBuffer = m_resourceManager->CreateBuffer( { phenotypeSize, BufferType::STORAGE, "PhenotypeBuffer" } );
                             struct PhenotypeData
                             {
@@ -1068,21 +1106,20 @@ namespace DigitalTwin
 
                     if( targetGrid )
                     {
-                        // Chemotaxis with requiredCellType needs the phenotype buffer to filter by cellType
-                        if( record.requiredCellType >= 0 && !outState.phenotypeBuffer.IsValid() )
+                        // Chemotaxis always needs the phenotype buffer (dead-cell guard + cellType filter)
+                        if( !outState.phenotypeBuffer.IsValid() )
                         {
                             uint32_t globalCapacity = 0;
                             for( const auto& g: blueprint.GetGroups() )
                             {
-                                uint32_t tc = g.GetCount() * 2;
-                                if( tc < 64 )
-                                    tc = 64;
-                                uint32_t pc = 1;
-                                while( pc < tc )
-                                    pc <<= 1;
-                                globalCapacity += pc;
+                                if( g.GetCount() == 0 )
+                                    continue;
+                                uint32_t cap = 131072;
+                                while( cap < g.GetCount() )
+                                    cap <<= 1;
+                                globalCapacity += cap;
                             }
-                            size_t phenotypeSize     = globalCapacity * 4 * sizeof( uint32_t );
+                            size_t phenotypeSize     = globalCapacity * sizeof( uint32_t ) * 4;
                             outState.phenotypeBuffer = m_resourceManager->CreateBuffer( { phenotypeSize, BufferType::STORAGE, "PhenotypeBuffer" } );
                             struct PhenotypeData
                             {
@@ -1176,8 +1213,14 @@ namespace DigitalTwin
                         size_t signalingSize    = globalCapacity * sizeof( SignalingData );
                         outState.signalingBuffer = m_resourceManager->CreateBuffer( { signalingSize, BufferType::STORAGE, "SignalingBuffer" } );
 
-                        // Initial state: dll4=0.5 (mid-range), vegfr2=1.0 (fully expressed)
-                        std::vector<SignalingData> initSignaling( globalCapacity, { 0.5f, 0.0f, 1.0f, 0.0f } );
+                        // Initial state: dll4=0.2 ± noise — all cells start BELOW tipThreshold (0.55)
+                        // so all vessel cells begin as StalkCells. The Turing-unstable ODE then
+                        // amplifies the noise asymmetry and selects exactly one TipCell per vessel.
+                        std::vector<SignalingData> initSignaling( globalCapacity, { 0.2f, 0.0f, 1.0f, 0.0f } );
+                        std::mt19937                          rng( 42 );
+                        std::uniform_real_distribution<float> noise( -0.15f, 0.15f );
+                        for( auto& s : initSignaling )
+                            s.dll4 = 0.2f + noise( rng );
                         m_streamingManager->UploadBufferImmediate( { { outState.signalingBuffer, initSignaling.data(), signalingSize, 0 } } );
                     }
 
@@ -1214,6 +1257,39 @@ namespace DigitalTwin
                     ComputePipelineHandle notchPipeHandle = m_resourceManager->CreatePipeline( notchDesc );
                     ComputePipeline*      notchPipe       = m_resourceManager->GetPipeline( notchPipeHandle );
 
+                    // VEGF texture at binding 6 — use real field or a 1×1×1 constant-1.0 dummy
+                    GridFieldState* vegfGrid   = nullptr;
+                    TextureHandle   dummyVEGF;
+                    glm::uvec4      notchGridSize{ 1u, 1u, 1u, 0u }; // w=0 → shader skips VEGF sampling
+
+                    if( !notch.vegfFieldName.empty() )
+                    {
+                        for( auto& grid: outState.gridFields )
+                            if( grid.name == notch.vegfFieldName ) { vegfGrid = &grid; break; }
+
+                        if( vegfGrid )
+                        {
+                            notchGridSize = glm::uvec4( vegfGrid->width, vegfGrid->height, vegfGrid->depth, 1u );
+                        }
+                        else
+                        {
+                            DT_WARN( "[SimulationBuilder] NotchDll4: VEGF field '{}' not found — running without VEGF gating", notch.vegfFieldName );
+                        }
+                    }
+
+                    if( !vegfGrid )
+                    {
+                        // Bind a 1×1×1 dummy filled with 1.0 so the descriptor is always satisfied
+                        TextureDesc dummyDesc{ 1, 1, 1, TextureType::Texture3D, VK_FORMAT_R32_SFLOAT,
+                                              TextureUsage::STORAGE | TextureUsage::TRANSFER_DST, "NotchVEGF_Dummy" };
+                        dummyVEGF  = m_resourceManager->CreateTexture( dummyDesc );
+                        float one  = 1.0f;
+                        m_streamingManager->UploadTextureImmediate( dummyVEGF, &one, sizeof( float ) );
+                    }
+
+                    auto vegfTex0 = vegfGrid ? vegfGrid->textures[ 0 ] : dummyVEGF;
+                    auto vegfTex1 = vegfGrid ? vegfGrid->textures[ 1 ] : dummyVEGF;
+
                     // Binding groups — ping-pong on agent read buffer; signaling/phenotype are single shared buffers
                     BindingGroup* bgNotch0 = m_resourceManager->GetBindingGroup( m_resourceManager->CreateBindingGroup( notchPipeHandle, 0 ) );
                     bgNotch0->Bind( 0, m_resourceManager->GetBuffer( outState.agentBuffers[ 0 ] ) );
@@ -1222,6 +1298,7 @@ namespace DigitalTwin
                     bgNotch0->Bind( 3, m_resourceManager->GetBuffer( outState.hashBuffer ) );
                     bgNotch0->Bind( 4, m_resourceManager->GetBuffer( outState.offsetBuffer ) );
                     bgNotch0->Bind( 5, m_resourceManager->GetBuffer( outState.agentCountBuffer ) );
+                    bgNotch0->Bind( 6, m_resourceManager->GetTexture( vegfTex0 ), VK_IMAGE_LAYOUT_GENERAL );
                     bgNotch0->Build();
 
                     BindingGroup* bgNotch1 = m_resourceManager->GetBindingGroup( m_resourceManager->CreateBindingGroup( notchPipeHandle, 0 ) );
@@ -1231,6 +1308,7 @@ namespace DigitalTwin
                     bgNotch1->Bind( 3, m_resourceManager->GetBuffer( outState.hashBuffer ) );
                     bgNotch1->Bind( 4, m_resourceManager->GetBuffer( outState.offsetBuffer ) );
                     bgNotch1->Bind( 5, m_resourceManager->GetBuffer( outState.agentCountBuffer ) );
+                    bgNotch1->Bind( 6, m_resourceManager->GetTexture( vegfTex1 ), VK_IMAGE_LAYOUT_GENERAL );
                     bgNotch1->Build();
 
                     // Push constants
@@ -1248,13 +1326,18 @@ namespace DigitalTwin
                     notchPC.uParam0     = offsetArraySize;
                     notchPC.uParam1     = groupIndex;
                     notchPC.domainSize  = glm::vec4( blueprint.GetDomainSize(), signalingRadius );
+                    notchPC.gridSize    = notchGridSize;
 
-                    glm::uvec3  notchDispatch( ( paddedCount + 255 ) / 256, 1, 1 );
-                    ComputeTask notchTask( notchPipe, bgNotch0, bgNotch1, record.targetHz, notchPC, notchDispatch );
-                    notchTask.SetTag( "notch" + tagBase );
-                    outState.computeGraph.AddTask( notchTask );
+                    glm::uvec3 notchDispatch( ( paddedCount + 255 ) / 256, 1, 1 );
+                    for( uint32_t step = 0; step < notch.subSteps; ++step )
+                    {
+                        ComputeTask notchTask( notchPipe, bgNotch0, bgNotch1, record.targetHz, notchPC, notchDispatch );
+                        notchTask.SetDtScale( 1.0f / static_cast<float>( notch.subSteps ) );
+                        notchTask.SetTag( "notch_" + std::to_string( step ) + tagBase );
+                        outState.computeGraph.AddTask( notchTask );
+                    }
 
-                    DT_INFO( "[SimulationBuilder] Compiled NotchDll4 for '{}' at {}Hz", group.GetName(), record.targetHz );
+                    DT_INFO( "[SimulationBuilder] Compiled NotchDll4 for '{}' at {}Hz ({} sub-steps)", group.GetName(), record.targetHz, notch.subSteps );
                 }
                 if( std::holds_alternative<Behaviours::Anastomosis>( record.behaviour ) )
                 {
@@ -1407,6 +1490,47 @@ namespace DigitalTwin
 
                     DT_INFO( "[SimulationBuilder] Compiled Anastomosis for '{}' at {}Hz", group.GetName(), record.targetHz );
                 }
+                if( std::holds_alternative<Behaviours::VesselSeed>( record.behaviour ) )
+                {
+                    const auto& vesselSeed = std::get<Behaviours::VesselSeed>( record.behaviour );
+
+                    struct VesselEdge
+                    {
+                        uint32_t agentA;
+                        uint32_t agentB;
+                        float    dist;
+                        uint32_t flags;
+                    };
+
+                    // Allocate vessel edge buffers if not already allocated by Anastomosis
+                    if( !outState.vesselEdgeBuffer.IsValid() )
+                    {
+                        size_t edgeBufferSize      = paddedCount * sizeof( VesselEdge );
+                        outState.vesselEdgeBuffer  = m_resourceManager->CreateBuffer( { edgeBufferSize, BufferType::STORAGE, "VesselEdgeBuffer" } );
+                        outState.vesselEdgeCountBuffer =
+                            m_resourceManager->CreateBuffer( { sizeof( uint32_t ), BufferType::STORAGE, "VesselEdgeCountBuffer" } );
+                    }
+
+                    // Build seed edges: consecutive pairs within each contiguous segment
+                    std::vector<VesselEdge> seedEdges;
+                    uint32_t               slotOffset = 0;
+                    for( uint32_t segCount : vesselSeed.segmentCounts )
+                    {
+                        for( uint32_t i = 0; i + 1 < segCount; ++i )
+                            seedEdges.push_back( { currentOffset + slotOffset + i, currentOffset + slotOffset + i + 1, 0.0f, 0u } );
+                        slotOffset += segCount;
+                    }
+
+                    // Upload edges at byte offset 0; Anastomosis will append after these at runtime
+                    if( !seedEdges.empty() )
+                        m_streamingManager->UploadBufferImmediate(
+                            { { outState.vesselEdgeBuffer, seedEdges.data(), seedEdges.size() * sizeof( VesselEdge ), 0 } } );
+
+                    uint32_t edgeCount = static_cast<uint32_t>( seedEdges.size() );
+                    m_streamingManager->UploadBufferImmediate( { { outState.vesselEdgeCountBuffer, &edgeCount, sizeof( uint32_t ) } } );
+
+                    DT_INFO( "[SimulationBuilder] VesselSeed: {} edges seeded for '{}'", edgeCount, group.GetName() );
+                }
                 behaviourIndex++;
             }
             currentOffset += paddedCount;
@@ -1522,18 +1646,21 @@ namespace DigitalTwin
                 }
                 else if( std::holds_alternative<Behaviours::NotchDll4>( record.behaviour ) )
                 {
-                    ComputeTask* task = state.computeGraph.FindTask( "notch" + tagBase );
-                    if( task )
+                    const auto& notch = std::get<Behaviours::NotchDll4>( record.behaviour );
+                    for( uint32_t step = 0; step < notch.subSteps; ++step )
                     {
-                        const auto&          notch = std::get<Behaviours::NotchDll4>( record.behaviour );
-                        ComputePushConstants pc    = task->GetPushConstants();
-                        pc.fParam0                 = notch.dll4ProductionRate;
-                        pc.fParam1                 = notch.dll4DecayRate;
-                        pc.fParam2                 = notch.notchInhibitionGain;
-                        pc.fParam3                 = notch.vegfr2BaseExpression;
-                        pc.fParam4                 = notch.tipThreshold;
-                        pc.fParam5                 = notch.stalkThreshold;
-                        task->UpdatePushConstants( pc );
+                        ComputeTask* task = state.computeGraph.FindTask( "notch_" + std::to_string( step ) + tagBase );
+                        if( task )
+                        {
+                            ComputePushConstants pc = task->GetPushConstants();
+                            pc.fParam0              = notch.dll4ProductionRate;
+                            pc.fParam1              = notch.dll4DecayRate;
+                            pc.fParam2              = notch.notchInhibitionGain;
+                            pc.fParam3              = notch.vegfr2BaseExpression;
+                            pc.fParam4              = notch.tipThreshold;
+                            pc.fParam5              = notch.stalkThreshold;
+                            task->UpdatePushConstants( pc );
+                        }
                     }
                 }
                 else if( std::holds_alternative<Behaviours::Anastomosis>( record.behaviour ) )

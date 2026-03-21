@@ -1,6 +1,7 @@
 #pragma once
 #include <string>
 #include <variant>
+#include <vector>
 
 namespace DigitalTwin::Behaviours
 {
@@ -62,17 +63,27 @@ namespace DigitalTwin::Behaviours
 
     struct NotchDll4
     {
-        float dll4ProductionRate   = 1.0f;
-        float dll4DecayRate        = 0.1f;
-        float notchInhibitionGain  = 1.0f;
-        float vegfr2BaseExpression = 1.0f;
-        float tipThreshold         = 0.8f;
-        float stalkThreshold       = 0.3f;
+        float       dll4ProductionRate   = 1.0f;
+        float       dll4DecayRate        = 0.1f;
+        float       notchInhibitionGain  = 1.0f;
+        float       vegfr2BaseExpression = 1.0f;
+        float       tipThreshold         = 0.8f;
+        float       stalkThreshold       = 0.3f;
+        std::string vegfFieldName;  // empty = no VEGF gating (vegfr2 unmodulated)
+        uint32_t    subSteps             = 1;   // ODE iterations per frame — more = faster convergence
     };
 
     struct Anastomosis
     {
         float contactDistance = 3.0f;
+    };
+
+    // Seeds initial vessel edges between consecutive agents within each named segment.
+    // Build-time only — no GPU shader. Segments are contiguous slices of the group's agent array.
+    // e.g. segmentCounts={5,5} on a 10-cell group seeds 4+4=8 edges covering two vessel lines.
+    struct VesselSeed
+    {
+        std::vector<uint32_t> segmentCounts;
     };
 
     // Vessel injects a substance into the field (O2, glucose). Rate > 0.
@@ -104,7 +115,8 @@ namespace DigitalTwin
         Behaviours::NotchDll4,
         Behaviours::Anastomosis,
         Behaviours::Perfusion,
-        Behaviours::Drain>;
+        Behaviours::Drain,
+        Behaviours::VesselSeed>;
 
     // Wrapper to attach execution parameters (like frequency) to a behaviour
     struct BehaviourRecord

@@ -30,7 +30,7 @@ namespace DigitalTwin
         if( m_timeAccumulator >= threshold )
         {
             m_timeAccumulator = std::fmod( m_timeAccumulator, threshold );
-            m_pc.dt           = threshold; // Ensure physics step is deterministic
+            m_pc.dt           = threshold * m_dtScale; // Ensure physics step is deterministic
             return true;
         }
         return false;

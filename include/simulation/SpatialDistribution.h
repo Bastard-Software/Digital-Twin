@@ -28,6 +28,16 @@ namespace DigitalTwin
          * @param center The central coordinate of the distribution.
          */
         static std::vector<glm::vec4> UniformInBox( uint32_t count, const glm::vec3& extents, const glm::vec3& center = glm::vec3( 0.0f ) );
+
+        /**
+         * @brief Distributes agents evenly along a line segment from start to end.
+         * @param count Number of agents to place.
+         * @param start The start point of the line segment.
+         * @param end The end point of the line segment.
+         * @param spacing If > 0, fixed distance between agents (count may be capped by line length). If 0, evenly spaced.
+         * @return std::vector<glm::vec4> (xyz = position, w = 1.0f status flag)
+         */
+        static std::vector<glm::vec4> VesselLine( uint32_t count, const glm::vec3& start, const glm::vec3& end, float spacing = 0.0f );
     };
 
 } // namespace DigitalTwin

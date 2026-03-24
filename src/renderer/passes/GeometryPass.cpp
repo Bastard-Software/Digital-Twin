@@ -86,6 +86,8 @@ namespace DigitalTwin
             bg->Bind( 4, m_resourceManager->GetBuffer( scene->phenotypeBuffer ) );
         else
             bg->Bind( 4, m_resourceManager->GetBuffer( scene->GetAgentReadBuffer() ) );
+        // Binding 5: reorder buffer — maps draw-command instance indices to global agent indices
+        bg->Bind( 5, m_resourceManager->GetBuffer( scene->agentReorderBuffer ) );
         bg->Build();
 
         GraphicsPipeline* pipeline = m_resourceManager->GetPipeline( m_pipeline );

@@ -1,0 +1,142 @@
+#version 460
+layout(local_size_x = 256) in;
+
+layout(push_constant) uniform PushConstants {
+    float dt;
+    float totalTime;
+    float dll4ProductionRate;   // fParam0
+    float dll4DecayRate;        // fParam1
+    float notchInhibitionGain;  // fParam2
+    float vegfr2BaseExpression; // fParam3
+    float tipThreshold;         // fParam4
+    float stalkThreshold;       // fParam5
+    uint  offset;
+    uint  maxCapacity;
+    uint  offsetArraySize;      // uParam0 -- hash grid slot count
+    uint  grpNdx;               // uParam1 -- group index for agent count lookup
+    vec4  domainSize;           // .xyz = domain, .w = signalingRadius
+    uvec4 gridSize;             // unused
+} pc;
+
+layout(std140, binding = 0) readonly buffer InputAgents { vec4 positions[]; } agents;
+
+struct SignalingData {
+    float dll4;
+    float nicd;
+    float vegfr2;
+    float pad;
+};
+layout(std430, binding = 1) buffer Signaling { SignalingData data[]; } signaling;
+
+struct PhenotypeData {
+    uint  lifecycleState;
+    float biomass;
+    float timer;
+    uint  cellType;
+};
+layout(std430, binding = 2) buffer Phenotypes { PhenotypeData data[]; } phenotypes;
+
+struct AgentHash { uint hash; uint agentIndex; };
+layout(std430, binding = 3) readonly buffer Hashes  { AgentHash data[]; } sortedHashes;
+layout(std430, binding = 4) readonly buffer Offsets { uint startIndices[]; } cellOffsets;
+layout(std430, binding = 5) readonly buffer CounterBuffer { uint counts[]; } counters;
+layout(set = 0, binding = 6, r32f) uniform readonly image3D u_VEGF;
+
+// World position → voxel coordinate for VEGF texture
+ivec3 toVoxel(vec3 worldPos) {
+    vec3 n = clamp((worldPos + pc.domainSize.xyz * 0.5) / pc.domainSize.xyz, 0.0, 1.0);
+    return ivec3(n * vec3(pc.gridSize.xyz));
+}
+
+uint hashPos(ivec3 cell) {
+    const uint p1 = 73856093; const uint p2 = 19349663; const uint p3 = 83492791;
+    return (uint(cell.x) * p1) ^ (uint(cell.y) * p2) ^ (uint(cell.z) * p3);
+}
+
+void main() {
+    uint idx = gl_GlobalInvocationID.x;
+    if (idx >= pc.maxCapacity) return;
+    if (idx >= counters.counts[pc.grpNdx]) return;
+
+    uint globalIdx = pc.offset + idx;
+
+    vec4 myData = agents.positions[globalIdx];
+    if (myData.w == 0.0) return; // dead slot
+
+    // Skip if necrotic or pending removal (lifecycleState >= 3)
+    if (phenotypes.data[globalIdx].lifecycleState >= 3u) return;
+
+    // Skip PhalanxCells — quiescent ECs do not participate in Notch-Dll4 lateral inhibition
+    if (phenotypes.data[globalIdx].cellType == 3u) return;
+
+    vec3  myPos           = myData.xyz;
+    float signalingRadius = pc.domainSize.w;
+    float cellSize        = signalingRadius * 2.0;
+
+    ivec3 myCell = ivec3(floor(myPos / cellSize));
+
+    // Accumulate Dll4 from juxtacrine neighbors (27-cell neighborhood in spatial hash)
+    float sumNeighborDll4 = 0.0;
+    int   neighborCount   = 0;
+    for (int z = -1; z <= 1; z++) {
+        for (int y = -1; y <= 1; y++) {
+            for (int x = -1; x <= 1; x++) {
+                uint neighborHash = hashPos(myCell + ivec3(x, y, z));
+                uint offsetIdx    = neighborHash % pc.offsetArraySize;
+
+                uint startIdx = cellOffsets.startIndices[offsetIdx];
+                if (startIdx == 0xFFFFFFFF) continue;
+
+                for (uint i = startIdx; i < pc.maxCapacity; i++) {
+                    if (sortedHashes.data[i].hash != neighborHash) break;
+
+                    uint neighborAgentIdx = sortedHashes.data[i].agentIndex;
+                    if (neighborAgentIdx == globalIdx) continue;
+
+                    vec4 neighborPos = agents.positions[neighborAgentIdx];
+                    if (neighborPos.w == 0.0) continue;
+
+                    float dist = length(myPos - neighborPos.xyz);
+                    if (dist < signalingRadius * 2.0) {
+                        sumNeighborDll4 += signaling.data[neighborAgentIdx].dll4;
+                        neighborCount++;
+                    }
+                }
+            }
+        }
+    }
+
+    // VEGF gates VEGFR2 via Michaelis-Menten saturation: vegfr2BaseExpression is EC50.
+    // When VEGF field is not bound (gridSize.w=0), vegfGating=1.0 → same as unmodulated.
+    float vegfGating = 1.0;
+    if (pc.gridSize.w > 0u) {
+        ivec3 voxel = toVoxel(myPos);
+        voxel = clamp(voxel, ivec3(0), ivec3(pc.gridSize.xyz) - 1);
+        float localVEGF = imageLoad(u_VEGF, voxel).r;
+        vegfGating = localVEGF / (localVEGF + pc.vegfr2BaseExpression);
+    }
+
+    float dll4          = signaling.data[globalIdx].dll4;
+    float nicd          = signaling.data[globalIdx].nicd;
+    float meanNeighborD = neighborCount > 0 ? sumNeighborDll4 / float(neighborCount) : 0.0;
+
+    // 2-variable Notch-Delta ODE (Euler step)
+    // NICD: fast variable activated by mean neighbor Dll4, decays 10× faster than Dll4.
+    // This creates the indirect inhibition loop: neighbor-Dll4 → NICD → suppresses own Dll4.
+    float nicdDecay = pc.dll4DecayRate * 10.0;
+    float newNicd   = clamp(nicd + pc.dt * (meanNeighborD - nicdDecay * nicd), 0.0, 1.0);
+
+    // Dll4: production inhibited by own NICD (Hill n=2 creates bistability + Turing instability)
+    // Hill n=2 makes the symmetric homogeneous state UNSTABLE, driving spontaneous differentiation.
+    float vegfr2  = vegfGating / (1.0 + pc.notchInhibitionGain * newNicd * newNicd);
+    float newDll4 = clamp(dll4 + pc.dt * (pc.dll4ProductionRate * vegfr2 - pc.dll4DecayRate * dll4), 0.0, 1.0);
+
+    signaling.data[globalIdx].nicd = newNicd;
+    signaling.data[globalIdx].dll4 = newDll4;
+
+    // Write cell type based on Dll4 threshold
+    if (newDll4 > pc.tipThreshold)
+        phenotypes.data[globalIdx].cellType = 1u; // TipCell
+    else
+        phenotypes.data[globalIdx].cellType = 2u; // StalkCell
+}

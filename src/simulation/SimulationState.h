@@ -43,6 +43,22 @@ namespace DigitalTwin
         BufferHandle agentCountBuffer;
         BufferHandle phenotypeBuffer;
 
+        // Angiogenesis signaling (Notch-Dll4 pathway state per agent)
+        BufferHandle signalingBuffer;
+
+        // Anastomosis — vessel edge graph
+        BufferHandle vesselEdgeBuffer;       // VesselEdge[paddedCount]: {agentA, agentB, dist, flags}
+        BufferHandle vesselEdgeCountBuffer;  // uint32_t: count of recorded edges
+
+        // Vessel connected components — uint32_t label per agent, labels[i]=i initially
+        BufferHandle vesselComponentBuffer;
+
+        // Multi-mesh rendering — per-cellType draw commands
+        BufferHandle agentReorderBuffer;  // uint32_t per reorder slot: maps instance → agent index
+        BufferHandle drawMetaBuffer;      // DrawMeta per draw command: {groupIndex, targetCellType, groupOffset, groupCapacity}
+        uint32_t     drawCommandCount = 0;
+        uint32_t     totalPaddedAgents = 0;
+
         // Biomechanics
         BufferHandle hashBuffer;
         BufferHandle offsetBuffer;

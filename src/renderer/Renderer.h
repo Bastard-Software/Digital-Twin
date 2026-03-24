@@ -14,6 +14,7 @@ namespace DigitalTwin
     class BuildIndirectPass;
     class GeometryPass;
     class GridVisualizationPass;
+    class VesselVisualizationPass;
     class Scene;
     class Camera;
 
@@ -75,6 +76,9 @@ namespace DigitalTwin
         void                             SetGridVisualization( const GridVisualizationSettings& settings ) { m_gridVisSettings = settings; }
         const GridVisualizationSettings& GetGridVisualization() const { return m_gridVisSettings; }
 
+        void                               SetVesselVisualization( const VesselVisualizationSettings& settings ) { m_vesselVisSettings = settings; }
+        const VesselVisualizationSettings& GetVesselVisualization() const { return m_vesselVisSettings; }
+
     private:
         Device*           m_device;
         Swapchain*        m_swapchain;
@@ -82,12 +86,14 @@ namespace DigitalTwin
         StreamingManager* m_streamingManager;
 
         // Settings
-        GridVisualizationSettings m_gridVisSettings;
+        GridVisualizationSettings   m_gridVisSettings;
+        VesselVisualizationSettings m_vesselVisSettings;
 
         // Sub-systems / Passes
         Scope<BuildIndirectPass>     m_buildIndirectPass;
         Scope<GeometryPass>          m_geometryPass;
-        Scope<GridVisualizationPass> m_gridVisPass;
+        Scope<GridVisualizationPass>   m_gridVisPass;
+        Scope<VesselVisualizationPass> m_vesselVisPass;
 
         // --- Per-Frame Resources ---
         static const uint32_t FRAMES_IN_FLIGHT = 2;

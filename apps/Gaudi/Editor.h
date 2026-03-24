@@ -26,6 +26,8 @@ namespace Gaudi
     private:
         void SetupInitialBlueprint();
         void SetupChemotaxisDemo();
+        void SetupCellCycleDemo();
+        void SetupAngiogenesisDemo();
 
     private:
         DigitalTwin::DigitalTwin                  m_engine;

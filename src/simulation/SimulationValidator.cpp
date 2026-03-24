@@ -122,14 +122,27 @@ namespace DigitalTwin
                                                  "'. Available fields: " + availableFields );
                         }
 
-                        if constexpr( std::is_same_v<T, Behaviours::Perfusion> )
+                        if constexpr( std::is_same_v<T, Behaviours::PhalanxActivation> )
                         {
+                            if( behaviour.vegfFieldName.empty() )
+                                result.AddError( "AgentGroup '" + group.GetName() +
+                                                 "': PhalanxActivation vegfFieldName must not be empty" );
+                            else if( declaredFields.find( behaviour.vegfFieldName ) == declaredFields.end() )
+                                result.AddError( "AgentGroup '" + group.GetName() +
+                                                 "': PhalanxActivation references unknown field '" + behaviour.vegfFieldName +
+                                                 "'. Available fields: " + availableFields );
+                        }
+
+                        if constexpr( std::is_same_v<T, Behaviours::Perfusion> ||
+                                      std::is_same_v<T, Behaviours::Drain> )
+                        {
+                            const std::string typeName = std::is_same_v<T, Behaviours::Perfusion> ? "Perfusion" : "Drain";
                             if( behaviour.fieldName.empty() )
                                 result.AddError( "AgentGroup '" + group.GetName() +
-                                                 "': Perfusion fieldName must not be empty" );
+                                                 "': " + typeName + " fieldName must not be empty" );
                             else if( declaredFields.find( behaviour.fieldName ) == declaredFields.end() )
                                 result.AddError( "AgentGroup '" + group.GetName() +
-                                                 "': Perfusion references unknown field '" + behaviour.fieldName +
+                                                 "': " + typeName + " references unknown field '" + behaviour.fieldName +
                                                  "'. Available fields: " + availableFields );
                         }
                     },
@@ -226,6 +239,16 @@ namespace DigitalTwin
                                                  "': Chemotaxis maxVelocity must be > 0" );
                         }
 
+                        if constexpr( std::is_same_v<T, Behaviours::PhalanxActivation> )
+                        {
+                            if( behaviour.activationThreshold <= 0.0f )
+                                result.AddError( "AgentGroup '" + group.GetName() + "': PhalanxActivation activationThreshold must be > 0" );
+                            if( behaviour.deactivationThreshold < 0.0f )
+                                result.AddError( "AgentGroup '" + group.GetName() + "': PhalanxActivation deactivationThreshold must be >= 0" );
+                            if( behaviour.deactivationThreshold >= behaviour.activationThreshold )
+                                result.AddError( "AgentGroup '" + group.GetName() + "': PhalanxActivation deactivationThreshold must be < activationThreshold" );
+                        }
+
                         if constexpr( std::is_same_v<T, Behaviours::NotchDll4> )
                         {
                             if( behaviour.dll4ProductionRate <= 0.0f )
@@ -238,6 +261,8 @@ namespace DigitalTwin
                                 result.AddError( "AgentGroup '" + group.GetName() + "': NotchDll4 vegfr2BaseExpression must be > 0" );
                             if( behaviour.tipThreshold <= behaviour.stalkThreshold )
                                 result.AddError( "AgentGroup '" + group.GetName() + "': NotchDll4 tipThreshold must be > stalkThreshold" );
+                            if( behaviour.subSteps < 1 )
+                                result.AddError( "AgentGroup '" + group.GetName() + "': NotchDll4 subSteps must be >= 1" );
                         }
 
                         if constexpr( std::is_same_v<T, Behaviours::Anastomosis> )
@@ -246,10 +271,20 @@ namespace DigitalTwin
                                 result.AddError( "AgentGroup '" + group.GetName() + "': Anastomosis contactDistance must be > 0" );
                         }
 
-                        if constexpr( std::is_same_v<T, Behaviours::Perfusion> )
+                        if constexpr( std::is_same_v<T, Behaviours::VesselSpring> )
                         {
-                            if( behaviour.baseFlowRate <= 0.0f )
-                                result.AddError( "AgentGroup '" + group.GetName() + "': Perfusion baseFlowRate must be > 0" );
+                            if( behaviour.springStiffness <= 0.0f )
+                                result.AddError( "AgentGroup '" + group.GetName() + "': VesselSpring springStiffness must be > 0" );
+                            if( behaviour.restingLength <= 0.0f )
+                                result.AddError( "AgentGroup '" + group.GetName() + "': VesselSpring restingLength must be > 0" );
+                        }
+
+                        if constexpr( std::is_same_v<T, Behaviours::Perfusion> ||
+                                      std::is_same_v<T, Behaviours::Drain> )
+                        {
+                            const std::string typeName = std::is_same_v<T, Behaviours::Perfusion> ? "Perfusion" : "Drain";
+                            if( behaviour.rate <= 0.0f )
+                                result.AddError( "AgentGroup '" + group.GetName() + "': " + typeName + " rate must be > 0" );
                         }
                     },
                     record.behaviour );

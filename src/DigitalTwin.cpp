@@ -949,6 +949,10 @@ namespace DigitalTwin
             gridSettings.active = false;
             m_impl->m_renderer->SetGridVisualization( gridSettings );
 
+            auto vesselSettings   = m_impl->m_renderer->GetVesselVisualization();
+            vesselSettings.active = false;
+            m_impl->m_renderer->SetVesselVisualization( vesselSettings );
+
             // Destroy GPU buffers
             if( m_impl->m_simulationState.IsValid() )
             {
@@ -1000,6 +1004,20 @@ namespace DigitalTwin
         if( m_impl->m_renderer )
             return m_impl->m_renderer->GetGridVisualization();
         static GridVisualizationSettings def;
+        return def;
+    }
+
+    void DigitalTwin::SetVesselVisualization( const VesselVisualizationSettings& settings )
+    {
+        if( m_impl->m_renderer )
+            m_impl->m_renderer->SetVesselVisualization( settings );
+    }
+
+    const VesselVisualizationSettings& DigitalTwin::GetVesselVisualization() const
+    {
+        if( m_impl->m_renderer )
+            return m_impl->m_renderer->GetVesselVisualization();
+        static VesselVisualizationSettings def;
         return def;
     }
 

@@ -57,9 +57,25 @@ namespace DigitalTwin
 
         BindingGroup* bg = m_resourceManager->GetBindingGroup( m_bindingGroups[ flightIndex ] );
 
-        // 1. Bind the simulation's CountBuffer (ReadOnly) and renderer's IndirectBuffer (Write)
+        // Bind all 6 buffers for the multi-mesh build_indirect shader
         bg->Bind( 0, m_resourceManager->GetBuffer( scene->agentCountBuffer ) );
         bg->Bind( 1, m_resourceManager->GetBuffer( scene->indirectCmdBuffer ) );
+
+        // Phenotype buffer (binding 2) — fall back to agent buffer if no phenotypes
+        if( scene->phenotypeBuffer.IsValid() )
+            bg->Bind( 2, m_resourceManager->GetBuffer( scene->phenotypeBuffer ) );
+        else
+            bg->Bind( 2, m_resourceManager->GetBuffer( scene->GetAgentReadBuffer() ) );
+
+        // Reorder buffer (binding 3)
+        bg->Bind( 3, m_resourceManager->GetBuffer( scene->agentReorderBuffer ) );
+
+        // Draw meta buffer (binding 4)
+        bg->Bind( 4, m_resourceManager->GetBuffer( scene->drawMetaBuffer ) );
+
+        // Agent positions (binding 5) — for alive check
+        bg->Bind( 5, m_resourceManager->GetBuffer( scene->GetAgentReadBuffer() ) );
+
         bg->Build();
 
         ComputePipeline* pipeline = m_resourceManager->GetPipeline( m_pipeline );
@@ -67,40 +83,72 @@ namespace DigitalTwin
         cmd->SetPipeline( pipeline );
         cmd->SetBindingGroup( bg, pipeline->GetLayout(), VK_PIPELINE_BIND_POINT_COMPUTE );
 
-        // 2. Local Push Constants to match the standardized 80-byte block
+        // Standard 80-byte push constant block
         struct UpdateIndirectPC
         {
             float    dt, totalTime, fParam0, fParam1, fParam2, fParam3, fParam4, fParam5;
             uint32_t offset, maxCapacity, uParam0, grpNdx;
             float    domainSize[ 4 ];
             uint32_t gridSize[ 4 ];
-        } pc{};
+        };
 
-        pc.grpNdx = scene->drawCount; // Number of groups (Draw Commands) to update
+        // --- Dispatch 1: RESET — zero all instanceCounts ---
+        UpdateIndirectPC resetPC{};
+        resetPC.grpNdx = scene->drawCount;
+        resetPC.uParam0 = 0; // reset mode
 
-        cmd->PushConstants( pipeline->GetLayout(), VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof( UpdateIndirectPC ), &pc );
+        cmd->PushConstants( pipeline->GetLayout(), VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof( UpdateIndirectPC ), &resetPC );
+        cmd->Dispatch( ( scene->drawCount + 255 ) / 256, 1, 1 );
 
-        // 3. Dispatch the compute shader
-        uint32_t groupX = ( scene->drawCount + 63 ) / 64;
-        cmd->Dispatch( groupX, 1, 1 );
+        // Barrier: reset writes must complete before classify reads
+        VkMemoryBarrier2 computeBarrier  = { VK_STRUCTURE_TYPE_MEMORY_BARRIER_2 };
+        computeBarrier.srcStageMask      = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT;
+        computeBarrier.srcAccessMask     = VK_ACCESS_2_SHADER_WRITE_BIT;
+        computeBarrier.dstStageMask      = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT;
+        computeBarrier.dstAccessMask     = VK_ACCESS_2_SHADER_READ_BIT | VK_ACCESS_2_SHADER_WRITE_BIT;
 
-        // 4. Crucial Memory Barrier:
-        // Ensure that the compute shader has finished writing to the IndirectCmdBuffer
-        // BEFORE the upcoming GeometryPass tries to read from it for the draw call!
+        VkDependencyInfo midDep         = { VK_STRUCTURE_TYPE_DEPENDENCY_INFO };
+        midDep.memoryBarrierCount       = 1;
+        midDep.pMemoryBarriers          = &computeBarrier;
+        cmd->PipelineBarrier( &midDep );
+
+        // --- Dispatch 2: CLASSIFY — scatter agents into reorder buffer ---
+        UpdateIndirectPC classifyPC{};
+        classifyPC.grpNdx      = scene->drawCount;
+        classifyPC.maxCapacity = scene->totalPaddedAgents;
+        classifyPC.uParam0     = 1; // classify mode
+
+        cmd->PushConstants( pipeline->GetLayout(), VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof( UpdateIndirectPC ), &classifyPC );
+        cmd->Dispatch( ( scene->totalPaddedAgents + 255 ) / 256, 1, 1 );
+
+        // Final barrier: indirect buffer + reorder buffer must be visible to draw indirect + vertex shader
         VkBufferMemoryBarrier2 indirectBarrier = { VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER_2 };
         indirectBarrier.srcStageMask           = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT;
         indirectBarrier.srcAccessMask          = VK_ACCESS_2_SHADER_WRITE_BIT;
-        indirectBarrier.dstStageMask           = VK_PIPELINE_STAGE_2_DRAW_INDIRECT_BIT;
-        indirectBarrier.dstAccessMask          = VK_ACCESS_2_INDIRECT_COMMAND_READ_BIT;
+        indirectBarrier.dstStageMask           = VK_PIPELINE_STAGE_2_DRAW_INDIRECT_BIT | VK_PIPELINE_STAGE_2_VERTEX_SHADER_BIT;
+        indirectBarrier.dstAccessMask          = VK_ACCESS_2_INDIRECT_COMMAND_READ_BIT | VK_ACCESS_2_SHADER_READ_BIT;
         indirectBarrier.srcQueueFamilyIndex    = VK_QUEUE_FAMILY_IGNORED;
         indirectBarrier.dstQueueFamilyIndex    = VK_QUEUE_FAMILY_IGNORED;
         indirectBarrier.buffer                 = m_resourceManager->GetBuffer( scene->indirectCmdBuffer )->GetHandle();
         indirectBarrier.offset                 = 0;
         indirectBarrier.size                   = VK_WHOLE_SIZE;
 
+        VkBufferMemoryBarrier2 reorderBarrier = { VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER_2 };
+        reorderBarrier.srcStageMask           = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT;
+        reorderBarrier.srcAccessMask          = VK_ACCESS_2_SHADER_WRITE_BIT;
+        reorderBarrier.dstStageMask           = VK_PIPELINE_STAGE_2_VERTEX_SHADER_BIT;
+        reorderBarrier.dstAccessMask          = VK_ACCESS_2_SHADER_READ_BIT;
+        reorderBarrier.srcQueueFamilyIndex    = VK_QUEUE_FAMILY_IGNORED;
+        reorderBarrier.dstQueueFamilyIndex    = VK_QUEUE_FAMILY_IGNORED;
+        reorderBarrier.buffer                 = m_resourceManager->GetBuffer( scene->agentReorderBuffer )->GetHandle();
+        reorderBarrier.offset                 = 0;
+        reorderBarrier.size                   = VK_WHOLE_SIZE;
+
+        VkBufferMemoryBarrier2 barriers[] = { indirectBarrier, reorderBarrier };
+
         VkDependencyInfo depInfo         = { VK_STRUCTURE_TYPE_DEPENDENCY_INFO };
-        depInfo.bufferMemoryBarrierCount = 1;
-        depInfo.pBufferMemoryBarriers    = &indirectBarrier;
+        depInfo.bufferMemoryBarrierCount = 2;
+        depInfo.pBufferMemoryBarriers    = barriers;
 
         cmd->PipelineBarrier( &depInfo );
     }

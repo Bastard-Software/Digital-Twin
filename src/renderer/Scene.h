@@ -17,8 +17,11 @@ namespace DigitalTwin
         BufferHandle agentBuffers[ 2 ];
         BufferHandle agentCountBuffer;
         BufferHandle phenotypeBuffer;
-        uint32_t     drawCount  = 0;
-        uint32_t     readIndex  = 0; // Which ping-pong buffer holds the latest valid agent positions
+        BufferHandle agentReorderBuffer;
+        BufferHandle drawMetaBuffer;
+        uint32_t     drawCount        = 0;
+        uint32_t     totalPaddedAgents = 0;
+        uint32_t     readIndex        = 0; // Which ping-pong buffer holds the latest valid agent positions
 
         BufferHandle GetAgentReadBuffer() const { return agentBuffers[ readIndex ]; }
     };

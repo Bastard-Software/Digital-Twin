@@ -1,6 +1,7 @@
 #pragma once
 #include <string>
 #include <variant>
+#include <vector>
 
 namespace DigitalTwin::Behaviours
 {
@@ -44,30 +45,34 @@ namespace DigitalTwin::Behaviours
      */
     struct CellCycle
     {
-        float growthRatePerSec;    // Fraction of biomass gained per second
-        float targetO2;            // Required O2 for optimal proliferation
-        float arrestPressure;      // Threshold for Contact Inhibition (Quiescence)
-        float necrosisO2;          // Threshold for starvation death
-        float hypoxiaO2;           // Threshold for starvation
-        float apoptosisProbPerSec; // Base probability of death per second
+        float growthRatePerSec;            // Fraction of biomass gained per second
+        float targetO2;                    // Required O2 for optimal proliferation
+        float arrestPressure;              // Threshold for Contact Inhibition (Quiescence)
+        float necrosisO2;                  // Threshold for starvation death
+        float hypoxiaO2;                   // Threshold for starvation
+        float apoptosisProbPerSec;         // Base probability of death per second
+        bool  directedMitosis = false;     // Place daughter along vessel axis (StalkCell sprouting)
     };
 
     struct Chemotaxis
     {
         std::string fieldName;
-        float       chemotacticSensitivity = 1.0f;   // Bias strength (µm²/s per unit gradient)
-        float       receptorSaturation     = 0.01f;  // Kd-like constant; 0 = linear (no saturation)
-        float       maxVelocity            = 5.0f;   // Hard clamp on resultant speed (µm/s)
+        float       chemotacticSensitivity    = 1.0f;  // Bias strength (µm²/s per unit gradient)
+        float       receptorSaturation        = 0.01f; // Kd-like constant; 0 = linear (no saturation)
+        float       maxVelocity               = 5.0f;  // Hard clamp on resultant speed (µm/s)
+        float       contactInhibitionDensity  = 0.0f;  // 0 = disabled; >0 = neighbor count for full stop
     };
 
     struct NotchDll4
     {
-        float dll4ProductionRate   = 1.0f;
-        float dll4DecayRate        = 0.1f;
-        float notchInhibitionGain  = 1.0f;
-        float vegfr2BaseExpression = 1.0f;
-        float tipThreshold         = 0.8f;
-        float stalkThreshold       = 0.3f;
+        float       dll4ProductionRate   = 1.0f;
+        float       dll4DecayRate        = 0.1f;
+        float       notchInhibitionGain  = 1.0f;
+        float       vegfr2BaseExpression = 1.0f;
+        float       tipThreshold         = 0.8f;
+        float       stalkThreshold       = 0.3f;
+        std::string vegfFieldName;  // empty = no VEGF gating (vegfr2 unmodulated)
+        uint32_t    subSteps             = 1;   // ODE iterations per frame — more = faster convergence
     };
 
     struct Anastomosis
@@ -75,10 +80,44 @@ namespace DigitalTwin::Behaviours
         float contactDistance = 3.0f;
     };
 
+    // VEGF-gated Phalanx ↔ Stalk transitions.
+    // PhalanxCells (quiescent) activate to StalkCells when local VEGF exceeds activationThreshold.
+    // StalkCells re-quiesce to PhalanxCells when local VEGF drops below deactivationThreshold.
+    // TipCells are never affected. Must be added BEFORE NotchDll4 in the behaviour list.
+    struct PhalanxActivation
+    {
+        std::string vegfFieldName;
+        float       activationThreshold   = 20.0f; // VEGF level to wake PhalanxCell → StalkCell
+        float       deactivationThreshold = 5.0f;  // VEGF level to re-quiesce StalkCell → PhalanxCell
+    };
+
+    // Hooke's Law spring forces along vessel edges, keeping the tube coherent as TipCells migrate.
+    struct VesselSpring
+    {
+        float springStiffness = 5.0f;  // Hooke's k — force per unit stretch per second
+        float restingLength   = 2.0f;  // Equilibrium cell-cell distance
+    };
+
+    // Seeds initial vessel edges between consecutive agents within each named segment.
+    // Build-time only — no GPU shader. Segments are contiguous slices of the group's agent array.
+    // e.g. segmentCounts={5,5} on a 10-cell group seeds 4+4=8 edges covering two vessel lines.
+    struct VesselSeed
+    {
+        std::vector<uint32_t> segmentCounts;
+    };
+
+    // Vessel injects a substance into the field (O2, glucose). Rate > 0.
     struct Perfusion
     {
         std::string fieldName;
-        float       baseFlowRate = 1.0f;
+        float       rate = 1.0f;
+    };
+
+    // Vessel removes a substance from the field (lactate, CO2). Rate > 0 (sign negated by builder).
+    struct Drain
+    {
+        std::string fieldName;
+        float       rate = 1.0f;
     };
 
 } // namespace DigitalTwin::Behaviours
@@ -93,9 +132,13 @@ namespace DigitalTwin
         Behaviours::Biomechanics,
         Behaviours::CellCycle,
         Behaviours::Chemotaxis,
+        Behaviours::PhalanxActivation,
         Behaviours::NotchDll4,
         Behaviours::Anastomosis,
-        Behaviours::Perfusion>;
+        Behaviours::Perfusion,
+        Behaviours::Drain,
+        Behaviours::VesselSeed,
+        Behaviours::VesselSpring>;
 
     // Wrapper to attach execution parameters (like frequency) to a behaviour
     struct BehaviourRecord

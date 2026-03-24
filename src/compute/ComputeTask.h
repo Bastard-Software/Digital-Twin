@@ -59,6 +59,8 @@ namespace DigitalTwin
         void SetChainFlip( bool v ) { m_chainFlip = v; }
         bool GetChainFlip() const { return m_chainFlip; }
 
+        void SetDtScale( float scale ) { m_dtScale = scale; }
+
         const ComputePushConstants& GetPushConstants() const { return m_pc; }
 
         /**
@@ -76,6 +78,7 @@ namespace DigitalTwin
         ComputePushConstants m_pc;
         glm::uvec3           m_dispatchSize;
         bool                 m_chainFlip = false;
+        float                m_dtScale   = 1.0f;
     };
 
 } // namespace DigitalTwin

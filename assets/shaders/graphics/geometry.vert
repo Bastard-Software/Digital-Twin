@@ -37,13 +37,20 @@ layout(std430, set = 0, binding = 4) readonly buffer Phenotypes {
     PhenotypeData data[];
 } phenotypes;
 
+layout(std430, set = 0, binding = 5) readonly buffer ReorderBuffer {
+    uint indices[];
+} reorderBuffer;
+
 layout(location = 0) out vec3 outNormal;
 layout(location = 1) out vec4 outColor;
 
-void main() 
+void main()
 {
-Vertex v = vertices[gl_VertexIndex];
-    Agent a = agents[gl_InstanceIndex];
+    // Reorder buffer maps draw-command instance index → global agent index
+    uint agentIdx = reorderBuffer.indices[gl_InstanceIndex];
+
+    Vertex v = vertices[gl_VertexIndex];
+    Agent a = agents[agentIdx];
 
     vec3 scale = vec3(a.position.w);
     vec3 worldPos = (v.pos.xyz * scale) + a.position.xyz;
@@ -52,23 +59,24 @@ Vertex v = vertices[gl_VertexIndex];
     outNormal = v.normal.xyz;
 
     vec4 baseColor = groupData.colors[gl_DrawIDARB];
-    uint state = phenotypes.data[gl_InstanceIndex].lifecycleState;
+    uint state = phenotypes.data[agentIdx].lifecycleState;
 
-    if (state == 0) {
+    // Lifecycle state modulation
+    if (state == 0u) {
         outColor = baseColor;
-    } 
-    else if (state == 1) {
+    }
+    else if (state == 1u) {
         outColor = vec4(baseColor.rgb * 0.6, baseColor.a);
-    } 
-    else if (state == 2) {
+    }
+    else if (state == 2u) {
         outColor = mix(baseColor, vec4(0.3, 0.0, 0.8, 1.0), 0.7);
-    } 
-    else if (state == 3) {
+    }
+    else if (state == 3u) {
         outColor = mix(baseColor, vec4(1.0, 0.6, 0.0, 1.0), 0.8);
-    } 
-    else if (state == 4) {
+    }
+    else if (state == 4u) {
         outColor = vec4(0.15, 0.12, 0.12, 1.0);
-    } 
+    }
     else {
         outColor = baseColor;
     }

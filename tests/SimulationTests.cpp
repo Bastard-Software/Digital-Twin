@@ -1750,3 +1750,64 @@ TEST_F( SimulationBuilderTest, Behaviour_CellCycle_StalkCellOnlyDivides )
 
     state.Destroy( m_resourceManager.get() );
 }
+
+// PhalanxActivation: builder initialises cells as PhalanxCell (3); VEGF above threshold → all
+// cells transition to StalkCell (2) after several frames.
+TEST_F( SimulationBuilderTest, Behaviour_PhalanxActivation_HighVEGF_ActivatesAllCells )
+{
+    if( !m_device )
+        GTEST_SKIP();
+
+    SimulationBlueprint blueprint;
+    blueprint.SetDomainSize( glm::vec3( 20.0f ), 1.0f )
+        .ConfigureSpatialPartitioning()
+        .SetCellSize( 10.0f )
+        .SetComputeHz( 60.0f );
+
+    // VEGF constant at 50 — well above activationThreshold (20)
+    blueprint.AddGridField( "VEGF" )
+        .SetInitializer( GridInitializer::Constant( 50.0f ) )
+        .SetDiffusionCoefficient( 0.0f )
+        .SetDecayRate( 0.0f )
+        .SetComputeHz( 60.0f );
+
+    std::vector<glm::vec4> pos = { glm::vec4( 0.0f, 0.0f, 0.0f, 1.0f ),
+                                   glm::vec4( 2.0f, 0.0f, 0.0f, 1.0f ) };
+
+    blueprint.AddAgentGroup( "Endothelial" )
+        .SetCount( 2 )
+        .SetDistribution( pos )
+        .AddBehaviour( Behaviours::PhalanxActivation{ "VEGF", 20.0f, 5.0f } )
+        .SetHz( 60.0f );
+
+    SimulationBuilder builder( m_resourceManager.get(), m_streamingManager.get() );
+    SimulationState   state = builder.Build( blueprint );
+
+    // Verify builder initialised phenotypes as PhalanxCell (3) before any dispatch
+    struct PhenotypeData { uint32_t lifecycleState; float biomass; float timer; uint32_t cellType; };
+    std::vector<PhenotypeData> initPheno( 2 );
+    m_streamingManager->ReadbackBufferImmediate( state.phenotypeBuffer, initPheno.data(), 2 * sizeof( PhenotypeData ) );
+    EXPECT_EQ( initPheno[ 0 ].cellType, 3u ) << "Builder should initialise cell 0 as PhalanxCell (3)";
+    EXPECT_EQ( initPheno[ 1 ].cellType, 3u ) << "Builder should initialise cell 1 as PhalanxCell (3)";
+
+    auto compCtxHandle = m_device->CreateThreadContext( QueueType::COMPUTE );
+    auto compCtx       = m_device->GetThreadContext( compCtxHandle );
+    auto compCmd       = compCtx->GetCommandBuffer( compCtx->CreateCommandBuffer() );
+
+    GraphDispatcher dispatcher;
+    compCmd->Begin();
+    for( int i = 0; i < 5; ++i )
+        dispatcher.Dispatch( &state.computeGraph, compCmd, nullptr, 1.0f / 60.0f, static_cast<float>( i ) / 60.0f, 0 );
+    compCmd->End();
+
+    m_device->GetComputeQueue()->Submit( { compCmd } );
+    m_device->GetComputeQueue()->WaitIdle();
+
+    std::vector<PhenotypeData> result( 2 );
+    m_streamingManager->ReadbackBufferImmediate( state.phenotypeBuffer, result.data(), 2 * sizeof( PhenotypeData ) );
+
+    EXPECT_EQ( result[ 0 ].cellType, 2u ) << "Cell 0 should have activated to StalkCell (2) at VEGF=50";
+    EXPECT_EQ( result[ 1 ].cellType, 2u ) << "Cell 1 should have activated to StalkCell (2) at VEGF=50";
+
+    state.Destroy( m_resourceManager.get() );
+}

@@ -122,6 +122,13 @@ namespace Gaudi
                     if( live )
                         ImGui::TextDisabled( "Sub-Steps requires Stop + Play to take effect" );
                 }
+                else if constexpr( std::is_same_v<T, DigitalTwin::Behaviours::PhalanxActivation> )
+                {
+                    ImGui::LabelText( "VEGF Field", "%s", b.vegfFieldName.c_str() );
+                    changed |= ImGui::SliderFloat( "Activation Threshold",   &b.activationThreshold,   0.1f, 200.0f );
+                    changed |= ImGui::SliderFloat( "Deactivation Threshold", &b.deactivationThreshold, 0.0f, 100.0f );
+                    ImGui::TextDisabled( "deactivation < activation required" );
+                }
                 else if constexpr( std::is_same_v<T, DigitalTwin::Behaviours::Anastomosis> )
                 {
                     changed |= ImGui::SliderFloat( "Contact Distance", &b.contactDistance, 0.1f, 10.0f );

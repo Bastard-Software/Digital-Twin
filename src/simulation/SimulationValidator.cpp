@@ -122,6 +122,17 @@ namespace DigitalTwin
                                                  "'. Available fields: " + availableFields );
                         }
 
+                        if constexpr( std::is_same_v<T, Behaviours::PhalanxActivation> )
+                        {
+                            if( behaviour.vegfFieldName.empty() )
+                                result.AddError( "AgentGroup '" + group.GetName() +
+                                                 "': PhalanxActivation vegfFieldName must not be empty" );
+                            else if( declaredFields.find( behaviour.vegfFieldName ) == declaredFields.end() )
+                                result.AddError( "AgentGroup '" + group.GetName() +
+                                                 "': PhalanxActivation references unknown field '" + behaviour.vegfFieldName +
+                                                 "'. Available fields: " + availableFields );
+                        }
+
                         if constexpr( std::is_same_v<T, Behaviours::Perfusion> ||
                                       std::is_same_v<T, Behaviours::Drain> )
                         {
@@ -226,6 +237,16 @@ namespace DigitalTwin
                             if( behaviour.maxVelocity <= 0.0f )
                                 result.AddError( "AgentGroup '" + group.GetName() +
                                                  "': Chemotaxis maxVelocity must be > 0" );
+                        }
+
+                        if constexpr( std::is_same_v<T, Behaviours::PhalanxActivation> )
+                        {
+                            if( behaviour.activationThreshold <= 0.0f )
+                                result.AddError( "AgentGroup '" + group.GetName() + "': PhalanxActivation activationThreshold must be > 0" );
+                            if( behaviour.deactivationThreshold < 0.0f )
+                                result.AddError( "AgentGroup '" + group.GetName() + "': PhalanxActivation deactivationThreshold must be >= 0" );
+                            if( behaviour.deactivationThreshold >= behaviour.activationThreshold )
+                                result.AddError( "AgentGroup '" + group.GetName() + "': PhalanxActivation deactivationThreshold must be < activationThreshold" );
                         }
 
                         if constexpr( std::is_same_v<T, Behaviours::NotchDll4> )

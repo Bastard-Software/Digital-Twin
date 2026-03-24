@@ -66,6 +66,9 @@ void main() {
     // Skip if necrotic or pending removal (lifecycleState >= 3)
     if (phenotypes.data[globalIdx].lifecycleState >= 3u) return;
 
+    // Skip PhalanxCells — quiescent ECs do not participate in Notch-Dll4 lateral inhibition
+    if (phenotypes.data[globalIdx].cellType == 3u) return;
+
     vec3  myPos           = myData.xyz;
     float signalingRadius = pc.domainSize.w;
     float cellSize        = signalingRadius * 2.0;

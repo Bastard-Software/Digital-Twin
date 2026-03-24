@@ -1,0 +1,60 @@
+#version 460
+layout(local_size_x = 256) in;
+
+layout(push_constant) uniform PushConstants {
+    float dt;
+    float totalTime;
+    float activationThreshold;    // fParam0: VEGF level to activate PhalanxCell → StalkCell
+    float deactivationThreshold;  // fParam1: VEGF level to re-quiesce StalkCell → PhalanxCell
+    float fParam2;
+    float fParam3;
+    float fParam4;
+    float fParam5;
+    uint  offset;
+    uint  maxCapacity;
+    uint  grpNdx;                 // uParam0: group index for counter lookup
+    uint  uParam1;
+    vec4  domainSize;             // .xyz = domain extents
+    uvec4 gridSize;               // .xyz = VEGF texture size; .w = 1 if bound, 0 if disabled
+} pc;
+
+layout(std140, binding = 0) readonly buffer InputAgents { vec4 positions[]; } agents;
+
+struct PhenotypeData {
+    uint  lifecycleState;
+    float biomass;
+    float timer;
+    uint  cellType;
+};
+layout(std430, binding = 1) buffer Phenotypes { PhenotypeData data[]; } phenotypes;
+
+layout(set = 0, binding = 2, r32f) uniform readonly image3D u_VEGF;
+
+layout(std430, binding = 3) readonly buffer CounterBuffer { uint counts[]; } counters;
+
+void main() {
+    uint idx = gl_GlobalInvocationID.x;
+    if (idx >= pc.maxCapacity) return;
+    if (idx >= counters.counts[pc.grpNdx]) return;
+
+    uint globalIdx = pc.offset + idx;
+
+    vec4 pos = agents.positions[globalIdx];
+    if (pos.w == 0.0) return; // dead slot
+
+    uint cellType = phenotypes.data[globalIdx].cellType;
+    if (cellType == 1u) return; // TipCell: committed to migration, no quiescence transitions
+
+    // No VEGF field bound → no transitions possible
+    if (pc.gridSize.w == 0u) return;
+
+    // Sample VEGF at cell's voxel
+    vec3  n         = clamp((pos.xyz + pc.domainSize.xyz * 0.5) / pc.domainSize.xyz, 0.0, 1.0);
+    ivec3 voxel     = clamp(ivec3(n * vec3(pc.gridSize.xyz)), ivec3(0), ivec3(pc.gridSize.xyz) - 1);
+    float localVEGF = imageLoad(u_VEGF, voxel).r;
+
+    if (cellType == 3u && localVEGF > pc.activationThreshold)
+        phenotypes.data[globalIdx].cellType = 2u;  // PhalanxCell → StalkCell (activation)
+    else if (cellType == 2u && localVEGF < pc.deactivationThreshold)
+        phenotypes.data[globalIdx].cellType = 3u;  // StalkCell → PhalanxCell (re-quiescence)
+}

@@ -78,6 +78,17 @@ namespace DigitalTwin::Behaviours
         float contactDistance = 3.0f;
     };
 
+    // VEGF-gated Phalanx ↔ Stalk transitions.
+    // PhalanxCells (quiescent) activate to StalkCells when local VEGF exceeds activationThreshold.
+    // StalkCells re-quiesce to PhalanxCells when local VEGF drops below deactivationThreshold.
+    // TipCells are never affected. Must be added BEFORE NotchDll4 in the behaviour list.
+    struct PhalanxActivation
+    {
+        std::string vegfFieldName;
+        float       activationThreshold   = 20.0f; // VEGF level to wake PhalanxCell → StalkCell
+        float       deactivationThreshold = 5.0f;  // VEGF level to re-quiesce StalkCell → PhalanxCell
+    };
+
     // Seeds initial vessel edges between consecutive agents within each named segment.
     // Build-time only — no GPU shader. Segments are contiguous slices of the group's agent array.
     // e.g. segmentCounts={5,5} on a 10-cell group seeds 4+4=8 edges covering two vessel lines.
@@ -112,6 +123,7 @@ namespace DigitalTwin
         Behaviours::Biomechanics,
         Behaviours::CellCycle,
         Behaviours::Chemotaxis,
+        Behaviours::PhalanxActivation,
         Behaviours::NotchDll4,
         Behaviours::Anastomosis,
         Behaviours::Perfusion,

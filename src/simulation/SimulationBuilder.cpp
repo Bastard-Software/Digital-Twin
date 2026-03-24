@@ -1185,6 +1185,101 @@ namespace DigitalTwin
                         DT_WARN( "[SimulationBuilder] Chemotaxis: target field '{}' not found!", chemo.fieldName );
                     }
                 }
+                if( std::holds_alternative<Behaviours::PhalanxActivation>( record.behaviour ) )
+                {
+                    const auto& phalanx = std::get<Behaviours::PhalanxActivation>( record.behaviour );
+
+                    // Ensure phenotype buffer exists
+                    if( !outState.phenotypeBuffer.IsValid() )
+                    {
+                        uint32_t globalCapacity = 0;
+                        for( const auto& g: blueprint.GetGroups() )
+                        {
+                            if( g.GetCount() == 0 )
+                                continue;
+                            uint32_t cap = 131072;
+                            while( cap < g.GetCount() )
+                                cap <<= 1;
+                            globalCapacity += cap;
+                        }
+                        struct PhenotypeData { uint32_t lifecycleState; float biomass; float timer; uint32_t cellType; };
+                        size_t phenotypeSize     = globalCapacity * sizeof( PhenotypeData );
+                        outState.phenotypeBuffer = m_resourceManager->CreateBuffer( { phenotypeSize, BufferType::STORAGE, "PhenotypeBuffer" } );
+                        std::vector<PhenotypeData> initPhenotypes( globalCapacity, { 0u, 0.5f, 0.0f, 0u } );
+                        m_streamingManager->UploadBufferImmediate( { { outState.phenotypeBuffer, initPhenotypes.data(), phenotypeSize, 0 } } );
+                    }
+
+                    // Override cellType to PhalanxCell (3) for this group's slots
+                    {
+                        struct PhenotypeData { uint32_t lifecycleState; float biomass; float timer; uint32_t cellType; };
+                        std::vector<PhenotypeData> phalanxInit( paddedCount, { 0u, 0.5f, 0.0f, 3u } );
+                        size_t slotByteOffset = currentOffset * sizeof( PhenotypeData );
+                        size_t slotByteSize   = paddedCount   * sizeof( PhenotypeData );
+                        m_streamingManager->UploadBufferImmediate( { { outState.phenotypeBuffer, phalanxInit.data(), slotByteSize, slotByteOffset } } );
+                    }
+
+                    // VEGF field — real field or 1×1×1 dummy (w=0 disables transitions in shader)
+                    GridFieldState* vegfGrid        = nullptr;
+                    TextureHandle   dummyVEGF;
+                    glm::uvec4      phalanxGridSize{ 1u, 1u, 1u, 0u };
+
+                    if( !phalanx.vegfFieldName.empty() )
+                    {
+                        for( auto& grid: outState.gridFields )
+                            if( grid.name == phalanx.vegfFieldName ) { vegfGrid = &grid; break; }
+
+                        if( vegfGrid )
+                            phalanxGridSize = glm::uvec4( vegfGrid->width, vegfGrid->height, vegfGrid->depth, 1u );
+                        else
+                            DT_WARN( "[SimulationBuilder] PhalanxActivation: VEGF field '{}' not found — no transitions will occur", phalanx.vegfFieldName );
+                    }
+
+                    if( !vegfGrid )
+                    {
+                        TextureDesc dummyDesc{ 1, 1, 1, TextureType::Texture3D, VK_FORMAT_R32_SFLOAT,
+                                              TextureUsage::STORAGE | TextureUsage::TRANSFER_DST, "PhalanxVEGF_Dummy" };
+                        dummyVEGF  = m_resourceManager->CreateTexture( dummyDesc );
+                        float zero = 0.0f;
+                        m_streamingManager->UploadTextureImmediate( dummyVEGF, &zero, sizeof( float ) );
+                    }
+
+                    auto vegfTex0 = vegfGrid ? vegfGrid->textures[ 0 ] : dummyVEGF;
+                    auto vegfTex1 = vegfGrid ? vegfGrid->textures[ 1 ] : dummyVEGF;
+
+                    ComputePipelineDesc   phalanxDesc{ m_resourceManager->CreateShader( "shaders/compute/biology/phalanx_activation.comp" ), "PhalanxActivationPipeline" };
+                    ComputePipelineHandle phalanxPipeHandle = m_resourceManager->CreatePipeline( phalanxDesc );
+                    ComputePipeline*      phalanxPipe       = m_resourceManager->GetPipeline( phalanxPipeHandle );
+
+                    BindingGroup* bgPhalanx0 = m_resourceManager->GetBindingGroup( m_resourceManager->CreateBindingGroup( phalanxPipeHandle, 0 ) );
+                    bgPhalanx0->Bind( 0, m_resourceManager->GetBuffer( outState.agentBuffers[ 0 ] ) );
+                    bgPhalanx0->Bind( 1, m_resourceManager->GetBuffer( outState.phenotypeBuffer ) );
+                    bgPhalanx0->Bind( 2, m_resourceManager->GetTexture( vegfTex0 ), VK_IMAGE_LAYOUT_GENERAL );
+                    bgPhalanx0->Bind( 3, m_resourceManager->GetBuffer( outState.agentCountBuffer ) );
+                    bgPhalanx0->Build();
+
+                    BindingGroup* bgPhalanx1 = m_resourceManager->GetBindingGroup( m_resourceManager->CreateBindingGroup( phalanxPipeHandle, 0 ) );
+                    bgPhalanx1->Bind( 0, m_resourceManager->GetBuffer( outState.agentBuffers[ 1 ] ) );
+                    bgPhalanx1->Bind( 1, m_resourceManager->GetBuffer( outState.phenotypeBuffer ) );
+                    bgPhalanx1->Bind( 2, m_resourceManager->GetTexture( vegfTex1 ), VK_IMAGE_LAYOUT_GENERAL );
+                    bgPhalanx1->Bind( 3, m_resourceManager->GetBuffer( outState.agentCountBuffer ) );
+                    bgPhalanx1->Build();
+
+                    ComputePushConstants phalanxPC{};
+                    phalanxPC.fParam0     = phalanx.activationThreshold;
+                    phalanxPC.fParam1     = phalanx.deactivationThreshold;
+                    phalanxPC.offset      = currentOffset;
+                    phalanxPC.maxCapacity = paddedCount;
+                    phalanxPC.uParam0     = groupIndex;
+                    phalanxPC.domainSize  = glm::vec4( blueprint.GetDomainSize(), 0.0f );
+                    phalanxPC.gridSize    = phalanxGridSize;
+
+                    glm::uvec3  phalanxDispatch( ( paddedCount + 255 ) / 256, 1, 1 );
+                    ComputeTask phalanxTask( phalanxPipe, bgPhalanx0, bgPhalanx1, record.targetHz, phalanxPC, phalanxDispatch );
+                    phalanxTask.SetTag( "phalanx" + tagBase );
+                    outState.computeGraph.AddTask( phalanxTask );
+
+                    DT_INFO( "[SimulationBuilder] Compiled PhalanxActivation for '{}' at {}Hz", group.GetName(), record.targetHz );
+                }
                 if( std::holds_alternative<Behaviours::NotchDll4>( record.behaviour ) )
                 {
                     const auto& notch = std::get<Behaviours::NotchDll4>( record.behaviour );
@@ -1626,6 +1721,18 @@ namespace DigitalTwin
                         ComputePushConstants pc = task->GetPushConstants();
                         pc.fParam0              = rate;
                         pc.fParam1              = static_cast<float>( reqLifecycleState );
+                        task->UpdatePushConstants( pc );
+                    }
+                }
+                if( std::holds_alternative<Behaviours::PhalanxActivation>( record.behaviour ) )
+                {
+                    ComputeTask* task = state.computeGraph.FindTask( "phalanx" + tagBase );
+                    if( task )
+                    {
+                        const auto&          phalanx = std::get<Behaviours::PhalanxActivation>( record.behaviour );
+                        ComputePushConstants pc      = task->GetPushConstants();
+                        pc.fParam0                   = phalanx.activationThreshold;
+                        pc.fParam1                   = phalanx.deactivationThreshold;
                         task->UpdatePushConstants( pc );
                     }
                 }

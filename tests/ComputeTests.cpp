@@ -1926,6 +1926,159 @@ TEST_F( ComputeTest, Shader_NotchDll4_VEGFGating_HighVEGF_PromotesTipCell )
 }
 
 // =================================================================================================
+// phalanx_activation.comp — raw shader tests
+// =================================================================================================
+
+// Helper: allocate & upload the minimal buffers needed for phalanx_activation and dispatch once.
+// Returns resulting cellType from phenotype readback.
+static uint32_t RunPhalanxShader(
+    Device*           device,
+    ResourceManager*  rm,
+    StreamingManager* stream,
+    glm::vec4         agentPos,
+    uint32_t          initialCellType,
+    float             vegfValue,
+    float             activationThreshold,
+    float             deactivationThreshold )
+{
+    struct PhenotypeData { uint32_t lifecycleState; float biomass; float timer; uint32_t cellType; };
+
+    // 1×1×1 VEGF texture — agent at origin in 10-unit domain always hits voxel (0,0,0)
+    TextureHandle vegfTex = rm->CreateTexture(
+        { 1, 1, 1, TextureType::Texture3D, VK_FORMAT_R32_SFLOAT,
+          TextureUsage::STORAGE | TextureUsage::TRANSFER_DST, "PhalanxVEGF" } );
+    stream->UploadTextureImmediate( vegfTex, &vegfValue, sizeof( float ) );
+
+    std::vector<glm::vec4>     agents     = { agentPos };
+    std::vector<PhenotypeData> phenotypes = { { 0u, 0.5f, 0.0f, initialCellType } };
+    uint32_t agentCount = 1;
+
+    size_t agentsSize    = sizeof( glm::vec4 );
+    size_t phenotypesSize = sizeof( PhenotypeData );
+    size_t countSize      = sizeof( uint32_t );
+
+    BufferHandle agentBuf = rm->CreateBuffer( { agentsSize,     BufferType::STORAGE,  "PhalanxAgents" } );
+    BufferHandle phenoBuf = rm->CreateBuffer( { phenotypesSize, BufferType::STORAGE,  "PhalanxPheno"  } );
+    BufferHandle countBuf = rm->CreateBuffer( { countSize,      BufferType::INDIRECT, "PhalanxCount"  } );
+
+    stream->UploadBufferImmediate( {
+        { agentBuf, agents.data(),     agentsSize,     0 },
+        { phenoBuf, phenotypes.data(), phenotypesSize, 0 },
+        { countBuf, &agentCount,       countSize,      0 },
+    } );
+
+    ComputePipelineDesc   pipeDesc{ rm->CreateShader( "shaders/compute/biology/phalanx_activation.comp" ), "TestPhalanx" };
+    ComputePipelineHandle pipeHandle = rm->CreatePipeline( pipeDesc );
+    ComputePipeline*      pipeline   = rm->GetPipeline( pipeHandle );
+
+    BindingGroup* bg = rm->GetBindingGroup( rm->CreateBindingGroup( pipeHandle, 0 ) );
+    bg->Bind( 0, rm->GetBuffer( agentBuf ) );
+    bg->Bind( 1, rm->GetBuffer( phenoBuf ) );
+    bg->Bind( 2, rm->GetTexture( vegfTex ), VK_IMAGE_LAYOUT_GENERAL );
+    bg->Bind( 3, rm->GetBuffer( countBuf ) );
+    bg->Build();
+
+    ComputePushConstants pc{};
+    pc.dt          = 1.0f / 60.0f;
+    pc.fParam0     = activationThreshold;
+    pc.fParam1     = deactivationThreshold;
+    pc.offset      = 0;
+    pc.maxCapacity = 1;
+    pc.uParam0     = 0;
+    pc.domainSize  = glm::vec4( 10.0f, 10.0f, 10.0f, 0.0f );
+    pc.gridSize    = glm::uvec4( 1u, 1u, 1u, 1u ); // w=1 → VEGF sampling enabled
+
+    auto compCtxHandle = device->CreateThreadContext( QueueType::COMPUTE );
+    auto compCtx       = device->GetThreadContext( compCtxHandle );
+    auto compCmd       = compCtx->GetCommandBuffer( compCtx->CreateCommandBuffer() );
+
+    compCmd->Begin();
+    compCmd->SetPipeline( pipeline );
+    compCmd->SetBindingGroup( bg, pipeline->GetLayout(), VK_PIPELINE_BIND_POINT_COMPUTE );
+    compCmd->PushConstants( pipeline->GetLayout(), VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof( pc ), &pc );
+    compCmd->Dispatch( 1, 1, 1 );
+    compCmd->End();
+
+    device->GetComputeQueue()->Submit( { compCmd } );
+    device->GetComputeQueue()->WaitIdle();
+
+    PhenotypeData result{};
+    stream->ReadbackBufferImmediate( phenoBuf, &result, sizeof( PhenotypeData ) );
+
+    rm->DestroyBuffer( agentBuf );
+    rm->DestroyBuffer( phenoBuf );
+    rm->DestroyBuffer( countBuf );
+    rm->DestroyTexture( vegfTex );
+
+    return result.cellType;
+}
+
+// PhalanxCell at VEGF=30 (> activationThreshold=20) → becomes StalkCell (2)
+TEST_F( ComputeTest, Shader_PhalanxActivation_PhalanxAtHighVEGF_BecomesStalk )
+{
+    if( !m_device )
+        GTEST_SKIP();
+
+    uint32_t result = RunPhalanxShader( m_device.get(), m_rm.get(), m_stream.get(),
+        glm::vec4( 0.0f, 0.0f, 0.0f, 1.0f ), // alive agent at origin
+        3u,    // PhalanxCell
+        30.0f, // VEGF = 30 > activationThreshold = 20
+        20.0f, // activationThreshold
+        5.0f   // deactivationThreshold
+    );
+
+    EXPECT_EQ( result, 2u ) << "PhalanxCell at VEGF=30 should activate to StalkCell (2)";
+}
+
+// PhalanxCell at VEGF=2 (< activationThreshold=20) → stays PhalanxCell (3)
+TEST_F( ComputeTest, Shader_PhalanxActivation_PhalanxAtLowVEGF_StaysPhalanx )
+{
+    if( !m_device )
+        GTEST_SKIP();
+
+    uint32_t result = RunPhalanxShader( m_device.get(), m_rm.get(), m_stream.get(),
+        glm::vec4( 0.0f, 0.0f, 0.0f, 1.0f ),
+        3u,   // PhalanxCell
+        2.0f, // VEGF = 2 < activationThreshold = 20
+        20.0f, 5.0f
+    );
+
+    EXPECT_EQ( result, 3u ) << "PhalanxCell at VEGF=2 should remain PhalanxCell (3)";
+}
+
+// StalkCell at VEGF=2 (< deactivationThreshold=5) → re-quiesces to PhalanxCell (3)
+TEST_F( ComputeTest, Shader_PhalanxActivation_StalkAtLowVEGF_BecomesQuiescent )
+{
+    if( !m_device )
+        GTEST_SKIP();
+
+    uint32_t result = RunPhalanxShader( m_device.get(), m_rm.get(), m_stream.get(),
+        glm::vec4( 0.0f, 0.0f, 0.0f, 1.0f ),
+        2u,   // StalkCell
+        2.0f, // VEGF = 2 < deactivationThreshold = 5
+        20.0f, 5.0f
+    );
+
+    EXPECT_EQ( result, 3u ) << "StalkCell at VEGF=2 should re-quiesce to PhalanxCell (3)";
+}
+
+// TipCell at any VEGF → always skipped, stays TipCell (1)
+TEST_F( ComputeTest, Shader_PhalanxActivation_TipCell_AlwaysSkipped )
+{
+    if( !m_device )
+        GTEST_SKIP();
+
+    uint32_t result = RunPhalanxShader( m_device.get(), m_rm.get(), m_stream.get(),
+        glm::vec4( 0.0f, 0.0f, 0.0f, 1.0f ),
+        1u,   // TipCell
+        2.0f, // VEGF below any threshold — would trigger re-quiescence if not a TipCell
+        20.0f, 5.0f
+    );
+
+    EXPECT_EQ( result, 1u ) << "TipCell must not be re-quiesced — stays TipCell (1)";
+}
+
+// =================================================================================================
 // anastomosis.comp — raw shader tests
 // =================================================================================================
 

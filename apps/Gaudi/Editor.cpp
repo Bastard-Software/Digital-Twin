@@ -361,8 +361,15 @@ namespace Gaudi
                          .SetMorphology( DigitalTwin::MorphologyGenerator::CreateSphere( 1.0f ) )
                          .SetDistribution( vesselTop )
                          .SetColor( glm::vec4( 1.0f, 0.3f, 0.3f, 1.0f ) )
-                         .AddCellTypeMorphology( static_cast<int>( DigitalTwin::CellType::TipCell ),   DigitalTwin::MorphologyGenerator::CreateSpikySphere( 1.0f, 1.35f ) )
-                         .AddCellTypeMorphology( static_cast<int>( DigitalTwin::CellType::StalkCell ), DigitalTwin::MorphologyGenerator::CreateCylinder( 0.6f, 2.2f ) );
+                         .AddCellTypeMorphology( static_cast<int>( DigitalTwin::CellType::PhalanxCell ), DigitalTwin::MorphologyGenerator::CreateCylinder( 0.5f, 1.8f ) )
+                         .AddCellTypeMorphology( static_cast<int>( DigitalTwin::CellType::TipCell ),     DigitalTwin::MorphologyGenerator::CreateSpikySphere( 1.0f, 1.35f ) )
+                         .AddCellTypeMorphology( static_cast<int>( DigitalTwin::CellType::StalkCell ),   DigitalTwin::MorphologyGenerator::CreateCylinder( 0.6f, 2.2f ) );
+
+        // PhalanxActivation — VEGF-gated Phalanx↔Stalk transitions (must run BEFORE NotchDll4)
+        // activationThreshold=20: inner cells (nearest to VEGF source at origin) activate first
+        // deactivationThreshold=5: re-quiesce when VEGF drops after perfusion rescues hypoxic cells
+        endo.AddBehaviour( DigitalTwin::Behaviours::PhalanxActivation{ "VEGF", 20.0f, 5.0f } )
+            .SetHz( 60.0f );
 
         // NotchDll4 — lateral inhibition picks 1 TipCell per vessel
         // gain=100 + 20 sub-steps per frame: ODE runs 20 Jacobi iterations per frame,

@@ -1811,3 +1811,60 @@ TEST_F( SimulationBuilderTest, Behaviour_PhalanxActivation_HighVEGF_ActivatesAll
 
     state.Destroy( m_resourceManager.get() );
 }
+
+// VesselSpring: builder allocates vesselEdgeBuffer, creates a "spring" task in the graph,
+// and the spring force reduces the gap between two cells placed 6 units apart (resting length=2).
+TEST_F( SimulationBuilderTest, Behaviour_VesselSpring_SpringReducesStretch )
+{
+    if( !m_device )
+        GTEST_SKIP();
+
+    SimulationBlueprint blueprint;
+    blueprint.SetDomainSize( glm::vec3( 20.0f ), 1.0f );
+
+    // Two agents 6 units apart on the X axis
+    std::vector<glm::vec4> pos = {
+        glm::vec4( -3.0f, 0.0f, 0.0f, 1.0f ),
+        glm::vec4(  3.0f, 0.0f, 0.0f, 1.0f ),
+    };
+
+    auto& vessel = blueprint.AddAgentGroup( "Vessel" )
+        .SetCount( 2 )
+        .SetDistribution( pos );
+    vessel.AddBehaviour( Behaviours::VesselSeed{ std::vector<uint32_t>{ 2u } } );
+    // VesselSpring: k=20, restLen=2 → strong pull; 10 steps should clearly reduce gap
+    vessel.AddBehaviour( Behaviours::VesselSpring{ 20.0f, 2.0f } ).SetHz( 60.0f );
+
+    SimulationBuilder builder( m_resourceManager.get(), m_streamingManager.get() );
+    SimulationState   state = builder.Build( blueprint );
+
+    // Verify spring task was added to the compute graph
+    EXPECT_NE( state.computeGraph.FindTask( "spring_0_1" ), nullptr )
+        << "Builder must create a 'spring' task for the VesselSpring behaviour";
+    EXPECT_TRUE( state.vesselEdgeBuffer.IsValid() )
+        << "Builder must allocate vesselEdgeBuffer for VesselSpring";
+
+    auto compCtxHandle = m_device->CreateThreadContext( QueueType::COMPUTE );
+    auto compCtx       = m_device->GetThreadContext( compCtxHandle );
+    auto compCmd       = compCtx->GetCommandBuffer( compCtx->CreateCommandBuffer() );
+
+    // Track the active index across frames so we know which buffer holds the latest data
+    GraphDispatcher dispatcher;
+    uint32_t        activeIdx = 0;
+    compCmd->Begin();
+    for( int i = 0; i < 10; ++i )
+        activeIdx = dispatcher.Dispatch( &state.computeGraph, compCmd, nullptr, 1.0f / 60.0f, static_cast<float>( i ) / 60.0f, activeIdx );
+    compCmd->End();
+
+    m_device->GetComputeQueue()->Submit( { compCmd } );
+    m_device->GetComputeQueue()->WaitIdle();
+
+    std::vector<glm::vec4> agents( 2 );
+    m_streamingManager->ReadbackBufferImmediate( state.agentBuffers[ activeIdx ], agents.data(), 2 * sizeof( glm::vec4 ) );
+
+    float gap = agents[ 1 ].x - agents[ 0 ].x;
+    EXPECT_LT( gap, 6.0f ) << "Spring force must reduce the gap from the initial 6 units";
+    EXPECT_GT( gap, 0.0f ) << "Agents must not overlap";
+
+    state.Destroy( m_resourceManager.get() );
+}

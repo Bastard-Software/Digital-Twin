@@ -4,18 +4,18 @@ layout(local_size_x = 256) in;
 layout(push_constant) uniform PushConstants {
     float dt;
     float totalTime;
-    float sensitivity;       // fParam0
-    float saturation;        // fParam1
-    float maxVelocity;       // fParam2
-    float reqCT;             // fParam3 -- requiredCellType (-1 = any), stored as float-encoded int
-    float fParam4;
+    float sensitivity;              // fParam0
+    float saturation;               // fParam1
+    float maxVelocity;              // fParam2
+    float reqCT;                    // fParam3 -- requiredCellType (-1 = any), stored as float-encoded int
+    float contactInhibitionDensity; // fParam4 -- max neighbor count for full inhibition (0 = disabled)
     float fParam5;
     uint  offset;
     uint  maxCapacity;
-    uint  uParam0;           // requiredLifecycleState encoded as uint (-1 = 0xFFFFFFFF)
+    uint  uParam0;                  // requiredLifecycleState encoded as uint (-1 = 0xFFFFFFFF)
     uint  grpNdx;
-    vec4  domainSize;
-    uvec4 gridSize;
+    vec4  domainSize;               // .xyz = domain extents, .w = hash cell size (when inhibition enabled)
+    uvec4 gridSize;                 // .xyz = field size, .w = offsetArraySize (0 when inhibition disabled)
 } pc;
 
 layout(std140, binding = 0) readonly  buffer InAgents  { vec4 positions[]; } inData;
@@ -30,6 +30,15 @@ struct PhenotypeData {
     uint  cellType;
 };
 layout(std430, binding = 4) readonly buffer Phenotypes { PhenotypeData data[]; } phenotypes;
+
+struct AgentHash { uint hash; uint agentIndex; };
+layout(std430, binding = 5) readonly buffer Hashes  { AgentHash data[];       } sortedHashes;
+layout(std430, binding = 6) readonly buffer Offsets { uint startIndices[];    } cellOffsets;
+
+uint hashPos(ivec3 cell) {
+    const uint p1 = 73856093u; const uint p2 = 19349663u; const uint p3 = 83492791u;
+    return (uint(cell.x) * p1) ^ (uint(cell.y) * p2) ^ (uint(cell.z) * p3);
+}
 
 // World position → voxel coordinate
 ivec3 toVoxel(vec3 worldPos) {
@@ -83,6 +92,39 @@ void main()
             velocity = normalize(velocity) * pc.maxVelocity;
 
         displacement = velocity * pc.dt;
+    }
+
+    // Contact inhibition: reduce velocity when surrounded by vessel-type neighbors
+    if (pc.contactInhibitionDensity > 0.0 && pc.gridSize.w > 0u) {
+        float hashCellSize   = pc.domainSize.w;
+        uint  offsetArraySz  = pc.gridSize.w;
+        ivec3 myCell         = ivec3(floor(pos.xyz / hashCellSize));
+
+        int neighborCount = 0;
+        for (int z = -1; z <= 1; z++) {
+            for (int y = -1; y <= 1; y++) {
+                for (int x = -1; x <= 1; x++) {
+                    uint neighborHash = hashPos(myCell + ivec3(x, y, z));
+                    uint offsetIdx    = neighborHash % offsetArraySz;
+                    uint startIdx     = cellOffsets.startIndices[offsetIdx];
+                    if (startIdx == 0xFFFFFFFF) continue;
+
+                    for (uint i = startIdx; i < pc.maxCapacity; i++) {
+                        if (sortedHashes.data[i].hash != neighborHash) break;
+                        uint neighborIdx = sortedHashes.data[i].agentIndex;
+                        if (neighborIdx == globalIdx) continue;
+                        vec4 neighborPos = inData.positions[neighborIdx];
+                        if (neighborPos.w == 0.0) continue;
+                        if (phenotypes.data[neighborIdx].cellType == 0u) continue; // non-vessel
+                        float dist = length(pos.xyz - neighborPos.xyz);
+                        if (dist < hashCellSize * 2.0) neighborCount++;
+                    }
+                }
+            }
+        }
+
+        float inhibition = clamp(float(neighborCount) / pc.contactInhibitionDensity, 0.0, 1.0);
+        displacement *= (1.0 - inhibition);
     }
 
     outData.positions[globalIdx] = vec4(pos.xyz + displacement, pos.w);

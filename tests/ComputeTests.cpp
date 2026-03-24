@@ -1249,6 +1249,9 @@ TEST_F( ComputeTest, Chemotaxis_PureGradient_MovesInGradientDirection )
 
     // Dummy phenotype buffer for binding 4 (state filtering disabled via push constants)
     BufferHandle phenotypeDummyBuf = m_rm->CreateBuffer( { sizeof( uint32_t ) * 4, BufferType::STORAGE, "ChemoPhenotypeDummy" } );
+    // Dummy hash/offset buffers for bindings 5/6 — contact inhibition disabled (gridSize.w=0)
+    BufferHandle dummyHashBuf   = m_rm->CreateBuffer( { 2 * sizeof( uint32_t ), BufferType::STORAGE, "ChemoDummyHash" } );
+    BufferHandle dummyOffsetBuf = m_rm->CreateBuffer( { sizeof( uint32_t ),     BufferType::STORAGE, "ChemoDummyOffset" } );
 
     BindingGroup* bg = m_rm->GetBindingGroup( m_rm->CreateBindingGroup( pipeHandle, 0 ) );
     bg->Bind( 0, m_rm->GetBuffer( inBuf ) );
@@ -1256,6 +1259,8 @@ TEST_F( ComputeTest, Chemotaxis_PureGradient_MovesInGradientDirection )
     bg->Bind( 2, m_rm->GetTexture( fieldTex ), VK_IMAGE_LAYOUT_GENERAL );
     bg->Bind( 3, m_rm->GetBuffer( countBuf ) );
     bg->Bind( 4, m_rm->GetBuffer( phenotypeDummyBuf ) );
+    bg->Bind( 5, m_rm->GetBuffer( dummyHashBuf ) );
+    bg->Bind( 6, m_rm->GetBuffer( dummyOffsetBuf ) );
     bg->Build();
 
     // Domain 10x10x10, voxels 10x10x10, dt=1.0, sensitivity=1, saturation=0, maxVelocity=100
@@ -1300,6 +1305,8 @@ TEST_F( ComputeTest, Chemotaxis_PureGradient_MovesInGradientDirection )
     m_rm->DestroyBuffer( outBuf );
     m_rm->DestroyBuffer( countBuf );
     m_rm->DestroyTexture( fieldTex );
+    m_rm->DestroyBuffer( dummyHashBuf );
+    m_rm->DestroyBuffer( dummyOffsetBuf );
 }
 
 // Verify that an extremely large gradient is clamped to maxVelocity and produces no NaN
@@ -1348,6 +1355,9 @@ TEST_F( ComputeTest, Chemotaxis_HighGradient_ClampedToMaxVelocity )
 
     // Dummy phenotype buffer for binding 4 (state filtering disabled via push constants)
     BufferHandle phenotypeDummyBuf = m_rm->CreateBuffer( { sizeof( uint32_t ) * 4, BufferType::STORAGE, "ChemoHighPhenotypeDummy" } );
+    // Dummy hash/offset buffers for bindings 5/6 — contact inhibition disabled (gridSize.w=0)
+    BufferHandle dummyHashBuf   = m_rm->CreateBuffer( { 2 * sizeof( uint32_t ), BufferType::STORAGE, "ChemoHighDummyHash" } );
+    BufferHandle dummyOffsetBuf = m_rm->CreateBuffer( { sizeof( uint32_t ),     BufferType::STORAGE, "ChemoHighDummyOffset" } );
 
     BindingGroup* bg = m_rm->GetBindingGroup( m_rm->CreateBindingGroup( pipeHandle, 0 ) );
     bg->Bind( 0, m_rm->GetBuffer( inBuf ) );
@@ -1355,6 +1365,8 @@ TEST_F( ComputeTest, Chemotaxis_HighGradient_ClampedToMaxVelocity )
     bg->Bind( 2, m_rm->GetTexture( fieldTex ), VK_IMAGE_LAYOUT_GENERAL );
     bg->Bind( 3, m_rm->GetBuffer( countBuf ) );
     bg->Bind( 4, m_rm->GetBuffer( phenotypeDummyBuf ) );
+    bg->Bind( 5, m_rm->GetBuffer( dummyHashBuf ) );
+    bg->Bind( 6, m_rm->GetBuffer( dummyOffsetBuf ) );
     bg->Build();
 
     const float          maxVelocity = 5.0f;
@@ -1403,6 +1415,8 @@ TEST_F( ComputeTest, Chemotaxis_HighGradient_ClampedToMaxVelocity )
     m_rm->DestroyBuffer( outBuf );
     m_rm->DestroyBuffer( countBuf );
     m_rm->DestroyTexture( fieldTex );
+    m_rm->DestroyBuffer( dummyHashBuf );
+    m_rm->DestroyBuffer( dummyOffsetBuf );
 }
 
 // =================================================================================================
@@ -2653,6 +2667,11 @@ TEST_F( ComputeTest, Chemotaxis_CellTypeFilter_TipCellMoves )
     bg->Bind( 2, m_rm->GetTexture( fieldTex ), VK_IMAGE_LAYOUT_GENERAL );
     bg->Bind( 3, m_rm->GetBuffer( countBuf ) );
     bg->Bind( 4, m_rm->GetBuffer( phenoBuf ) );
+    // Dummy hash/offset buffers for bindings 5/6 — contact inhibition disabled (gridSize.w=0)
+    BufferHandle dummyHashBuf   = m_rm->CreateBuffer( { 2 * sizeof( uint32_t ), BufferType::STORAGE, "ChemoCTDummyHash" } );
+    BufferHandle dummyOffsetBuf = m_rm->CreateBuffer( { sizeof( uint32_t ),     BufferType::STORAGE, "ChemoCTDummyOffset" } );
+    bg->Bind( 5, m_rm->GetBuffer( dummyHashBuf ) );
+    bg->Bind( 6, m_rm->GetBuffer( dummyOffsetBuf ) );
     bg->Build();
 
     ComputePushConstants pc{};
@@ -2693,6 +2712,8 @@ TEST_F( ComputeTest, Chemotaxis_CellTypeFilter_TipCellMoves )
     m_rm->DestroyBuffer( countBuf );
     m_rm->DestroyBuffer( phenoBuf );
     m_rm->DestroyTexture( fieldTex );
+    m_rm->DestroyBuffer( dummyHashBuf );
+    m_rm->DestroyBuffer( dummyOffsetBuf );
 }
 
 // Default cell (cellType=0) in a VEGF gradient with reqCT=1 (TipCell) → agent must NOT move.
@@ -2752,6 +2773,11 @@ TEST_F( ComputeTest, Chemotaxis_CellTypeFilter_NonTipCellSkipped )
     bg->Bind( 2, m_rm->GetTexture( fieldTex ), VK_IMAGE_LAYOUT_GENERAL );
     bg->Bind( 3, m_rm->GetBuffer( countBuf ) );
     bg->Bind( 4, m_rm->GetBuffer( phenoBuf ) );
+    // Dummy hash/offset buffers for bindings 5/6 — contact inhibition disabled (gridSize.w=0)
+    BufferHandle dummyHashBuf   = m_rm->CreateBuffer( { 2 * sizeof( uint32_t ), BufferType::STORAGE, "ChemoCTSkipDummyHash" } );
+    BufferHandle dummyOffsetBuf = m_rm->CreateBuffer( { sizeof( uint32_t ),     BufferType::STORAGE, "ChemoCTSkipDummyOffset" } );
+    bg->Bind( 5, m_rm->GetBuffer( dummyHashBuf ) );
+    bg->Bind( 6, m_rm->GetBuffer( dummyOffsetBuf ) );
     bg->Build();
 
     ComputePushConstants pc{};
@@ -2793,6 +2819,8 @@ TEST_F( ComputeTest, Chemotaxis_CellTypeFilter_NonTipCellSkipped )
     m_rm->DestroyBuffer( countBuf );
     m_rm->DestroyBuffer( phenoBuf );
     m_rm->DestroyTexture( fieldTex );
+    m_rm->DestroyBuffer( dummyHashBuf );
+    m_rm->DestroyBuffer( dummyOffsetBuf );
 }
 
 // StalkCell (cellType=2) with positive rate → delta > 0 (injection).
@@ -2963,4 +2991,100 @@ TEST_F( ComputeTest, Shader_BuildIndirect_ClassifyCellTypes )
 
     // StalkCell region starts at 2*groupCapacity, first entry should be agent 1
     EXPECT_EQ( reorderResult[ 2 * groupCapacity ], 1u ) << "StalkCell reorder slot 0 should be agent index 1";
+}
+
+// =================================================================================================
+// VesselMechanics (vessel_mechanics.comp) shader tests
+// =================================================================================================
+
+// Two agents 4 units apart connected by 1 edge. Resting length=2, k=10.
+// After one step: each agent should move 0.5 * k * (dist - restLen) * dt = 0.5*10*2*1 = 10 units toward the other.
+// Expected: agents closer together than initial 4 units.
+TEST_F( ComputeTest, Shader_VesselMechanics_SpringReducesStretch )
+{
+    if( !m_device )
+        GTEST_SKIP();
+
+    struct VesselEdge { uint32_t agentA; uint32_t agentB; float dist; uint32_t flags; };
+
+    // Two agents: agent 0 at (-2, 0, 0), agent 1 at (2, 0, 0) → 4 units apart
+    std::vector<glm::vec4> agentsIn = {
+        glm::vec4( -2.0f, 0.0f, 0.0f, 1.0f ),
+        glm::vec4(  2.0f, 0.0f, 0.0f, 1.0f ),
+    };
+    std::vector<glm::vec4> agentsOut( 2, glm::vec4( 0.0f ) );
+    size_t agentBytes = 2 * sizeof( glm::vec4 );
+
+    VesselEdge edge = { 0u, 1u, 2.0f, 0u };
+    uint32_t   edgeCount = 1;
+    uint32_t   agentCount = 2;
+
+    BufferHandle inBuf        = m_rm->CreateBuffer( { agentBytes,          BufferType::STORAGE, "VMInAgents"    } );
+    BufferHandle outBuf       = m_rm->CreateBuffer( { agentBytes,          BufferType::STORAGE, "VMOutAgents"   } );
+    BufferHandle edgeBuf      = m_rm->CreateBuffer( { sizeof( VesselEdge ),BufferType::STORAGE, "VMEdges"       } );
+    BufferHandle edgeCountBuf = m_rm->CreateBuffer( { sizeof( uint32_t ),  BufferType::STORAGE, "VMEdgeCount"   } );
+    BufferHandle countBuf     = m_rm->CreateBuffer( { sizeof( uint32_t ),  BufferType::STORAGE, "VMCount"       } );
+
+    m_stream->UploadBufferImmediate( {
+        { inBuf,        agentsIn.data(), agentBytes,          0 },
+        { outBuf,       agentsOut.data(), agentBytes,         0 },
+        { edgeBuf,      &edge,            sizeof( VesselEdge ), 0 },
+        { edgeCountBuf, &edgeCount,       sizeof( uint32_t ),  0 },
+        { countBuf,     &agentCount,      sizeof( uint32_t ),  0 },
+    } );
+
+    ComputePipelineDesc   pipeDesc{ m_rm->CreateShader( "shaders/compute/biology/vessel_mechanics.comp" ), "TestVesselMechanics" };
+    ComputePipelineHandle pipeHandle = m_rm->CreatePipeline( pipeDesc );
+    ComputePipeline*      pipeline   = m_rm->GetPipeline( pipeHandle );
+
+    BindingGroup* bg = m_rm->GetBindingGroup( m_rm->CreateBindingGroup( pipeHandle, 0 ) );
+    bg->Bind( 0, m_rm->GetBuffer( inBuf ) );
+    bg->Bind( 1, m_rm->GetBuffer( outBuf ) );
+    bg->Bind( 2, m_rm->GetBuffer( edgeBuf ) );
+    bg->Bind( 3, m_rm->GetBuffer( edgeCountBuf ) );
+    bg->Bind( 4, m_rm->GetBuffer( countBuf ) );
+    bg->Build();
+
+    // k=10, restLen=2, dt=1 → stretch=2 → force=10*2=20 per agent
+    ComputePushConstants pc{};
+    pc.dt          = 1.0f;
+    pc.fParam0     = 10.0f; // springStiffness (k)
+    pc.fParam1     = 2.0f;  // restingLength
+    pc.offset      = 0;
+    pc.maxCapacity = 2;
+    pc.uParam0     = 0; // grpNdx
+
+    auto compCtxHandle = m_device->CreateThreadContext( QueueType::COMPUTE );
+    auto compCtx       = m_device->GetThreadContext( compCtxHandle );
+    auto compCmd       = compCtx->GetCommandBuffer( compCtx->CreateCommandBuffer() );
+
+    compCmd->Begin();
+    compCmd->SetPipeline( pipeline );
+    compCmd->SetBindingGroup( bg, pipeline->GetLayout(), VK_PIPELINE_BIND_POINT_COMPUTE );
+    compCmd->PushConstants( pipeline->GetLayout(), VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof( pc ), &pc );
+    compCmd->Dispatch( 1, 1, 1 );
+    compCmd->End();
+
+    m_device->GetComputeQueue()->Submit( { compCmd } );
+    m_device->GetComputeQueue()->WaitIdle();
+
+    std::vector<glm::vec4> result( 2 );
+    m_stream->ReadbackBufferImmediate( outBuf, result.data(), agentBytes );
+
+    // Agent 0 should have moved in +X (toward agent 1)
+    EXPECT_GT( result[ 0 ].x, agentsIn[ 0 ].x ) << "Agent 0 should move toward agent 1 (+X)";
+    // Agent 1 should have moved in -X (toward agent 0)
+    EXPECT_LT( result[ 1 ].x, agentsIn[ 1 ].x ) << "Agent 1 should move toward agent 0 (-X)";
+    // Gap between agents should be smaller than the initial 4 units
+    float gap = result[ 1 ].x - result[ 0 ].x;
+    EXPECT_LT( gap, 4.0f ) << "Spring force must reduce the gap between the two agents";
+    // w-components (alive flags) must be preserved
+    EXPECT_FLOAT_EQ( result[ 0 ].w, 1.0f );
+    EXPECT_FLOAT_EQ( result[ 1 ].w, 1.0f );
+
+    m_rm->DestroyBuffer( inBuf );
+    m_rm->DestroyBuffer( outBuf );
+    m_rm->DestroyBuffer( edgeBuf );
+    m_rm->DestroyBuffer( edgeCountBuf );
+    m_rm->DestroyBuffer( countBuf );
 }

@@ -61,6 +61,10 @@ namespace Gaudi
                     return "Drain: " + b.fieldName;
                 else if constexpr( std::is_same_v<T, DigitalTwin::Behaviours::VesselSeed> )
                     return "Vessel Seed";
+                else if constexpr( std::is_same_v<T, DigitalTwin::Behaviours::VesselSpring> )
+                    return "Vessel Spring";
+                else if constexpr( std::is_same_v<T, DigitalTwin::Behaviours::PhalanxActivation> )
+                    return "Phalanx Activation";
                 else
                     return "Unknown";
             },

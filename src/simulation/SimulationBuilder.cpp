@@ -816,8 +816,11 @@ namespace DigitalTwin
                     ComputePipelineHandle phenoPipeHandle = m_resourceManager->CreatePipeline( phenoDesc );
                     ComputePipeline*      phenoPipe       = m_resourceManager->GetPipeline( phenoPipeHandle );
 
-                    ComputePipelineDesc   mitosisDesc{ m_resourceManager->CreateShader( "shaders/compute/biology/mitosis_append.comp" ),
-                                                     "MitosisAppend" };
+                    std::string mitosisShaderPath = cellCycle.directedMitosis
+                        ? "shaders/compute/biology/mitosis_vessel_append.comp"
+                        : "shaders/compute/biology/mitosis_append.comp";
+                    ComputePipelineDesc   mitosisDesc{ m_resourceManager->CreateShader( mitosisShaderPath ),
+                                                     cellCycle.directedMitosis ? "MitosisVesselAppend" : "MitosisAppend" };
                     ComputePipelineHandle mitosisPipeHandle = m_resourceManager->CreatePipeline( mitosisDesc );
                     ComputePipeline*      mitosisPipe       = m_resourceManager->GetPipeline( mitosisPipeHandle );
 
@@ -1147,6 +1150,8 @@ namespace DigitalTwin
                             bg0->Bind( 4, m_resourceManager->GetBuffer( outState.phenotypeBuffer ) );
                         else
                             bg0->Bind( 4, m_resourceManager->GetBuffer( outState.agentBuffers[ 0 ] ) );
+                        bg0->Bind( 5, m_resourceManager->GetBuffer( outState.hashBuffer ) );
+                        bg0->Bind( 6, m_resourceManager->GetBuffer( outState.offsetBuffer ) );
                         bg0->Build();
 
                         BindingGroup* bg1 = m_resourceManager->GetBindingGroup( m_resourceManager->CreateBindingGroup( pipe, 0 ) );
@@ -1158,19 +1163,26 @@ namespace DigitalTwin
                             bg1->Bind( 4, m_resourceManager->GetBuffer( outState.phenotypeBuffer ) );
                         else
                             bg1->Bind( 4, m_resourceManager->GetBuffer( outState.agentBuffers[ 1 ] ) );
+                        bg1->Bind( 5, m_resourceManager->GetBuffer( outState.hashBuffer ) );
+                        bg1->Bind( 6, m_resourceManager->GetBuffer( outState.offsetBuffer ) );
                         bg1->Build();
+
+                        bool enableContactInhibition = ( chemo.contactInhibitionDensity > 0.0f );
+                        float hashCellSize = blueprint.GetSpatialPartitioning().cellSize;
 
                         ComputePushConstants pc{};
                         pc.fParam0     = chemo.chemotacticSensitivity;
                         pc.fParam1     = chemo.receptorSaturation;
                         pc.fParam2     = chemo.maxVelocity;
                         pc.fParam3     = static_cast<float>( record.requiredCellType );
+                        pc.fParam4     = chemo.contactInhibitionDensity;
                         pc.offset      = currentOffset;
                         pc.maxCapacity = paddedCount;
                         pc.uParam0     = static_cast<uint32_t>( record.requiredLifecycleState ); // -1 → 0xFFFFFFFF
                         pc.uParam1     = groupIndex;
-                        pc.domainSize  = glm::vec4( blueprint.GetDomainSize(), 0.0f );
-                        pc.gridSize    = glm::uvec4( targetGrid->width, targetGrid->height, targetGrid->depth, 0 );
+                        pc.domainSize  = glm::vec4( blueprint.GetDomainSize(), enableContactInhibition ? hashCellSize : 0.0f );
+                        pc.gridSize    = glm::uvec4( targetGrid->width, targetGrid->height, targetGrid->depth,
+                                                     enableContactInhibition ? offsetArraySize : 0u );
 
                         glm::uvec3  dispatch( ( paddedCount + 255 ) / 256, 1, 1 );
                         ComputeTask task( pipePtr, bg0, bg1, record.targetHz, pc, dispatch );
@@ -1626,6 +1638,58 @@ namespace DigitalTwin
 
                     DT_INFO( "[SimulationBuilder] VesselSeed: {} edges seeded for '{}'", edgeCount, group.GetName() );
                 }
+                if( std::holds_alternative<Behaviours::VesselSpring>( record.behaviour ) )
+                {
+                    const auto& spring = std::get<Behaviours::VesselSpring>( record.behaviour );
+
+                    // Ensure vessel edge buffers exist (VesselSeed/Anastomosis typically create these first)
+                    if( !outState.vesselEdgeBuffer.IsValid() )
+                    {
+                        struct VesselEdge { uint32_t agentA; uint32_t agentB; float dist; uint32_t flags; };
+                        outState.vesselEdgeBuffer = m_resourceManager->CreateBuffer(
+                            { paddedCount * sizeof( VesselEdge ), BufferType::STORAGE, "VesselEdgeBuffer" } );
+                        outState.vesselEdgeCountBuffer = m_resourceManager->CreateBuffer(
+                            { sizeof( uint32_t ), BufferType::STORAGE, "VesselEdgeCountBuffer" } );
+                        uint32_t zero = 0;
+                        m_streamingManager->UploadBufferImmediate( { { outState.vesselEdgeCountBuffer, &zero, sizeof( uint32_t ), 0 } } );
+                    }
+
+                    ComputePipelineDesc   springDesc{ m_resourceManager->CreateShader( "shaders/compute/biology/vessel_mechanics.comp" ),
+                                                      "VesselSpringPipeline" };
+                    ComputePipelineHandle springPipeHandle = m_resourceManager->CreatePipeline( springDesc );
+                    ComputePipeline*      springPipe       = m_resourceManager->GetPipeline( springPipeHandle );
+
+                    BindingGroup* bgSpring0 = m_resourceManager->GetBindingGroup( m_resourceManager->CreateBindingGroup( springPipeHandle, 0 ) );
+                    bgSpring0->Bind( 0, m_resourceManager->GetBuffer( outState.agentBuffers[ 0 ] ) );
+                    bgSpring0->Bind( 1, m_resourceManager->GetBuffer( outState.agentBuffers[ 1 ] ) );
+                    bgSpring0->Bind( 2, m_resourceManager->GetBuffer( outState.vesselEdgeBuffer ) );
+                    bgSpring0->Bind( 3, m_resourceManager->GetBuffer( outState.vesselEdgeCountBuffer ) );
+                    bgSpring0->Bind( 4, m_resourceManager->GetBuffer( outState.agentCountBuffer ) );
+                    bgSpring0->Build();
+
+                    BindingGroup* bgSpring1 = m_resourceManager->GetBindingGroup( m_resourceManager->CreateBindingGroup( springPipeHandle, 0 ) );
+                    bgSpring1->Bind( 0, m_resourceManager->GetBuffer( outState.agentBuffers[ 1 ] ) );
+                    bgSpring1->Bind( 1, m_resourceManager->GetBuffer( outState.agentBuffers[ 0 ] ) );
+                    bgSpring1->Bind( 2, m_resourceManager->GetBuffer( outState.vesselEdgeBuffer ) );
+                    bgSpring1->Bind( 3, m_resourceManager->GetBuffer( outState.vesselEdgeCountBuffer ) );
+                    bgSpring1->Bind( 4, m_resourceManager->GetBuffer( outState.agentCountBuffer ) );
+                    bgSpring1->Build();
+
+                    ComputePushConstants springPC{};
+                    springPC.offset      = currentOffset;
+                    springPC.maxCapacity = paddedCount;
+                    springPC.fParam0     = spring.springStiffness;
+                    springPC.fParam1     = spring.restingLength;
+                    springPC.uParam0     = groupIndex; // grpNdx
+
+                    glm::uvec3  dispatch( ( paddedCount + 255 ) / 256, 1, 1 );
+                    ComputeTask springTask( springPipe, bgSpring0, bgSpring1, record.targetHz, springPC, dispatch );
+                    springTask.SetTag( "spring" + tagBase );
+                    springTask.SetChainFlip( true );
+                    outState.computeGraph.AddTask( springTask );
+
+                    DT_INFO( "[SimulationBuilder] Compiled VesselSpring for '{}' at {}Hz", group.GetName(), record.targetHz );
+                }
                 behaviourIndex++;
             }
             currentOffset += paddedCount;
@@ -1778,6 +1842,18 @@ namespace DigitalTwin
                         const auto&          anastomosis = std::get<Behaviours::Anastomosis>( record.behaviour );
                         ComputePushConstants pc          = task->GetPushConstants();
                         pc.fParam0                       = anastomosis.contactDistance;
+                        task->UpdatePushConstants( pc );
+                    }
+                }
+                else if( std::holds_alternative<Behaviours::VesselSpring>( record.behaviour ) )
+                {
+                    ComputeTask* task = state.computeGraph.FindTask( "spring" + tagBase );
+                    if( task )
+                    {
+                        const auto&          spring = std::get<Behaviours::VesselSpring>( record.behaviour );
+                        ComputePushConstants pc     = task->GetPushConstants();
+                        pc.fParam0                  = spring.springStiffness;
+                        pc.fParam1                  = spring.restingLength;
                         task->UpdatePushConstants( pc );
                     }
                 }

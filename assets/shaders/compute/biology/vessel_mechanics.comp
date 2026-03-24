@@ -1,0 +1,64 @@
+#version 460
+layout(local_size_x = 256) in;
+
+layout(push_constant) uniform PushConstants {
+    float dt;
+    float totalTime;
+    float springStiffness;  // fParam0: Hooke's k
+    float restingLength;    // fParam1: equilibrium edge length
+    float fParam2;
+    float fParam3;
+    float fParam4;
+    float fParam5;
+    uint  offset;
+    uint  maxCapacity;
+    uint  grpNdx;           // uParam0: group index for counter lookup
+    uint  uParam1;
+    vec4  domainSize;
+    uvec4 gridSize;
+} pc;
+
+layout(std140, binding = 0) readonly buffer InputPositions  { vec4 positions[]; } readPos;
+layout(std140, binding = 1)          buffer OutputPositions { vec4 positions[]; } writePos;
+
+struct VesselEdge { uint agentA; uint agentB; float dist; uint flags; };
+layout(std430, binding = 2) readonly buffer Edges         { VesselEdge data[]; } edges;
+layout(std430, binding = 3) readonly buffer EdgeCountBuf  { uint count;         } edgeCount;
+layout(std430, binding = 4) readonly buffer CounterBuffer { uint counts[];      } counters;
+
+void main() {
+    uint idx = gl_GlobalInvocationID.x;
+    if (idx >= pc.maxCapacity) return;
+    if (idx >= counters.counts[pc.grpNdx]) return;
+
+    uint globalIdx = pc.offset + idx;
+
+    vec4 myData = readPos.positions[globalIdx];
+    writePos.positions[globalIdx] = myData; // always copy; overwritten below if alive
+    if (myData.w == 0.0) return;
+
+    vec3  myPos       = myData.xyz;
+    vec3  springForce = vec3(0.0);
+    uint  numEdges    = edgeCount.count;
+
+    for (uint e = 0; e < numEdges; e++) {
+        VesselEdge edge = edges.data[e];
+
+        uint otherIdx = 0xFFFFFFFF;
+        if      (edge.agentA == globalIdx) otherIdx = edge.agentB;
+        else if (edge.agentB == globalIdx) otherIdx = edge.agentA;
+        else continue;
+
+        vec4 otherData = readPos.positions[otherIdx];
+        if (otherData.w == 0.0) continue; // dead neighbor
+
+        vec3  delta   = otherData.xyz - myPos;
+        float dist    = length(delta);
+        if (dist < 0.001) continue;
+
+        float stretch  = dist - pc.restingLength;
+        springForce   += pc.springStiffness * stretch * (delta / dist);
+    }
+
+    writePos.positions[globalIdx] = vec4(myPos + springForce * pc.dt, myData.w);
+}

@@ -271,6 +271,14 @@ namespace DigitalTwin
                                 result.AddError( "AgentGroup '" + group.GetName() + "': Anastomosis contactDistance must be > 0" );
                         }
 
+                        if constexpr( std::is_same_v<T, Behaviours::VesselSpring> )
+                        {
+                            if( behaviour.springStiffness <= 0.0f )
+                                result.AddError( "AgentGroup '" + group.GetName() + "': VesselSpring springStiffness must be > 0" );
+                            if( behaviour.restingLength <= 0.0f )
+                                result.AddError( "AgentGroup '" + group.GetName() + "': VesselSpring restingLength must be > 0" );
+                        }
+
                         if constexpr( std::is_same_v<T, Behaviours::Perfusion> ||
                                       std::is_same_v<T, Behaviours::Drain> )
                         {

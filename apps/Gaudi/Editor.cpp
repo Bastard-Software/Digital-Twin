@@ -394,20 +394,22 @@ namespace Gaudi
         // Perfusion — StalkCells inject O2
         endo.AddBehaviour( DigitalTwin::Behaviours::Perfusion{ "Oxygen", 4.0f } ).SetHz( 60.0f );
 
-        // CellCycle — StalkCells only: gap-filling division extends the vessel behind the TipCell
-        endo.AddBehaviour( DigitalTwin::BiologyGenerator::StandardCellCycle()
-                               .SetBaseDoublingTime( 6.0f / 3600.0f )
-                               .SetProliferationOxygenTarget( 40.0f )
-                               .SetArrestPressureThreshold( 15.0f )
-                               .SetHypoxiaOxygenThreshold( 5.0f )
-                               .SetNecrosisOxygenThreshold( 1.0f )
-                               .SetApoptosisRate( 0.0f )
-                               .Build() )
+        // CellCycle — StalkCells only: directed mitosis extends the vessel along the tube axis
+        auto stalkCycle = DigitalTwin::BiologyGenerator::StandardCellCycle()
+                              .SetBaseDoublingTime( 6.0f / 3600.0f )
+                              .SetProliferationOxygenTarget( 40.0f )
+                              .SetArrestPressureThreshold( 15.0f )
+                              .SetHypoxiaOxygenThreshold( 5.0f )
+                              .SetNecrosisOxygenThreshold( 1.0f )
+                              .SetApoptosisRate( 0.0f )
+                              .Build();
+        stalkCycle.directedMitosis = true;
+        endo.AddBehaviour( stalkCycle )
             .SetHz( 10.0f )
             .SetRequiredCellType( static_cast<int>( DigitalTwin::CellType::StalkCell ) );
 
-        // Chemotaxis toward VEGF — TipCells only; scaled for larger domain
-        endo.AddBehaviour( DigitalTwin::Behaviours::Chemotaxis{ "VEGF", 6.0f, 0.002f, 4.0f } )
+        // Chemotaxis toward VEGF — TipCells only; contact inhibition halts migration when vessel density is high
+        endo.AddBehaviour( DigitalTwin::Behaviours::Chemotaxis{ "VEGF", 6.0f, 0.002f, 4.0f, 6.0f } )
             .SetHz( 60.0f )
             .SetRequiredCellType( static_cast<int>( DigitalTwin::CellType::TipCell ) );
 
@@ -415,6 +417,10 @@ namespace Gaudi
         endo.AddBehaviour( DigitalTwin::Behaviours::BrownianMotion{ 0.05f } )
             .SetHz( 60.0f )
             .SetRequiredCellType( static_cast<int>( DigitalTwin::CellType::TipCell ) );
+
+        // VesselSpring — Hooke's Law along vessel edges; runs after position updates to keep the tube coherent
+        endo.AddBehaviour( DigitalTwin::Behaviours::VesselSpring{ /* springStiffness */ 5.0f, /* restingLength */ 2.0f } )
+            .SetHz( 60.0f );
 
         m_engine.SetBlueprint( m_blueprint );
     }

@@ -94,13 +94,18 @@ namespace Gaudi
                     b.necrosisO2 = std::max( b.necrosisO2, 0.0f );
 
                     ImGui::TextDisabled( "necrosis < hypoxia < target O2" );
+                    changed |= ImGui::Checkbox( "Directed Mitosis", &b.directedMitosis );
+                    if( live && ImGui::IsItemHovered() )
+                        ImGui::SetTooltip( "Requires Stop + Play to take effect" );
                 }
                 else if constexpr( std::is_same_v<T, DigitalTwin::Behaviours::Chemotaxis> )
                 {
                     ImGui::LabelText( "Target Field", "%s", b.fieldName.c_str() );
-                    changed |= ImGui::SliderFloat( "Sensitivity",  &b.chemotacticSensitivity, 0.01f, 20.0f );
-                    changed |= ImGui::SliderFloat( "Saturation",   &b.receptorSaturation,     0.0f,  1.0f, "%.4f" );
-                    changed |= ImGui::SliderFloat( "Max Velocity", &b.maxVelocity,            0.1f,  50.0f );
+                    changed |= ImGui::SliderFloat( "Sensitivity",  &b.chemotacticSensitivity,   0.01f, 20.0f );
+                    changed |= ImGui::SliderFloat( "Saturation",   &b.receptorSaturation,       0.0f,  1.0f, "%.4f" );
+                    changed |= ImGui::SliderFloat( "Max Velocity", &b.maxVelocity,              0.1f,  50.0f );
+                    changed |= ImGui::SliderFloat( "Contact Inhibition Density", &b.contactInhibitionDensity, 0.0f, 30.0f );
+                    ImGui::TextDisabled( "0 = disabled" );
                 }
                 else if constexpr( std::is_same_v<T, DigitalTwin::Behaviours::NotchDll4> )
                 {
@@ -128,6 +133,11 @@ namespace Gaudi
                     changed |= ImGui::SliderFloat( "Activation Threshold",   &b.activationThreshold,   0.1f, 200.0f );
                     changed |= ImGui::SliderFloat( "Deactivation Threshold", &b.deactivationThreshold, 0.0f, 100.0f );
                     ImGui::TextDisabled( "deactivation < activation required" );
+                }
+                else if constexpr( std::is_same_v<T, DigitalTwin::Behaviours::VesselSpring> )
+                {
+                    changed |= ImGui::SliderFloat( "Spring Stiffness", &b.springStiffness, 0.1f, 50.0f );
+                    changed |= ImGui::SliderFloat( "Resting Length",   &b.restingLength,   0.5f, 10.0f );
                 }
                 else if constexpr( std::is_same_v<T, DigitalTwin::Behaviours::Anastomosis> )
                 {

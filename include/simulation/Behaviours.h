@@ -45,20 +45,22 @@ namespace DigitalTwin::Behaviours
      */
     struct CellCycle
     {
-        float growthRatePerSec;    // Fraction of biomass gained per second
-        float targetO2;            // Required O2 for optimal proliferation
-        float arrestPressure;      // Threshold for Contact Inhibition (Quiescence)
-        float necrosisO2;          // Threshold for starvation death
-        float hypoxiaO2;           // Threshold for starvation
-        float apoptosisProbPerSec; // Base probability of death per second
+        float growthRatePerSec;            // Fraction of biomass gained per second
+        float targetO2;                    // Required O2 for optimal proliferation
+        float arrestPressure;              // Threshold for Contact Inhibition (Quiescence)
+        float necrosisO2;                  // Threshold for starvation death
+        float hypoxiaO2;                   // Threshold for starvation
+        float apoptosisProbPerSec;         // Base probability of death per second
+        bool  directedMitosis = false;     // Place daughter along vessel axis (StalkCell sprouting)
     };
 
     struct Chemotaxis
     {
         std::string fieldName;
-        float       chemotacticSensitivity = 1.0f;   // Bias strength (µm²/s per unit gradient)
-        float       receptorSaturation     = 0.01f;  // Kd-like constant; 0 = linear (no saturation)
-        float       maxVelocity            = 5.0f;   // Hard clamp on resultant speed (µm/s)
+        float       chemotacticSensitivity    = 1.0f;  // Bias strength (µm²/s per unit gradient)
+        float       receptorSaturation        = 0.01f; // Kd-like constant; 0 = linear (no saturation)
+        float       maxVelocity               = 5.0f;  // Hard clamp on resultant speed (µm/s)
+        float       contactInhibitionDensity  = 0.0f;  // 0 = disabled; >0 = neighbor count for full stop
     };
 
     struct NotchDll4
@@ -87,6 +89,13 @@ namespace DigitalTwin::Behaviours
         std::string vegfFieldName;
         float       activationThreshold   = 20.0f; // VEGF level to wake PhalanxCell → StalkCell
         float       deactivationThreshold = 5.0f;  // VEGF level to re-quiesce StalkCell → PhalanxCell
+    };
+
+    // Hooke's Law spring forces along vessel edges, keeping the tube coherent as TipCells migrate.
+    struct VesselSpring
+    {
+        float springStiffness = 5.0f;  // Hooke's k — force per unit stretch per second
+        float restingLength   = 2.0f;  // Equilibrium cell-cell distance
     };
 
     // Seeds initial vessel edges between consecutive agents within each named segment.
@@ -128,7 +137,8 @@ namespace DigitalTwin
         Behaviours::Anastomosis,
         Behaviours::Perfusion,
         Behaviours::Drain,
-        Behaviours::VesselSeed>;
+        Behaviours::VesselSeed,
+        Behaviours::VesselSpring>;
 
     // Wrapper to attach execution parameters (like frequency) to a behaviour
     struct BehaviourRecord

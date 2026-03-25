@@ -419,7 +419,17 @@ namespace Gaudi
             .SetRequiredCellType( static_cast<int>( DigitalTwin::CellType::TipCell ) );
 
         // VesselSpring — Hooke's Law along vessel edges; runs after position updates to keep the tube coherent
-        endo.AddBehaviour( DigitalTwin::Behaviours::VesselSpring{ /* springStiffness */ 5.0f, /* restingLength */ 2.0f } )
+        endo.AddBehaviour( DigitalTwin::Behaviours::VesselSpring{ /* springStiffness */ 10.0f, /* restingLength */ 2.0f } )
+            .SetHz( 60.0f );
+
+        // JKR mechanics
+        endo.AddBehaviour( DigitalTwin::BiomechanicsGenerator::JKR()
+                               .SetYoungsModulus( 15.0f )
+                               .SetPoissonRatio( 0.4f )
+                               .SetAdhesionEnergy(
+                                   1.0f )
+                               .SetMaxInteractionRadius( 1.0f )
+                               .Build() )
             .SetHz( 60.0f );
 
         m_engine.SetBlueprint( m_blueprint );

@@ -34,6 +34,14 @@ set "CHK=%FILEPATH:\.git\=X%"
 if not "%CHK%"=="%FILEPATH%" exit /b
 set "CHK=%FILEPATH:\.claude\=X%"
 if not "%CHK%"=="%FILEPATH%" exit /b
+set "CHK=%FILEPATH:\tests\=X%"
+if not "%CHK%"=="%FILEPATH%" exit /b
+set "CHK=%FILEPATH:\cmake\=X%"
+if not "%CHK%"=="%FILEPATH%" exit /b
+set "CHK=%FILEPATH:\src\rhi\=X%"
+if not "%CHK%"=="%FILEPATH%" exit /b
+set "CHK=%FILEPATH:\src\platform\=X%"
+if not "%CHK%"=="%FILEPATH%" exit /b
 
 REM Skip the output file and this script
 set "CHK=%FILEPATH:\merged.txt=X%"

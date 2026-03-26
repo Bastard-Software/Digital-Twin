@@ -52,6 +52,20 @@ namespace DigitalTwin
         }
 
         /**
+         * @brief Creates a wall: insideValue inside the axis-aligned box, outsideValue beyond it.
+         * Useful for ECM confinement fields — low density in the vessel corridor, high density outside.
+         */
+        static GridInitFunction BoxWall( const glm::vec3& halfExtents, float insideValue, float outsideValue )
+        {
+            return [ halfExtents, insideValue, outsideValue ]( const glm::vec3& pos ) {
+                bool inside = glm::abs( pos.x ) <= halfExtents.x &&
+                              glm::abs( pos.y ) <= halfExtents.y &&
+                              glm::abs( pos.z ) <= halfExtents.z;
+                return inside ? insideValue : outsideValue;
+            };
+        }
+
+        /**
          * @brief Creates a field with multiple overlapping sources (Gaussians).
          * Ideal for simulating a network of blood vessels.
          */

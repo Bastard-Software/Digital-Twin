@@ -66,13 +66,14 @@ namespace DigitalTwin
 
     struct GridVisualizationSettings
     {
-        bool                  active       = false;
-        int                   fieldIndex   = 0; // Index of the GridField (0 = Oxygen, 1 = VEGF, etc.)
-        GridVisualizationMode mode         = GridVisualizationMode::SLICE_2D;
-        float                 sliceZ       = 0.5f;                                // Normalized Z depth [0.0 - 1.0] for the 2D slice
-        float                 opacitySlice = 0.4f;                                // Ideal for Heatmap
-        float                 opacityCloud = 0.04f;                               // Ideal for Raymarching
-        glm::vec4             colorMap     = glm::vec4( 0.0f, 0.5f, 1.0f, 1.0f ); // Base color of the substance
+        bool                  active             = false;
+        int                   fieldIndex         = 0;     // Index of the GridField (0 = Oxygen, 1 = VEGF, etc.)
+        GridVisualizationMode mode               = GridVisualizationMode::SLICE_2D;
+        float                 sliceZ             = 0.5f;  // Normalized Z depth [0.0 - 1.0] for the 2D slice
+        float                 opacitySlice       = 0.4f;  // Ideal for Heatmap
+        float                 opacityCloud       = 0.04f; // Ideal for Raymarching
+        float                 normalizationScale = 100.0f; // Concentration mapped to [0,1] by dividing by this value
+        glm::vec4             colorMap           = glm::vec4( 0.0f, 0.5f, 1.0f, 1.0f ); // Base color of the substance
     };
 
     struct VesselVisualizationSettings

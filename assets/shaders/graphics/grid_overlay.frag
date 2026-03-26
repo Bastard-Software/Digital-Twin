@@ -11,14 +11,14 @@ layout(set = 0, binding = 0) uniform CameraUBO
 
 layout(set = 0, binding = 1) uniform sampler3D u_Grid;
 
-layout(push_constant) uniform PC 
+layout(push_constant) uniform PC
 {
     int   mode;       // 0 = Volumetric Cloud, 1 = Slice 2D
-    float sliceZ;     
+    float sliceZ;
     float opacitySlice;
     float opacityCloud;
-    vec3  domainSize; 
-    float padding2;
+    vec3  domainSize;
+    float normalizationScale; // Concentration divided by this to get [0,1] range
 } pc;
 
 vec2 intersectAABB(vec3 ro, vec3 rd, vec3 boxMin, vec3 boxMax) 
@@ -41,10 +41,9 @@ float sampleGrid(vec3 uvw)
 }
 
 // --- MEDICAL TRANSFER FUNCTION (Heatmap) ---
-vec4 getTransferFunction(float concentration, float globalOpacity) 
+vec4 getTransferFunction(float concentration, float globalOpacity)
 {
-    // Assuming max concentration around 100.0
-    float t = clamp(concentration / 100.0, 0.0, 1.0);
+    float t = clamp(concentration / pc.normalizationScale, 0.0, 1.0);
 
     // If there is almost no oxygen, it's completely transparent
     if (t <= 0.01) return vec4(0.0);

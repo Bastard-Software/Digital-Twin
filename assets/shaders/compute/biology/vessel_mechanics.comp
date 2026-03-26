@@ -4,10 +4,10 @@ layout(local_size_x = 256) in;
 layout(push_constant) uniform PushConstants {
     float dt;
     float totalTime;
-    float springStiffness;  // fParam0: Hooke's k
-    float restingLength;    // fParam1: equilibrium edge length
-    float fParam2;
-    float fParam3;
+    float springStiffness;     // fParam0: Hooke's k
+    float restingLength;       // fParam1: equilibrium edge length
+    float dampingCoefficient;  // fParam2: implicit Euler damping (0 = no damping)
+    float reqCT;               // fParam3: required cell type (-1.0 = any)
     float fParam4;
     float fParam5;
     uint  offset;
@@ -26,6 +26,9 @@ layout(std430, binding = 2) readonly buffer Edges         { VesselEdge data[]; }
 layout(std430, binding = 3) readonly buffer EdgeCountBuf  { uint count;         } edgeCount;
 layout(std430, binding = 4) readonly buffer CounterBuffer { uint counts[];      } counters;
 
+struct PhenotypeData { uint lifecycleState; float biomass; float timer; uint cellType; };
+layout(std430, binding = 5) readonly buffer Phenotypes    { PhenotypeData data[]; } phenotypes;
+
 void main() {
     uint idx = gl_GlobalInvocationID.x;
     if (idx >= pc.maxCapacity) return;
@@ -36,6 +39,13 @@ void main() {
     vec4 myData = readPos.positions[globalIdx];
     writePos.positions[globalIdx] = myData; // always copy; overwritten below if alive
     if (myData.w == 0.0) return;
+
+    // Cell-type filter: reqCT == -1 means any type
+    int reqCT = int(pc.reqCT);
+    if (reqCT >= 0 && int(phenotypes.data[globalIdx].cellType) != reqCT) return;
+
+    // PhalanxCells are quiescent vessel lining — anchored, never displaced by springs.
+    if (phenotypes.data[globalIdx].cellType == 3u) return;
 
     vec3  myPos       = myData.xyz;
     vec3  springForce = vec3(0.0);
@@ -60,5 +70,7 @@ void main() {
         springForce   += pc.springStiffness * stretch * (delta / dist);
     }
 
-    writePos.positions[globalIdx] = vec4(myPos + springForce * pc.dt, myData.w);
+    vec3 displacement = springForce * pc.dt;
+    if (pc.dampingCoefficient > 0.0) displacement /= (1.0 + pc.dampingCoefficient * pc.dt);
+    writePos.positions[globalIdx] = vec4(myPos + displacement, myData.w);
 }

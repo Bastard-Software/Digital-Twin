@@ -45,10 +45,14 @@ void main() {
     if(idx >= pc.maxCapacity) return;
     if(idx >= counters.counts[pc.grpNdx]) return;
 
-    // Iterate sequentially through the sorted array to maximize cache hits
-    uint originalAgentIdx = sortedHashes.data[idx].agentIndex;
+    // Process this group's own agents by direct offset.
+    // The neighbourhood search still uses the global sorted hash (sortedHashes / cellOffsets),
+    // so forces from agents in OTHER groups are included — cross-group JKR works correctly.
+    // Newton's 3rd law holds because each group's own dispatch applies the reaction force
+    // to its own agents when they find the other group's agents as neighbours.
+    uint originalAgentIdx = pc.offset + idx;
 
-    // Universal state filtering — uses originalAgentIdx since jkr accesses via sorted hash
+    // Universal state filtering
     int reqLC = int(pc.reqLC);
     int reqCT = int(pc.reqCT);
     if (reqLC >= 0 && phenotypes.data[originalAgentIdx].lifecycleState != uint(reqLC)) return;
@@ -60,11 +64,12 @@ void main() {
     float totalPressure = 0.0;
     
     // Extract packed parameters
-    float repulsion = pc.repulsion;
-    float adhesion = pc.adhesion;
-    float maxRadius = pc.domainSize.w; 
-    float cellSize = maxRadius * 2.0;
-    uint offsetArraySize = pc.arrayOffset;
+    float repulsion    = pc.repulsion;
+    float adhesion     = pc.adhesion;
+    float damping      = pc.fParam4;
+    float maxRadius    = pc.fParam5;        // interaction radius (was domainSize.w — moved here)
+    float cellSize     = pc.domainSize.w;   // hash grid cell size — must match hash build cell size
+    uint  offsetArraySize = pc.arrayOffset;
 
     ivec3 myCell = ivec3(floor(myPos / cellSize));
 
@@ -119,8 +124,11 @@ void main() {
         }
     }
     
-    // Euler Integration
+    // Implicit Euler integration with optional velocity damping.
+    // Dividing by (1 + damping*dt) is the exact solution of F - damping*v = 0 for one step,
+    // unconditionally stable regardless of dt or damping magnitude.
     vec3 displacement = force * pc.dt;
+    if (damping > 0.0) displacement /= (1.0 + damping * pc.dt);
     vec4 newPos = vec4(myPos + displacement, inAgents.positions[originalAgentIdx].w);
     
     outAgents.positions[originalAgentIdx] = newPos;

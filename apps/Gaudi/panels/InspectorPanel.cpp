@@ -75,9 +75,10 @@ namespace Gaudi
                 }
                 else if constexpr( std::is_same_v<T, DigitalTwin::Behaviours::Biomechanics> )
                 {
-                    changed |= ImGui::SliderFloat( "Repulsion Stiffness", &b.repulsionStiffness, 0.0f, 50.0f );
+                    changed |= ImGui::SliderFloat( "Repulsion Stiffness", &b.repulsionStiffness, 0.0f, 100.0f );
                     changed |= ImGui::SliderFloat( "Adhesion Strength", &b.adhesionStrength, 0.0f, 20.0f );
                     changed |= ImGui::SliderFloat( "Max Radius", &b.maxRadius, 0.5f, 5.0f );
+                    changed |= ImGui::SliderFloat( "Damping", &b.dampingCoefficient, 0.0f, 100.0f );
                 }
                 else if constexpr( std::is_same_v<T, DigitalTwin::Behaviours::CellCycle> )
                 {
@@ -136,12 +137,14 @@ namespace Gaudi
                 }
                 else if constexpr( std::is_same_v<T, DigitalTwin::Behaviours::VesselSpring> )
                 {
-                    changed |= ImGui::SliderFloat( "Spring Stiffness", &b.springStiffness, 0.1f, 50.0f );
-                    changed |= ImGui::SliderFloat( "Resting Length",   &b.restingLength,   0.5f, 10.0f );
+                    changed |= ImGui::SliderFloat( "Spring Stiffness", &b.springStiffness,    0.1f, 50.0f );
+                    changed |= ImGui::SliderFloat( "Resting Length",   &b.restingLength,      0.5f, 10.0f );
+                    changed |= ImGui::SliderFloat( "Damping",          &b.dampingCoefficient, 0.0f, 50.0f );
                 }
                 else if constexpr( std::is_same_v<T, DigitalTwin::Behaviours::Anastomosis> )
                 {
                     changed |= ImGui::SliderFloat( "Contact Distance", &b.contactDistance, 0.1f, 10.0f );
+                    changed |= ImGui::Checkbox( "Allow Tip-to-Stalk", &b.allowTipToStalk );
                 }
                 else if constexpr( std::is_same_v<T, DigitalTwin::Behaviours::Perfusion> )
                 {
@@ -247,6 +250,9 @@ namespace Gaudi
             {
                 ImGui::SliderFloat( "Opacity", &vis.opacityCloud, 0.0f, 0.2f, "%.4f" );
             }
+
+            ImGui::SliderFloat( "Normalization", &vis.normalizationScale, 0.1f, 1000.0f, "%.1f", ImGuiSliderFlags_Logarithmic );
+            ImGui::SetItemTooltip( "Divide concentration by this to map to [0,1]. Lower = more sensitive." );
 
             ImGui::ColorEdit4( "Color", &vis.colorMap.x );
 

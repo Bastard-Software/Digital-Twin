@@ -110,14 +110,15 @@ namespace DigitalTwin
             float     opacitySlice;
             float     opacityCloud;
             glm::vec3 domainSize;
-            float     padding2;
+            float     normalizationScale;
         } pc;
 
-        pc.mode         = static_cast<int>( settings.mode );
-        pc.sliceZ       = settings.sliceZ;
-        pc.opacitySlice = settings.opacitySlice;
-        pc.opacityCloud = settings.opacityCloud;
-        pc.domainSize   = domainSize;
+        pc.mode               = static_cast<int>( settings.mode );
+        pc.sliceZ             = settings.sliceZ;
+        pc.opacitySlice       = settings.opacitySlice;
+        pc.opacityCloud       = settings.opacityCloud;
+        pc.domainSize         = domainSize;
+        pc.normalizationScale = settings.normalizationScale;
 
         cmd->PushConstants( pipeline->GetLayout(), VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof( VisPushConstants ), &pc );
 

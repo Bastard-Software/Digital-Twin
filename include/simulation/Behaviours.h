@@ -34,9 +34,10 @@ namespace DigitalTwin::Behaviours
      */
     struct Biomechanics
     {
-        float repulsionStiffness = 15.0f; // How hard cells push each other apart (Hertz force)
-        float adhesionStrength   = 2.0f;  // How strongly cells stick together (JKR force)
-        float maxRadius          = 1.5f;  // The interaction radius for collision detection
+        float repulsionStiffness  = 15.0f; // How hard cells push each other apart (Hertz force)
+        float adhesionStrength    = 2.0f;  // How strongly cells stick together (JKR force)
+        float maxRadius           = 1.5f;  // The interaction radius for collision detection
+        float dampingCoefficient  = 0.0f;  // Velocity drag (dashpot). 0 = no damping.
     };
 
     /**
@@ -78,6 +79,7 @@ namespace DigitalTwin::Behaviours
     struct Anastomosis
     {
         float contactDistance = 3.0f;
+        bool  allowTipToStalk = true; // TipCell can fuse with StalkCell from a different vessel component
     };
 
     // VEGF-gated Phalanx ↔ Stalk transitions.
@@ -94,8 +96,9 @@ namespace DigitalTwin::Behaviours
     // Hooke's Law spring forces along vessel edges, keeping the tube coherent as TipCells migrate.
     struct VesselSpring
     {
-        float springStiffness = 5.0f;  // Hooke's k — force per unit stretch per second
-        float restingLength   = 2.0f;  // Equilibrium cell-cell distance
+        float springStiffness    = 5.0f;  // Hooke's k — force per unit stretch per second
+        float restingLength      = 2.0f;  // Equilibrium cell-cell distance
+        float dampingCoefficient = 0.0f;  // Implicit Euler velocity drag. 0 = no damping.
     };
 
     // Seeds initial vessel edges between consecutive agents within each named segment.

@@ -12,10 +12,10 @@ layout(push_constant) uniform PushConstants {
     float stalkThreshold;       // fParam5
     uint  offset;
     uint  maxCapacity;
-    uint  offsetArraySize;      // uParam0 -- hash grid slot count
+    uint  offsetArraySize;      // uParam0 -- unused (kept for push constant layout compatibility)
     uint  grpNdx;               // uParam1 -- group index for agent count lookup
-    vec4  domainSize;           // .xyz = domain, .w = signalingRadius
-    uvec4 gridSize;             // unused
+    vec4  domainSize;           // .xyz = domain (w unused -- edge-based signaling needs no radius)
+    uvec4 gridSize;             // .xyz = VEGF texture size, .w = flag (>0 = VEGF bound)
 } pc;
 
 layout(std140, binding = 0) readonly buffer InputAgents { vec4 positions[]; } agents;
@@ -36,9 +36,12 @@ struct PhenotypeData {
 };
 layout(std430, binding = 2) buffer Phenotypes { PhenotypeData data[]; } phenotypes;
 
-struct AgentHash { uint hash; uint agentIndex; };
-layout(std430, binding = 3) readonly buffer Hashes  { AgentHash data[]; } sortedHashes;
-layout(std430, binding = 4) readonly buffer Offsets { uint startIndices[]; } cellOffsets;
+// Edge-based neighbor discovery — Notch-Delta is juxtacrine (contact) signaling.
+// Each cell signals only to cells it shares a vessel edge with.
+struct VesselEdge { uint agentA; uint agentB; float dist; uint flags; };
+layout(std430, binding = 3) readonly buffer EdgeBuffer      { VesselEdge data[]; } edges;
+layout(std430, binding = 4) readonly buffer EdgeCountBuffer { uint count; }         edgeCount;
+
 layout(std430, binding = 5) readonly buffer CounterBuffer { uint counts[]; } counters;
 layout(set = 0, binding = 6, r32f) uniform readonly image3D u_VEGF;
 
@@ -46,11 +49,6 @@ layout(set = 0, binding = 6, r32f) uniform readonly image3D u_VEGF;
 ivec3 toVoxel(vec3 worldPos) {
     vec3 n = clamp((worldPos + pc.domainSize.xyz * 0.5) / pc.domainSize.xyz, 0.0, 1.0);
     return ivec3(n * vec3(pc.gridSize.xyz));
-}
-
-uint hashPos(ivec3 cell) {
-    const uint p1 = 73856093; const uint p2 = 19349663; const uint p3 = 83492791;
-    return (uint(cell.x) * p1) ^ (uint(cell.y) * p2) ^ (uint(cell.z) * p3);
 }
 
 void main() {
@@ -69,48 +67,32 @@ void main() {
     // Skip PhalanxCells — quiescent ECs do not participate in Notch-Dll4 lateral inhibition
     if (phenotypes.data[globalIdx].cellType == 3u) return;
 
-    vec3  myPos           = myData.xyz;
-    float signalingRadius = pc.domainSize.w;
-    float cellSize        = signalingRadius * 2.0;
-
-    ivec3 myCell = ivec3(floor(myPos / cellSize));
-
-    // Accumulate Dll4 from juxtacrine neighbors (27-cell neighborhood in spatial hash)
+    // Accumulate Dll4 from juxtacrine neighbors via vessel edges.
+    // This gives each cell inhibitory signal from all connected vessel neighbors,
+    // guaranteeing exactly one TipCell per connected vessel segment.
     float sumNeighborDll4 = 0.0;
     int   neighborCount   = 0;
-    for (int z = -1; z <= 1; z++) {
-        for (int y = -1; y <= 1; y++) {
-            for (int x = -1; x <= 1; x++) {
-                uint neighborHash = hashPos(myCell + ivec3(x, y, z));
-                uint offsetIdx    = neighborHash % pc.offsetArraySize;
+    uint  numEdges        = edgeCount.count;
+    for (uint e = 0; e < numEdges; e++) {
+        uint a = edges.data[e].agentA;
+        uint b = edges.data[e].agentB;
+        uint neighborIdx;
+        if      (a == globalIdx) neighborIdx = b;
+        else if (b == globalIdx) neighborIdx = a;
+        else continue;
 
-                uint startIdx = cellOffsets.startIndices[offsetIdx];
-                if (startIdx == 0xFFFFFFFF) continue;
+        vec4 nPos = agents.positions[neighborIdx];
+        if (nPos.w == 0.0) continue; // dead slot
 
-                for (uint i = startIdx; i < pc.maxCapacity; i++) {
-                    if (sortedHashes.data[i].hash != neighborHash) break;
-
-                    uint neighborAgentIdx = sortedHashes.data[i].agentIndex;
-                    if (neighborAgentIdx == globalIdx) continue;
-
-                    vec4 neighborPos = agents.positions[neighborAgentIdx];
-                    if (neighborPos.w == 0.0) continue;
-
-                    float dist = length(myPos - neighborPos.xyz);
-                    if (dist < signalingRadius * 2.0) {
-                        sumNeighborDll4 += signaling.data[neighborAgentIdx].dll4;
-                        neighborCount++;
-                    }
-                }
-            }
-        }
+        sumNeighborDll4 += signaling.data[neighborIdx].dll4;
+        neighborCount++;
     }
 
     // VEGF gates VEGFR2 via Michaelis-Menten saturation: vegfr2BaseExpression is EC50.
     // When VEGF field is not bound (gridSize.w=0), vegfGating=1.0 → same as unmodulated.
     float vegfGating = 1.0;
     if (pc.gridSize.w > 0u) {
-        ivec3 voxel = toVoxel(myPos);
+        ivec3 voxel = toVoxel(myData.xyz);
         voxel = clamp(voxel, ivec3(0), ivec3(pc.gridSize.xyz) - 1);
         float localVEGF = imageLoad(u_VEGF, voxel).r;
         vegfGating = localVEGF / (localVEGF + pc.vegfr2BaseExpression);
@@ -134,9 +116,11 @@ void main() {
     signaling.data[globalIdx].nicd = newNicd;
     signaling.data[globalIdx].dll4 = newDll4;
 
-    // Write cell type based on Dll4 threshold
+    // Hysteresis: use both thresholds to create a dead zone [stalkThreshold, tipThreshold].
+    // Cells in the dead zone keep their current type, preventing Tip↔Stalk flip-flop.
     if (newDll4 > pc.tipThreshold)
         phenotypes.data[globalIdx].cellType = 1u; // TipCell
-    else
+    else if (newDll4 < pc.stalkThreshold)
         phenotypes.data[globalIdx].cellType = 2u; // StalkCell
+    // else: keep current type (Dll4 in dead zone — hysteresis)
 }

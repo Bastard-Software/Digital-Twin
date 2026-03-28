@@ -121,3 +121,27 @@ TEST( AgentGroupTest, AddCellTypeMorphology_StoresEntries )
     EXPECT_EQ( entries[ 1 ].cellTypeIndex, 2 );
     EXPECT_FALSE( entries[ 1 ].mesh.vertices.empty() );
 }
+
+// Per-cell-type color: the 3-argument overload stores the color; the 2-argument overload
+// defaults to color.x < 0 (sentinel meaning "use base group color").
+TEST( AgentGroupTest, AddCellTypeMorphology_WithColor_StoresColor )
+{
+    AgentGroup group( "EndothelialCells" );
+    glm::vec4 tipGreen( 0.1f, 0.9f, 0.2f, 1.0f );
+    glm::vec4 stalkYellow( 1.0f, 0.8f, 0.1f, 1.0f );
+
+    group.AddCellTypeMorphology( 1, MorphologyGenerator::CreateSpikySphere(), tipGreen );   // with color
+    group.AddCellTypeMorphology( 2, MorphologyGenerator::CreateCylinder() );                 // no color → sentinel
+
+    const auto& entries = group.GetCellTypeMorphologies();
+    ASSERT_EQ( entries.size(), 2u );
+
+    // Explicit color is stored correctly
+    EXPECT_FLOAT_EQ( entries[ 0 ].color.r, tipGreen.r );
+    EXPECT_FLOAT_EQ( entries[ 0 ].color.g, tipGreen.g );
+    EXPECT_FLOAT_EQ( entries[ 0 ].color.b, tipGreen.b );
+    EXPECT_GE( entries[ 0 ].color.x, 0.0f ) << "Positive color.x means override is active";
+
+    // No color → sentinel value (color.x < 0 → use base group color)
+    EXPECT_LT( entries[ 1 ].color.x, 0.0f ) << "Default color must be sentinel (< 0)";
+}

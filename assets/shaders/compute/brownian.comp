@@ -51,11 +51,11 @@ void main()
 
     uint globalIdx = pc.offset + idx;
 
-    // Universal state filtering
+    // Universal state filtering — passthrough to output so ChainFlip doesn't lose positions
     int reqLC = int(pc.uParam0);
     int reqCT = int(pc.reqCT);
-    if (reqLC >= 0 && phenotypes.data[globalIdx].lifecycleState != uint(reqLC)) return;
-    if (reqCT >= 0 && phenotypes.data[globalIdx].cellType != uint(reqCT)) return;
+    if (reqLC >= 0 && phenotypes.data[globalIdx].lifecycleState != uint(reqLC)) { outData.positions[globalIdx] = inData.positions[globalIdx]; return; }
+    if (reqCT >= 0 && phenotypes.data[globalIdx].cellType != uint(reqCT))       { outData.positions[globalIdx] = inData.positions[globalIdx]; return; }
 
     // Dead cells don't move
     if (phenotypes.data[globalIdx].lifecycleState >= 3u) {

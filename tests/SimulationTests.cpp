@@ -405,6 +405,61 @@ TEST_F( SimulationBuilderTest, Behaviour_SecreteField )
     state.Destroy( m_resourceManager.get() );
 }
 
+// 3b. SecreteField still works when a second group uses SetInitialCellType
+TEST_F( SimulationBuilderTest, Behaviour_SecreteField_WithInitialCellTypeOnSecondGroup )
+{
+    if( !m_device )
+        GTEST_SKIP();
+
+    SimulationBlueprint blueprint;
+    blueprint.SetDomainSize( glm::vec3( 10.0f ), 1.0f );
+
+    blueprint.AddGridField( "VEGF" )
+        .SetInitializer( DigitalTwin::GridInitializer::Constant( 0.0f ) )
+        .SetDiffusionCoefficient( 0.01f )
+        .SetComputeHz( 1.0f );
+
+    std::vector<glm::vec4> centerCell = { glm::vec4( 0.0f, 0.0f, 0.0f, 1.0f ) };
+    std::vector<glm::vec4> farCell    = { glm::vec4( 4.0f, 0.0f, 0.0f, 1.0f ) };
+
+    // Group 0: secretes VEGF
+    blueprint.AddAgentGroup( "SecretingCell" )
+        .SetCount( 1 )
+        .SetDistribution( centerCell )
+        .AddBehaviour( DigitalTwin::Behaviours::SecreteField{ "VEGF", 10.0f } )
+        .SetHz( 1.0f );
+
+    // Group 1: inert but has non-default initial cell type (PhalanxCell=3)
+    blueprint.AddAgentGroup( "InertCell" )
+        .SetCount( 1 )
+        .SetDistribution( farCell )
+        .SetInitialCellType( static_cast<int>( DigitalTwin::CellType::PhalanxCell ) );
+
+    DigitalTwin::SimulationBuilder builder( m_resourceManager.get(), m_streamingManager.get() );
+    SimulationState                state = builder.Build( blueprint );
+
+    auto compCtxHandle = m_device->CreateThreadContext( QueueType::COMPUTE );
+    auto compCtx       = m_device->GetThreadContext( compCtxHandle );
+    auto compCmd       = compCtx->GetCommandBuffer( compCtx->CreateCommandBuffer() );
+
+    GraphDispatcher dispatcher;
+    compCmd->Begin();
+    dispatcher.Dispatch( &state.computeGraph, compCmd, nullptr, 1.0f, 1.0f, 0 );
+    dispatcher.Dispatch( &state.computeGraph, compCmd, nullptr, 1.0f, 2.0f, 1 );
+    compCmd->End();
+
+    m_device->GetComputeQueue()->Submit( { compCmd } );
+    m_device->GetComputeQueue()->WaitIdle();
+
+    std::vector<float> gridData = ReadbackGrid( state, 0, m_streamingManager.get() );
+    uint32_t           centerIdx = 5 + 5 * 10 + 5 * 100;
+
+    EXPECT_GT( gridData[ centerIdx ], 9.0f )
+        << "SecreteField broken when a second group uses SetInitialCellType!";
+
+    state.Destroy( m_resourceManager.get() );
+}
+
 // 4. Test pure grid field diffusion (No Agents)
 TEST_F( SimulationBuilderTest, Behaviour_PureDiffusion )
 {
@@ -1016,10 +1071,13 @@ TEST_F( SimulationBuilderTest, Behaviour_NotchDll4_LateralInhibition )
         glm::vec4( 5.0f, 0.0f, 0.0f, 1.0f )
     };
 
-    blueprint.AddAgentGroup( "Endothelial" )
+    auto& endoGroup = blueprint.AddAgentGroup( "Endothelial" )
         .SetCount( 2 )
-        .SetDistribution( pos )
-        .AddBehaviour( Behaviours::NotchDll4{
+        .SetDistribution( pos );
+    // VesselSeed must come first — creates the edge between agents 0 and 1 that
+    // the edge-based Notch shader uses for juxtacrine signaling.
+    endoGroup.AddBehaviour( Behaviours::VesselSeed{ std::vector<uint32_t>{ 2u } } );
+    endoGroup.AddBehaviour( Behaviours::NotchDll4{
             /* dll4ProductionRate   */ 1.0f,
             /* dll4DecayRate        */ 0.1f,
             /* notchInhibitionGain  */ 100.0f, // Strong suppression + wide noise → proper differentiation
@@ -1181,6 +1239,71 @@ TEST_F( SimulationBuilderTest, Behaviour_Anastomosis_TwoTipCells_OutOfRange )
     uint32_t edgeCount = 0;
     m_streamingManager->ReadbackBufferImmediate( state.vesselEdgeCountBuffer, &edgeCount, sizeof( uint32_t ) );
     EXPECT_EQ( edgeCount, 0u ) << "No vessel edges should be recorded";
+
+    state.Destroy( m_resourceManager.get() );
+}
+
+// TipCell + StalkCell within contactDistance (allowTipToStalk=true) → TipCell becomes StalkCell,
+// existing StalkCell stays, edge count == 1.
+TEST_F( SimulationBuilderTest, Behaviour_Anastomosis_TipToStalk )
+{
+    if( !m_device )
+        GTEST_SKIP();
+
+    SimulationBlueprint blueprint;
+    blueprint.SetDomainSize( glm::vec3( 100.0f ), 1.0f )
+        .ConfigureSpatialPartitioning()
+        .SetCellSize( 30.0f )
+        .SetComputeHz( 60.0f );
+
+    // Two agents 2µm apart — contactDistance = 5µm → within range
+    std::vector<glm::vec4> pos = {
+        glm::vec4( 0.0f, 0.0f, 0.0f, 1.0f ),
+        glm::vec4( 2.0f, 0.0f, 0.0f, 1.0f )
+    };
+
+    Behaviours::Anastomosis anastomosis;
+    anastomosis.contactDistance = 5.0f;
+    anastomosis.allowTipToStalk = true;
+
+    blueprint.AddAgentGroup( "Endothelial" )
+        .SetCount( 2 )
+        .SetDistribution( pos )
+        .AddBehaviour( anastomosis )
+        .SetHz( 60.0f );
+
+    SimulationBuilder builder( m_resourceManager.get(), m_streamingManager.get() );
+    SimulationState   state = builder.Build( blueprint );
+
+    // Agent 0 = TipCell (1), Agent 1 = StalkCell (2); rest of buffer default (0)
+    struct PhenotypeData { uint32_t lifecycleState; float biomass; float timer; uint32_t cellType; };
+    std::vector<PhenotypeData> phenotypes( 131072, { 0u, 0.5f, 0.0f, 0u } );
+    phenotypes[ 0 ].cellType = 1u; // TipCell
+    phenotypes[ 1 ].cellType = 2u; // StalkCell
+    m_streamingManager->UploadBufferImmediate(
+        { { state.phenotypeBuffer, phenotypes.data(), 131072 * sizeof( PhenotypeData ) } } );
+
+    auto compCtxHandle = m_device->CreateThreadContext( QueueType::COMPUTE );
+    auto compCtx       = m_device->GetThreadContext( compCtxHandle );
+    auto compCmd       = compCtx->GetCommandBuffer( compCtx->CreateCommandBuffer() );
+
+    GraphDispatcher dispatcher;
+    compCmd->Begin();
+    dispatcher.Dispatch( &state.computeGraph, compCmd, nullptr, 1.0f / 60.0f, 0.0f, 0 );
+    compCmd->End();
+
+    m_device->GetComputeQueue()->Submit( { compCmd } );
+    m_device->GetComputeQueue()->WaitIdle();
+
+    std::vector<PhenotypeData> results( 2 );
+    m_streamingManager->ReadbackBufferImmediate( state.phenotypeBuffer, results.data(), 2 * sizeof( PhenotypeData ) );
+
+    EXPECT_EQ( results[ 0 ].cellType, 2u ) << "TipCell must become StalkCell (2) after Tip-to-Stalk anastomosis";
+    EXPECT_EQ( results[ 1 ].cellType, 2u ) << "Existing StalkCell must remain StalkCell (2)";
+
+    uint32_t edgeCount = 0;
+    m_streamingManager->ReadbackBufferImmediate( state.vesselEdgeCountBuffer, &edgeCount, sizeof( uint32_t ) );
+    EXPECT_EQ( edgeCount, 1u ) << "Exactly 1 vessel edge must be recorded for Tip-to-Stalk anastomosis";
 
     state.Destroy( m_resourceManager.get() );
 }
@@ -1653,6 +1776,117 @@ TEST_F( SimulationBuilderTest, Behaviour_VesselSeed_SeedsEdgesAtBuild )
     state.Destroy( m_resourceManager.get() );
 }
 
+// Edge chain split: a TipCell-adjacent StalkCell must produce a linear sprout, not a blob.
+// After each division the TipCell-adjacency edge transfers to the daughter, so the parent
+// loses the ability to divide again. Invariants:
+//   - At most 1 StalkCell is adjacent to the TipCell at any time
+//   - All other non-TipCell cells eventually convert to PhalanxCell after the grace period
+TEST_F( SimulationBuilderTest, Behaviour_CellCycle_DirectedMitosis_LinearChainExtends )
+{
+    if( !m_device )
+        GTEST_SKIP();
+
+    using namespace DigitalTwin;
+
+    SimulationBlueprint blueprint;
+    blueprint.SetDomainSize( glm::vec3( 100.0f ), 3.0f );
+    blueprint.AddGridField( "Oxygen" )
+        .SetInitializer( GridInitializer::Constant( 50.0f ) )
+        .SetComputeHz( 60.0f );
+
+    // TipCell at origin, StalkCell 2 units away — VesselSeed creates 1 edge: 0↔1
+    std::vector<glm::vec4> positions = {
+        glm::vec4( 0.0f, 0.0f, 0.0f, 1.0f ), // slot 0: TipCell
+        glm::vec4( 2.0f, 0.0f, 0.0f, 1.0f ), // slot 1: StalkCell
+    };
+
+    auto stalkCycle = BiologyGenerator::StandardCellCycle()
+                          .SetBaseDoublingTime( 1.0f / 3600.0f ) // 1 s per doubling (argument is hours)
+                          .SetProliferationOxygenTarget( 40.0f )
+                          .SetArrestPressureThreshold( 999.0f ) // disable pressure arrest
+                          .SetNecrosisOxygenThreshold( 0.0f )
+                          .SetHypoxiaOxygenThreshold( 0.1f )
+                          .SetApoptosisRate( 0.0f )
+                          .Build();
+    stalkCycle.directedMitosis = true;
+
+    auto& vessel = blueprint.AddAgentGroup( "Vessel" )
+                       .SetCount( 2 )
+                       .SetDistribution( positions );
+    vessel.AddBehaviour( Behaviours::VesselSeed{ std::vector<uint32_t>{ 2u } } );
+    vessel.AddBehaviour( stalkCycle )
+        .SetHz( 10.0f )
+        .SetRequiredCellType( static_cast<int>( CellType::StalkCell ) );
+
+    SimulationBuilder builder( m_resourceManager.get(), m_streamingManager.get() );
+    SimulationState   state = builder.Build( blueprint );
+
+    // Set initial phenotypes: index 0 = TipCell, index 1 = StalkCell ready to divide
+    struct PhenotypeInit { uint32_t lifecycleState; float biomass; float timer; uint32_t cellType; };
+    std::vector<PhenotypeInit> initPheno = {
+        { 0u, 0.5f, 0.0f, 1u }, // TipCell — must not divide
+        { 0u, 0.5f, 0.0f, 2u }, // StalkCell — must divide, but only when TipCell-adjacent
+    };
+    m_streamingManager->UploadBufferImmediate(
+        { { state.phenotypeBuffer, initPheno.data(), 2 * sizeof( PhenotypeInit ), 0 } } );
+
+    auto compCtxHandle = m_device->CreateThreadContext( QueueType::COMPUTE );
+    auto compCtx       = m_device->GetThreadContext( compCtxHandle );
+    auto compCmd       = compCtx->GetCommandBuffer( compCtx->CreateCommandBuffer() );
+
+    GraphDispatcher dispatcher;
+    compCmd->Begin();
+    // Start totalTime at 4.0 s (past the 3.0 s grace period) so maturation is immediately active.
+    // 120 frames at 60 Hz = 2 s of simulation: allows multiple divisions (~2 s / 1 s per doubling).
+    for( int i = 0; i < 120; ++i )
+        dispatcher.Dispatch( &state.computeGraph, compCmd, nullptr, 1.0f / 60.0f, 4.0f + static_cast<float>( i ) / 60.0f, 0 );
+    compCmd->End();
+    m_device->GetComputeQueue()->Submit( { compCmd } );
+    m_device->GetComputeQueue()->WaitIdle();
+
+    uint32_t agentCount = 0;
+    m_streamingManager->ReadbackBufferImmediate( state.agentCountBuffer, &agentCount, sizeof( uint32_t ) );
+    EXPECT_GT( agentCount, 2u ) << "At least one StalkCell division must have occurred";
+
+    // Read phenotypes and edges to verify topology
+    std::vector<PhenotypeInit> pheno( agentCount );
+    m_streamingManager->ReadbackBufferImmediate( state.phenotypeBuffer, pheno.data(), agentCount * sizeof( PhenotypeInit ) );
+
+    struct VesselEdge { uint32_t agentA; uint32_t agentB; float dist; uint32_t flags; };
+    uint32_t edgeCount = 0;
+    m_streamingManager->ReadbackBufferImmediate( state.vesselEdgeCountBuffer, &edgeCount, sizeof( uint32_t ) );
+    std::vector<VesselEdge> edges( edgeCount );
+    m_streamingManager->ReadbackBufferImmediate( state.vesselEdgeBuffer, edges.data(), edgeCount * sizeof( VesselEdge ) );
+
+    // TipCell (index 0) must remain TipCell throughout
+    EXPECT_EQ( pheno[ 0 ].cellType, 1u ) << "TipCell (index 0) must never be overwritten";
+
+    // Count StalkCells adjacent to TipCell — must be exactly 1 (the proliferation front)
+    uint32_t stalkCellsAdjacentToTip = 0;
+    for( uint32_t e = 0; e < edgeCount; e++ )
+    {
+        uint32_t a = edges[ e ].agentA;
+        uint32_t b = edges[ e ].agentB;
+        bool aIsTip = ( a < agentCount && pheno[ a ].cellType == 1u );
+        bool bIsTip = ( b < agentCount && pheno[ b ].cellType == 1u );
+        bool aIsStalk = ( a < agentCount && pheno[ a ].cellType == 2u );
+        bool bIsStalk = ( b < agentCount && pheno[ b ].cellType == 2u );
+        if( ( aIsTip && bIsStalk ) || ( bIsTip && aIsStalk ) )
+            stalkCellsAdjacentToTip++;
+    }
+    EXPECT_EQ( stalkCellsAdjacentToTip, 1u ) << "Exactly one StalkCell must be adjacent to TipCell (proliferation front) — more indicates blobbing";
+
+    // All non-TipCell, non-StalkCell-at-front agents must be PhalanxCell (quiesced)
+    for( uint32_t i = 1; i < agentCount; i++ )
+    {
+        uint32_t ct = pheno[ i ].cellType;
+        EXPECT_TRUE( ct == 2u || ct == 3u )
+            << "Agent " << i << ": must be StalkCell or PhalanxCell, got type " << ct;
+    }
+
+    state.Destroy( m_resourceManager.get() );
+}
+
 // CellCycle with requiredCellType=StalkCell: StalkCell accumulates biomass and divides;
 // TipCell in the same group does not grow (stays at 0.5).
 TEST_F( SimulationBuilderTest, Behaviour_CellCycle_StalkCellOnlyDivides )
@@ -1865,6 +2099,325 @@ TEST_F( SimulationBuilderTest, Behaviour_VesselSpring_SpringReducesStretch )
     float gap = agents[ 1 ].x - agents[ 0 ].x;
     EXPECT_LT( gap, 6.0f ) << "Spring force must reduce the gap from the initial 6 units";
     EXPECT_GT( gap, 0.0f ) << "Agents must not overlap";
+
+    state.Destroy( m_resourceManager.get() );
+}
+
+// VesselSpring with dampingCoefficient=10: builder passes fParam2 correctly and the compute
+// graph dispatches the damped spring shader. Damped displacement must be smaller than undamped.
+TEST_F( SimulationBuilderTest, Behaviour_VesselSpring_Damping )
+{
+    if( !m_device )
+        GTEST_SKIP();
+
+    auto runConfig = [&]( float damping ) -> float
+    {
+        SimulationBlueprint bp;
+        bp.SetDomainSize( glm::vec3( 20.0f ), 1.0f );
+
+        std::vector<glm::vec4> pos = {
+            glm::vec4( -3.0f, 0.0f, 0.0f, 1.0f ),
+            glm::vec4(  3.0f, 0.0f, 0.0f, 1.0f ),
+        };
+
+        auto& vessel = bp.AddAgentGroup( "Vessel" )
+            .SetCount( 2 )
+            .SetDistribution( pos );
+        vessel.AddBehaviour( Behaviours::VesselSeed{ std::vector<uint32_t>{ 2u } } );
+        vessel.AddBehaviour( Behaviours::VesselSpring{ 20.0f, 2.0f, damping } ).SetHz( 60.0f );
+
+        SimulationBuilder builder( m_resourceManager.get(), m_streamingManager.get() );
+        SimulationState   state = builder.Build( bp );
+
+        auto compCtxHandle = m_device->CreateThreadContext( QueueType::COMPUTE );
+        auto compCtx       = m_device->GetThreadContext( compCtxHandle );
+        auto compCmd       = compCtx->GetCommandBuffer( compCtx->CreateCommandBuffer() );
+
+        GraphDispatcher dispatcher;
+        uint32_t        activeIdx = 0;
+        compCmd->Begin();
+        for( int i = 0; i < 1; ++i )
+            activeIdx = dispatcher.Dispatch( &state.computeGraph, compCmd, nullptr, 1.0f / 60.0f, static_cast<float>( i ) / 60.0f, activeIdx );
+        compCmd->End();
+
+        m_device->GetComputeQueue()->Submit( { compCmd } );
+        m_device->GetComputeQueue()->WaitIdle();
+
+        std::vector<glm::vec4> agents( 2 );
+        m_streamingManager->ReadbackBufferImmediate( state.agentBuffers[ activeIdx ], agents.data(), 2 * sizeof( glm::vec4 ) );
+
+        float displacement = agents[ 0 ].x - ( -3.0f ); // how much agent 0 moved from start
+        state.Destroy( m_resourceManager.get() );
+        return displacement;
+    };
+
+    float undamped = runConfig( 0.0f  );
+    float damped   = runConfig( 10.0f );
+
+    EXPECT_GT( undamped, 0.0f ) << "Undamped spring must move agent 0";
+    EXPECT_GT( damped,   0.0f ) << "Damped spring must still move agent 0";
+    EXPECT_LT( damped, undamped ) << "Damped displacement must be smaller than undamped";
+}
+
+// VesselSpring cell-type filter: builder sets fParam3 = requiredCellType correctly.
+// With requiredCellType=TipCell(1) and all agents initialised as Default(0),
+// no agent receives spring force — positions remain unchanged after one dispatch.
+TEST_F( SimulationBuilderTest, Behaviour_VesselSpring_CellTypeFilter )
+{
+    if( !m_device )
+        GTEST_SKIP();
+
+    SimulationBlueprint blueprint;
+    blueprint.SetDomainSize( glm::vec3( 20.0f ), 1.0f );
+
+    std::vector<glm::vec4> pos = {
+        glm::vec4( -3.0f, 0.0f, 0.0f, 1.0f ),
+        glm::vec4(  3.0f, 0.0f, 0.0f, 1.0f ),
+    };
+
+    auto& vessel = blueprint.AddAgentGroup( "Vessel" ).SetCount( 2 ).SetDistribution( pos );
+    // BrownianMotion (speed=0) ensures the phenotype buffer is created with default cellType=0
+    vessel.AddBehaviour( Behaviours::BrownianMotion{ 0.0f } ).SetHz( 60.0f );
+    vessel.AddBehaviour( Behaviours::VesselSeed{ std::vector<uint32_t>{ 2u } } );
+    vessel.AddBehaviour( Behaviours::VesselSpring{ 20.0f, 2.0f } )
+        .SetHz( 60.0f )
+        .SetRequiredCellType( static_cast<int>( CellType::TipCell ) ); // 1 — no agent matches
+
+    SimulationBuilder builder( m_resourceManager.get(), m_streamingManager.get() );
+    SimulationState   state = builder.Build( blueprint );
+
+    // Verify builder wired fParam3 = TipCell (1.0f) into the spring task
+    // BrownianMotion=index 0, VesselSeed=index 1, VesselSpring=index 2 → tag "spring_0_2"
+    ComputeTask* springTask = state.computeGraph.FindTask( "spring_0_2" );
+    ASSERT_NE( springTask, nullptr ) << "Builder must create a 'spring' task";
+    EXPECT_FLOAT_EQ( springTask->GetPushConstants().fParam3, static_cast<float>( CellType::TipCell ) )
+        << "Builder must pass requiredCellType into fParam3";
+
+    // Run one dispatch — agents have default cellType=0 (Default), filtered out by reqCT=1 (TipCell)
+    auto compCtxHandle = m_device->CreateThreadContext( QueueType::COMPUTE );
+    auto compCtx       = m_device->GetThreadContext( compCtxHandle );
+    auto compCmd       = compCtx->GetCommandBuffer( compCtx->CreateCommandBuffer() );
+
+    GraphDispatcher dispatcher;
+    uint32_t        activeIdx = 0;
+    compCmd->Begin();
+    activeIdx = dispatcher.Dispatch( &state.computeGraph, compCmd, nullptr, 1.0f / 60.0f, 0.0f, activeIdx );
+    compCmd->End();
+    m_device->GetComputeQueue()->Submit( { compCmd } );
+    m_device->GetComputeQueue()->WaitIdle();
+
+    std::vector<glm::vec4> agents( 2 );
+    m_streamingManager->ReadbackBufferImmediate( state.agentBuffers[ activeIdx ], agents.data(), 2 * sizeof( glm::vec4 ) );
+
+    // Both agents are Default (not TipCell) — spring force must not move them
+    EXPECT_FLOAT_EQ( agents[ 0 ].x, -3.0f ) << "Default-type agent must not move (filtered by reqCT=TipCell)";
+    EXPECT_FLOAT_EQ( agents[ 1 ].x,  3.0f ) << "Default-type agent must not move (filtered by reqCT=TipCell)";
+
+    state.Destroy( m_resourceManager.get() );
+}
+
+// VesselSpring PhalanxCell anchor: PhalanxCells (cellType==3) must remain stationary even
+// when reqCT==-1 (any type). Tests the shader's hardcoded anchor invariant end-to-end via
+// the full builder + GraphDispatcher path.
+TEST_F( SimulationBuilderTest, Behaviour_VesselSpring_PhalanxCellAnchored )
+{
+    if( !m_device )
+        GTEST_SKIP();
+
+    SimulationBlueprint blueprint;
+    blueprint.SetDomainSize( glm::vec3( 20.0f ), 1.0f );
+
+    std::vector<glm::vec4> pos = {
+        glm::vec4( -4.0f, 0.0f, 0.0f, 1.0f ),  // PhalanxCell
+        glm::vec4(  0.0f, 0.0f, 0.0f, 1.0f ),  // StalkCell
+        glm::vec4(  4.0f, 0.0f, 0.0f, 1.0f ),  // TipCell
+    };
+
+    auto& vessel = blueprint.AddAgentGroup( "Vessel" ).SetCount( 3 ).SetDistribution( pos );
+    vessel.AddBehaviour( DigitalTwin::Behaviours::BrownianMotion{ 0.0f } ).SetHz( 60.0f ); // creates phenotype buffer
+    vessel.AddBehaviour( DigitalTwin::Behaviours::VesselSeed{ std::vector<uint32_t>{ 3u } } );
+    vessel.AddBehaviour( DigitalTwin::Behaviours::VesselSpring{ 20.0f, 2.0f } ).SetHz( 60.0f ); // reqCT defaults to -1
+
+    SimulationBuilder builder( m_resourceManager.get(), m_streamingManager.get() );
+    SimulationState   state = builder.Build( blueprint );
+
+    // Set cell types: PhalanxCell(0), StalkCell(1), TipCell(2)
+    struct PhenotypeData { uint32_t lifecycleState; float biomass; float timer; uint32_t cellType; };
+    std::vector<PhenotypeData> phenotypes( 3, { 0u, 0.5f, 0.0f, 0u } );
+    phenotypes[ 0 ].cellType = 3u; // PhalanxCell
+    phenotypes[ 1 ].cellType = 2u; // StalkCell
+    phenotypes[ 2 ].cellType = 1u; // TipCell
+    m_streamingManager->UploadBufferImmediate( { { state.phenotypeBuffer, phenotypes.data(), 3 * sizeof( PhenotypeData ) } } );
+
+    auto compCtxHandle = m_device->CreateThreadContext( QueueType::COMPUTE );
+    auto compCtx       = m_device->GetThreadContext( compCtxHandle );
+    auto compCmd       = compCtx->GetCommandBuffer( compCtx->CreateCommandBuffer() );
+
+    GraphDispatcher dispatcher;
+    uint32_t        activeIdx = 0;
+    compCmd->Begin();
+    for( int i = 0; i < 10; ++i )
+        activeIdx = dispatcher.Dispatch( &state.computeGraph, compCmd, nullptr, 1.0f / 60.0f, static_cast<float>( i ) / 60.0f, activeIdx );
+    compCmd->End();
+    m_device->GetComputeQueue()->Submit( { compCmd } );
+    m_device->GetComputeQueue()->WaitIdle();
+
+    std::vector<glm::vec4> agents( 3 );
+    m_streamingManager->ReadbackBufferImmediate( state.agentBuffers[ activeIdx ], agents.data(), 3 * sizeof( glm::vec4 ) );
+
+    // PhalanxCell must not move — hardcoded anchor in shader overrides reqCT==-1
+    EXPECT_FLOAT_EQ( agents[ 0 ].x, -4.0f ) << "PhalanxCell must remain anchored";
+
+    // StalkCell and TipCell must move (spring forces active — spacing=4, restLen=2, k=20)
+    EXPECT_NE( agents[ 1 ].x, 0.0f )  << "StalkCell must be displaced by spring forces";
+    EXPECT_LT( agents[ 2 ].x, 4.0f )  << "TipCell must be pulled toward StalkCell";
+
+    state.Destroy( m_resourceManager.get() );
+}
+
+// NotchDll4 hysteresis integration: cell starting as TipCell with Dll4 in the dead zone
+// must retain TipCell after multiple compute graph dispatches.
+TEST_F( SimulationBuilderTest, Behaviour_NotchDll4_Hysteresis )
+{
+    if( !m_device )
+        GTEST_SKIP();
+
+    SimulationBlueprint blueprint;
+    blueprint.SetDomainSize( glm::vec3( 20.0f ), 1.0f );
+    blueprint.ConfigureSpatialPartitioning().SetMethod( SpatialPartitioningMethod::HashGrid ).SetCellSize( 4.0f ).SetMaxDensity( 32 ).SetComputeHz( 60.0f );
+
+    // Two adjacent agents — one Dll4-dominant (will become TipCell quickly), one suppressed
+    std::vector<glm::vec4> pos = {
+        glm::vec4( 0.0f, 0.0f, 0.0f, 1.0f ),
+        glm::vec4( 1.0f, 0.0f, 0.0f, 1.0f ),
+    };
+
+    blueprint.AddGridField( "VEGF" )
+        .SetDiffusionCoefficient( 0.0f )
+        .SetDecayRate( 0.0f )
+        .SetInitializer( GridInitializer::Constant( 5.0f ) ) // uniform VEGF — NotchDll4 convergence via Dll4 asymmetry
+        .SetComputeHz( 0.0f );
+
+    auto& group = blueprint.AddAgentGroup( "Vessel" )
+        .SetCount( 2 )
+        .SetDistribution( pos );
+
+    group.AddBehaviour( Behaviours::NotchDll4{
+        /* dll4ProductionRate   */ 1.0f,
+        /* dll4DecayRate        */ 0.1f,
+        /* notchInhibitionGain  */ 20.0f,
+        /* vegfr2BaseExpression */ 1.0f,
+        /* tipThreshold         */ 0.65f,
+        /* stalkThreshold       */ 0.25f,
+        /* vegfFieldName        */ "VEGF",
+        /* subSteps             */ 20u } ).SetHz( 60.0f );
+
+    SimulationBuilder builder( m_resourceManager.get(), m_streamingManager.get() );
+    SimulationState   state = builder.Build( blueprint );
+
+    // Initialise signaling buffer: agent 0 starts dominant (high Dll4), agent 1 suppressed
+    struct SignalingData { float dll4; float nicd; float vegfr2; float pad; };
+    std::vector<SignalingData> initSignal = { { 0.9f, 0.0f, 1.0f, 0.0f }, { 0.1f, 0.0f, 1.0f, 0.0f } };
+    m_streamingManager->UploadBufferImmediate( { { state.signalingBuffer, initSignal.data(), 2 * sizeof( SignalingData ), 0 } } );
+
+    auto compCtxHandle = m_device->CreateThreadContext( QueueType::COMPUTE );
+    auto compCtx       = m_device->GetThreadContext( compCtxHandle );
+    auto compCmd       = compCtx->GetCommandBuffer( compCtx->CreateCommandBuffer() );
+
+    GraphDispatcher dispatcher;
+    compCmd->Begin();
+    // Run enough frames to fully converge lateral inhibition
+    for( int i = 0; i < 30; ++i )
+        dispatcher.Dispatch( &state.computeGraph, compCmd, nullptr, 1.0f / 60.0f, static_cast<float>( i ) / 60.0f, 0 );
+    compCmd->End();
+
+    m_device->GetComputeQueue()->Submit( { compCmd } );
+    m_device->GetComputeQueue()->WaitIdle();
+
+    struct PhenotypeData { uint32_t lifecycleState; float biomass; float timer; uint32_t cellType; };
+    std::vector<PhenotypeData> result( 2 );
+    m_streamingManager->ReadbackBufferImmediate( state.phenotypeBuffer, result.data(), 2 * sizeof( PhenotypeData ) );
+
+    // Exactly one TipCell and one StalkCell — lateral inhibition must have converged
+    uint32_t tipCount   = ( result[ 0 ].cellType == 1u ? 1 : 0 ) + ( result[ 1 ].cellType == 1u ? 1 : 0 );
+    uint32_t stalkCount = ( result[ 0 ].cellType == 2u ? 1 : 0 ) + ( result[ 1 ].cellType == 2u ? 1 : 0 );
+    EXPECT_EQ( tipCount,   1u ) << "Lateral inhibition must select exactly one TipCell";
+    EXPECT_EQ( stalkCount, 1u ) << "The other cell must be StalkCell after lateral inhibition";
+
+    state.Destroy( m_resourceManager.get() );
+}
+
+// Directed mitosis maturation: a chain of StalkCells with NO TipCell in the group must have
+// all StalkCells converted to PhalanxCells after the first mitosis tick (no division occurs).
+TEST_F( SimulationBuilderTest, Behaviour_CellCycle_DirectedMitosis_NoTipNeighbor_Matures )
+{
+    if( !m_device )
+        GTEST_SKIP();
+
+    SimulationBlueprint blueprint;
+    blueprint.SetDomainSize( glm::vec3( 30.0f ), 3.0f );
+    blueprint.AddGridField( "Oxygen" )
+        .SetInitializer( GridInitializer::Constant( 50.0f ) )
+        .SetComputeHz( 60.0f );
+
+    // 2 StalkCells in a line, connected by VesselSeed
+    std::vector<glm::vec4> pos = {
+        glm::vec4( 0.0f, 0.0f, 0.0f, 1.0f ),
+        glm::vec4( 2.0f, 0.0f, 0.0f, 1.0f ),
+    };
+
+    auto stalkCycle = BiologyGenerator::StandardCellCycle()
+                          .SetBaseDoublingTime( 1.0f / 3600.0f ) // fast — ensures division would fire if allowed
+                          .SetProliferationOxygenTarget( 40.0f )
+                          .SetArrestPressureThreshold( 999.0f )  // disable pressure arrest
+                          .SetNecrosisOxygenThreshold( 0.0f )
+                          .SetHypoxiaOxygenThreshold( 0.1f )
+                          .SetApoptosisRate( 0.0f )
+                          .Build();
+    stalkCycle.directedMitosis = true;
+
+    auto& vessel = blueprint.AddAgentGroup( "Vessel" )
+                       .SetCount( 2 )
+                       .SetDistribution( pos );
+    vessel.AddBehaviour( Behaviours::VesselSeed{ std::vector<uint32_t>{ 2u } } );
+    vessel.AddBehaviour( stalkCycle )
+        .SetHz( 10.0f )
+        .SetRequiredCellType( static_cast<int>( CellType::StalkCell ) );
+
+    SimulationBuilder builder( m_resourceManager.get(), m_streamingManager.get() );
+    SimulationState   state = builder.Build( blueprint );
+
+    // Upload initial phenotypes: both cells are StalkCells, biomass=0.5
+    struct PhenotypeInit { uint32_t lifecycleState; float biomass; float timer; uint32_t cellType; };
+    std::vector<PhenotypeInit> initPheno = {
+        { 0u, 0.5f, 0.0f, 2u }, // StalkCell
+        { 0u, 0.5f, 0.0f, 2u }, // StalkCell
+    };
+    m_streamingManager->UploadBufferImmediate(
+        { { state.phenotypeBuffer, initPheno.data(), 2 * sizeof( PhenotypeInit ), 0 } } );
+
+    auto compCtxHandle = m_device->CreateThreadContext( QueueType::COMPUTE );
+    auto compCtx       = m_device->GetThreadContext( compCtxHandle );
+    auto compCmd       = compCtx->GetCommandBuffer( compCtx->CreateCommandBuffer() );
+
+    GraphDispatcher dispatcher;
+    compCmd->Begin();
+    // Start totalTime at 4.0 s (already past the 3.0 s grace period) so maturation fires
+    // immediately. 12 frames guarantees at least 2 CellCycle ticks at 10 Hz.
+    for( int i = 0; i < 12; ++i )
+        dispatcher.Dispatch( &state.computeGraph, compCmd, nullptr, 1.0f / 60.0f, 4.0f + static_cast<float>( i ) / 60.0f, 0 );
+    compCmd->End();
+    m_device->GetComputeQueue()->Submit( { compCmd } );
+    m_device->GetComputeQueue()->WaitIdle();
+
+    uint32_t agentCount = 0;
+    m_streamingManager->ReadbackBufferImmediate( state.agentCountBuffer, &agentCount, sizeof( uint32_t ) );
+    EXPECT_EQ( agentCount, 2u ) << "StalkCells with no TipCell neighbor must NOT divide";
+
+    std::vector<PhenotypeInit> pheno( 2 );
+    m_streamingManager->ReadbackBufferImmediate( state.phenotypeBuffer, pheno.data(), 2 * sizeof( PhenotypeInit ) );
+    EXPECT_EQ( pheno[ 0 ].cellType, 3u ) << "StalkCell[0] must mature to PhalanxCell after grace period";
+    EXPECT_EQ( pheno[ 1 ].cellType, 3u ) << "StalkCell[1] must mature to PhalanxCell after grace period";
 
     state.Destroy( m_resourceManager.get() );
 }

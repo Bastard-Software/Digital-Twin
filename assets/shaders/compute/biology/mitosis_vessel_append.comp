@@ -50,10 +50,9 @@ vec3 randomDirection(inout uint seed) {
     return vec3(r * cos(a), r * sin(a), z);
 }
 
-// Returns the local vessel axis for 'globalIdx' by inspecting the two nearest
-// edges in the edge buffer. For an end-cell (1 connection): direction toward the
-// single neighbor. For a chain cell (2+ connections): direction between the two
-// endpoint positions, which lies along the chain regardless of cancellation.
+// Returns the local vessel axis for 'globalIdx' pointing TOWARD the TipCell neighbor
+// (or away from the single neighbor for end-cells). This ensures daughters are placed
+// toward the migrating TipCell, extending the sprout linearly rather than piling up.
 vec3 vesselAxis(uint globalIdx, vec3 motherPos, uint numEdges, inout uint seed) {
     uint  otherA   = 0xFFFFFFFF;
     uint  otherB   = 0xFFFFFFFF;
@@ -80,10 +79,21 @@ vec3 vesselAxis(uint globalIdx, vec3 motherPos, uint numEdges, inout uint seed) 
         // End cell: axis points away from the single neighbor (extends the vessel)
         return normalize(motherPos - posA);
 
-    // Chain cell: axis is the direction between the two neighbors
-    vec3 posB  = agentsRead.positions[otherB].xyz;
-    vec3 axis  = posA - posB;
-    float len  = length(axis);
+    // Chain cell: orient axis toward TipCell so daughters extend the sprout (not back into vessel).
+    // Edge iteration order is arbitrary, so explicitly check which neighbor is TipCell.
+    vec3 posB = agentsRead.positions[otherB].xyz;
+    bool aIsTip = (inOutPhenotypes.data[otherA].cellType == 1u);
+    bool bIsTip = (inOutPhenotypes.data[otherB].cellType == 1u);
+
+    vec3 axis;
+    if (aIsTip)
+        axis = posA - posB; // A is TipCell → axis points toward TipCell
+    else if (bIsTip)
+        axis = posB - posA; // B is TipCell → axis points toward TipCell
+    else
+        axis = posA - posB; // no TipCell neighbor (shouldn't happen for proliferating StalkCell)
+
+    float len = length(axis);
     return (len > 0.001) ? (axis / len) : randomDirection(seed);
 }
 
@@ -95,6 +105,33 @@ void main() {
 
     if (agentsRead.positions[globalIdx].w == 0.0) return;
     if (inOutPhenotypes.data[globalIdx].lifecycleState != 0u) return;
+
+    // Stalk maturation: StalkCells not directly edge-connected to a TipCell quiesce to PhalanxCell.
+    // This restricts division to the proliferation zone (the 1 cell behind the TipCell) and stops
+    // ALL division instantly after anastomosis (once TipCells convert to StalkCells, no cell has a
+    // TipCell neighbor, so the entire vessel matures).
+    if (inOutPhenotypes.data[globalIdx].cellType == 2u) {
+        bool hasTipNeighbor = false;
+        uint numEdges = edgeCount.count;
+        for (uint e = 0; e < numEdges && !hasTipNeighbor; e++) {
+            uint other = 0xFFFFFFFF;
+            if      (edges.data[e].agentA == globalIdx) other = edges.data[e].agentB;
+            else if (edges.data[e].agentB == globalIdx) other = edges.data[e].agentA;
+            else continue;
+            if (agentsRead.positions[other].w == 0.0) continue;
+            if (inOutPhenotypes.data[other].cellType == 1u) hasTipNeighbor = true;
+        }
+        if (!hasTipNeighbor && numEdges > 0u) {
+            // Grace period: give NotchDll4 time to establish TipCells on all vessels
+            // before permanently quiescing non-proliferating StalkCells. After 3.0 s,
+            // NotchDll4 (3.0 s × 60 Hz × 20 subSteps = 3600 ODE iterations) has
+            // converged for all vessel segments. Post-anastomosis quiescence also relies on this.
+            if (pc.totalTime >= 3.0f)
+                inOutPhenotypes.data[globalIdx].cellType = 3u; // StalkCell → PhalanxCell
+            return; // Either way, don't divide
+        }
+    }
+
     if (inOutPhenotypes.data[globalIdx].biomass < 1.0) return;
 
     inOutPhenotypes.data[globalIdx].biomass = 0.5;
@@ -123,7 +160,9 @@ void main() {
         inOutPhenotypes.data[globalChildIdx].timer          = 0.0;
         inOutPhenotypes.data[globalChildIdx].cellType       = inOutPhenotypes.data[globalIdx].cellType;
 
-        // StalkCell division records the new vessel segment
+        // StalkCell division records the new vessel segment and advances the
+        // proliferation front so the chain extends linearly rather than the
+        // parent dividing in place.
         if (inOutPhenotypes.data[globalIdx].cellType == 2u) {
             float dist    = length(childPos.xyz - motherPos);
             uint  edgeIdx = atomicAdd(edgeCount.count, 1u);
@@ -132,6 +171,27 @@ void main() {
                 edges.data[edgeIdx].agentB = globalChildIdx;
                 edges.data[edgeIdx].dist   = dist;
                 edges.data[edgeIdx].flags  = 0u;
+            }
+
+            // Hand the parent↔TipCell edge to the daughter so the daughter becomes
+            // the new proliferation-zone cell. Parent then loses TipCell adjacency
+            // and will quiesce on the next maturation check.
+            // Topology before: ... ↔ parent ↔ TipCell
+            // Topology after:  ... ↔ parent ↔ daughter ↔ TipCell
+            for (uint e2 = 0u; e2 < edgeIdx; e2++) {
+                uint a = edges.data[e2].agentA;
+                uint b = edges.data[e2].agentB;
+                bool parentIsA = (a == globalIdx);
+                bool parentIsB = (b == globalIdx);
+                if (!parentIsA && !parentIsB) continue;
+
+                uint other = parentIsA ? b : a;
+                if (agentsRead.positions[other].w == 0.0) continue;
+                if (inOutPhenotypes.data[other].cellType != 1u) continue; // TipCell only
+
+                if (parentIsA) edges.data[e2].agentA = globalChildIdx;
+                else           edges.data[e2].agentB = globalChildIdx;
+                break;
             }
         }
     } else {

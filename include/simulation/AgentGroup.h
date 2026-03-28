@@ -16,6 +16,7 @@ namespace DigitalTwin
     {
         int            cellTypeIndex;
         MorphologyData mesh;
+        glm::vec4      color = glm::vec4( -1.0f ); // negative = fall back to group base color
     };
 
     /**
@@ -56,6 +57,11 @@ namespace DigitalTwin
             m_color = color;
             return *this;
         }
+        AgentGroup& SetInitialCellType( int cellType )
+        {
+            m_initialCellType = cellType;
+            return *this;
+        }
 
         template<typename T>
         BehaviourRecord& AddBehaviour( T behaviour )
@@ -69,6 +75,11 @@ namespace DigitalTwin
             m_cellTypeMorphologies.push_back( { cellTypeIndex, std::move( mesh ) } );
             return *this;
         }
+        AgentGroup& AddCellTypeMorphology( int cellTypeIndex, MorphologyData mesh, const glm::vec4& color )
+        {
+            m_cellTypeMorphologies.push_back( { cellTypeIndex, std::move( mesh ), color } );
+            return *this;
+        }
 
         // --- Getters ---
         const std::string&                   GetName() const { return m_name; }
@@ -76,6 +87,7 @@ namespace DigitalTwin
         const MorphologyData&                GetMorphology() const { return m_morphology; }
         const std::vector<glm::vec4>&        GetPositions() const { return m_positions; }
         const glm::vec4&                     GetColor() const { return m_color; }
+        int                                  GetInitialCellType() const { return m_initialCellType; }
         const std::vector<BehaviourRecord>&  GetBehaviours() const { return m_behaviours; }
         std::vector<BehaviourRecord>&        GetBehavioursMutable() { return m_behaviours; }
         const std::vector<MorphologyEntry>&  GetCellTypeMorphologies() const { return m_cellTypeMorphologies; }
@@ -86,6 +98,7 @@ namespace DigitalTwin
         MorphologyData                m_morphology;
         std::vector<glm::vec4>        m_positions;
         glm::vec4                     m_color = glm::vec4( 1.0f );
+        int                           m_initialCellType = 0;
         std::vector<BehaviourRecord>  m_behaviours;
         std::vector<MorphologyEntry>  m_cellTypeMorphologies;
     };

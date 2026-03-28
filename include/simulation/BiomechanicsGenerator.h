@@ -33,6 +33,11 @@ namespace DigitalTwin
                 m_maxRadius = r;
                 return *this;
             }
+            JKRBuilder& SetDampingCoefficient( float d )
+            {
+                m_damping = d;
+                return *this;
+            }
 
             Behaviours::Biomechanics Build() const
             {
@@ -44,6 +49,7 @@ namespace DigitalTwin
                 b.repulsionStiffness = effectiveStiffness;
                 b.adhesionStrength   = m_adhesionEnergy;
                 b.maxRadius          = m_maxRadius;
+                b.dampingCoefficient = m_damping;
 
                 return b;
             }
@@ -53,6 +59,7 @@ namespace DigitalTwin
             float m_poissonRatio   = 0.4f;  // Dimensionless (Compressibility)
             float m_adhesionEnergy = 2.0f;  // Adhesion strength
             float m_maxRadius      = 1.5f;  // micrometers
+            float m_damping        = 0.0f;  // Velocity drag coefficient
         };
 
         static JKRBuilder JKR() { return JKRBuilder(); }

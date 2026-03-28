@@ -256,7 +256,7 @@ namespace DigitalTwin
                 ctCmd.vertexOffset  = currentVertexOffset;
                 ctCmd.firstInstance  = currentReorderOffset;
                 indirectCommands.push_back( ctCmd );
-                groupColors.push_back( group.GetColor() ); // base color; shader overrides per cellType
+                groupColors.push_back( entry.color.x >= 0.0f ? entry.color : group.GetColor() );
                 drawMetaEntries.push_back( { groupIdx, static_cast<uint32_t>( entry.cellTypeIndex ), currentAgentOffset, capacity } );
 
                 currentVertexOffset  += static_cast<uint32_t>( entry.mesh.vertices.size() );
@@ -608,6 +608,50 @@ namespace DigitalTwin
         uint32_t paddedCount     = 131072;
         uint32_t offsetArraySize = 262144;
 
+        // Pre-pass: if any group specifies a non-zero initial cell type, create the phenotype buffer
+        // now with the correct per-group cellType values. All lazy-init checks below will then skip.
+        {
+            bool anyNonDefault = false;
+            for( const auto& g: blueprint.GetGroups() )
+                if( g.GetCount() > 0 && g.GetInitialCellType() != 0 )
+                    anyNonDefault = true;
+
+            if( anyNonDefault && !outState.phenotypeBuffer.IsValid() )
+            {
+                struct PhenotypeData { uint32_t lifecycleState; float biomass; float timer; uint32_t cellType; };
+
+                uint32_t globalCapacity = 0;
+                for( const auto& g: blueprint.GetGroups() )
+                {
+                    if( g.GetCount() == 0 ) continue;
+                    uint32_t cap = 131072;
+                    while( cap < g.GetCount() ) cap <<= 1;
+                    globalCapacity += cap;
+                }
+
+                size_t phenotypeSize     = globalCapacity * sizeof( PhenotypeData );
+                outState.phenotypeBuffer = m_resourceManager->CreateBuffer( { phenotypeSize, BufferType::STORAGE, "PhenotypeBuffer" } );
+                std::vector<PhenotypeData> initPhenotypes( globalCapacity, { 0u, 0.5f, 0.0f, 0u } );
+
+                // Apply per-group initial cell types
+                uint32_t off = 0;
+                for( const auto& g: blueprint.GetGroups() )
+                {
+                    if( g.GetCount() == 0 ) continue;
+                    uint32_t cap = 131072;
+                    while( cap < g.GetCount() ) cap <<= 1;
+                    if( g.GetInitialCellType() != 0 )
+                    {
+                        for( uint32_t i = 0; i < cap; i++ )
+                            initPhenotypes[ off + i ].cellType = static_cast<uint32_t>( g.GetInitialCellType() );
+                    }
+                    off += cap;
+                }
+
+                m_streamingManager->UploadBufferImmediate( { { outState.phenotypeBuffer, initPhenotypes.data(), phenotypeSize, 0 } } );
+            }
+        }
+
         uint32_t behaviourIndex = 0;
 
         for( const auto& group: blueprint.GetGroups() )
@@ -741,9 +785,13 @@ namespace DigitalTwin
                     jkrPC.fParam1              = biomechanics.adhesionStrength;
                     jkrPC.fParam2              = static_cast<float>( record.requiredLifecycleState );
                     jkrPC.fParam3              = static_cast<float>( record.requiredCellType );
+                    jkrPC.fParam4              = biomechanics.dampingCoefficient;
+                    jkrPC.fParam5              = biomechanics.maxRadius;
                     jkrPC.uParam0              = offsetArraySize;
                     jkrPC.uParam1              = groupIndex;
-                    jkrPC.domainSize           = glm::vec4( blueprint.GetDomainSize(), biomechanics.maxRadius );
+                    // domainSize.w = hash grid cell size (must match hash build cell size)
+                    // Same convention as Anastomosis and Chemotaxis shaders.
+                    jkrPC.domainSize           = glm::vec4( blueprint.GetDomainSize(), blueprint.GetSpatialPartitioning().cellSize );
 
                     // 4. Append Task to Compute Graph
                     glm::uvec3 jkrDispatch( ( paddedCount + 255 ) / 256, 1, 1 );
@@ -1296,6 +1344,22 @@ namespace DigitalTwin
                 {
                     const auto& notch = std::get<Behaviours::NotchDll4>( record.behaviour );
 
+                    // Allocate vessel edge buffers if not yet created (e.g., VesselSeed comes later
+                    // in the behaviour list, or is absent in tests with isolated agents).
+                    if( !outState.vesselEdgeBuffer.IsValid() )
+                    {
+                        struct VesselEdge { uint32_t agentA, agentB; float dist; uint32_t flags; };
+                        size_t edgeBufferSize     = paddedCount * sizeof( VesselEdge );
+                        outState.vesselEdgeBuffer = m_resourceManager->CreateBuffer(
+                            { edgeBufferSize, BufferType::STORAGE, "VesselEdgeBuffer" } );
+
+                        outState.vesselEdgeCountBuffer = m_resourceManager->CreateBuffer(
+                            { sizeof( uint32_t ), BufferType::STORAGE, "VesselEdgeCountBuffer" } );
+                        uint32_t zero = 0;
+                        m_streamingManager->UploadBufferImmediate(
+                            { { outState.vesselEdgeCountBuffer, &zero, sizeof( uint32_t ) } } );
+                    }
+
                     // Allocate signaling buffer once (global, covers all agent slots)
                     if( !outState.signalingBuffer.IsValid() )
                     {
@@ -1398,12 +1462,13 @@ namespace DigitalTwin
                     auto vegfTex1 = vegfGrid ? vegfGrid->textures[ 1 ] : dummyVEGF;
 
                     // Binding groups — ping-pong on agent read buffer; signaling/phenotype are single shared buffers
+                    // Notch-Delta uses vessel edges for juxtacrine neighbor discovery (bindings 3+4).
                     BindingGroup* bgNotch0 = m_resourceManager->GetBindingGroup( m_resourceManager->CreateBindingGroup( notchPipeHandle, 0 ) );
                     bgNotch0->Bind( 0, m_resourceManager->GetBuffer( outState.agentBuffers[ 0 ] ) );
                     bgNotch0->Bind( 1, m_resourceManager->GetBuffer( outState.signalingBuffer ) );
                     bgNotch0->Bind( 2, m_resourceManager->GetBuffer( outState.phenotypeBuffer ) );
-                    bgNotch0->Bind( 3, m_resourceManager->GetBuffer( outState.hashBuffer ) );
-                    bgNotch0->Bind( 4, m_resourceManager->GetBuffer( outState.offsetBuffer ) );
+                    bgNotch0->Bind( 3, m_resourceManager->GetBuffer( outState.vesselEdgeBuffer ) );
+                    bgNotch0->Bind( 4, m_resourceManager->GetBuffer( outState.vesselEdgeCountBuffer ) );
                     bgNotch0->Bind( 5, m_resourceManager->GetBuffer( outState.agentCountBuffer ) );
                     bgNotch0->Bind( 6, m_resourceManager->GetTexture( vegfTex0 ), VK_IMAGE_LAYOUT_GENERAL );
                     bgNotch0->Build();
@@ -1412,15 +1477,13 @@ namespace DigitalTwin
                     bgNotch1->Bind( 0, m_resourceManager->GetBuffer( outState.agentBuffers[ 1 ] ) );
                     bgNotch1->Bind( 1, m_resourceManager->GetBuffer( outState.signalingBuffer ) );
                     bgNotch1->Bind( 2, m_resourceManager->GetBuffer( outState.phenotypeBuffer ) );
-                    bgNotch1->Bind( 3, m_resourceManager->GetBuffer( outState.hashBuffer ) );
-                    bgNotch1->Bind( 4, m_resourceManager->GetBuffer( outState.offsetBuffer ) );
+                    bgNotch1->Bind( 3, m_resourceManager->GetBuffer( outState.vesselEdgeBuffer ) );
+                    bgNotch1->Bind( 4, m_resourceManager->GetBuffer( outState.vesselEdgeCountBuffer ) );
                     bgNotch1->Bind( 5, m_resourceManager->GetBuffer( outState.agentCountBuffer ) );
                     bgNotch1->Bind( 6, m_resourceManager->GetTexture( vegfTex1 ), VK_IMAGE_LAYOUT_GENERAL );
                     bgNotch1->Build();
 
-                    // Push constants
-                    float signalingRadius = blueprint.GetSpatialPartitioning().cellSize * 0.5f;
-
+                    // Push constants (uParam0/domainSize.w unused — edge-based signaling needs no radius)
                     ComputePushConstants notchPC{};
                     notchPC.fParam0     = notch.dll4ProductionRate;
                     notchPC.fParam1     = notch.dll4DecayRate;
@@ -1430,9 +1493,9 @@ namespace DigitalTwin
                     notchPC.fParam5     = notch.stalkThreshold;
                     notchPC.offset      = currentOffset;
                     notchPC.maxCapacity = paddedCount;
-                    notchPC.uParam0     = offsetArraySize;
+                    notchPC.uParam0     = 0u;
                     notchPC.uParam1     = groupIndex;
-                    notchPC.domainSize  = glm::vec4( blueprint.GetDomainSize(), signalingRadius );
+                    notchPC.domainSize  = glm::vec4( blueprint.GetDomainSize(), 0.0f );
                     notchPC.gridSize    = notchGridSize;
 
                     glm::uvec3 notchDispatch( ( paddedCount + 255 ) / 256, 1, 1 );
@@ -1497,54 +1560,10 @@ namespace DigitalTwin
                         m_streamingManager->UploadBufferImmediate( { { outState.vesselEdgeCountBuffer, &zero, sizeof( uint32_t ) } } );
                     }
 
-                    ComputePipelineDesc   anastomosisDesc{ m_resourceManager->CreateShader( "shaders/compute/biology/anastomosis.comp" ),
-                                                          "AnastomosisPipeline" };
-                    ComputePipelineHandle anastomosisPipeHandle = m_resourceManager->CreatePipeline( anastomosisDesc );
-                    ComputePipeline*      anastomosisPipe       = m_resourceManager->GetPipeline( anastomosisPipeHandle );
-
-                    BindingGroup* bgAnastomosis0 =
-                        m_resourceManager->GetBindingGroup( m_resourceManager->CreateBindingGroup( anastomosisPipeHandle, 0 ) );
-                    bgAnastomosis0->Bind( 0, m_resourceManager->GetBuffer( outState.agentBuffers[ 0 ] ) );
-                    bgAnastomosis0->Bind( 1, m_resourceManager->GetBuffer( outState.phenotypeBuffer ) );
-                    bgAnastomosis0->Bind( 2, m_resourceManager->GetBuffer( outState.hashBuffer ) );
-                    bgAnastomosis0->Bind( 3, m_resourceManager->GetBuffer( outState.offsetBuffer ) );
-                    bgAnastomosis0->Bind( 4, m_resourceManager->GetBuffer( outState.agentCountBuffer ) );
-                    bgAnastomosis0->Bind( 5, m_resourceManager->GetBuffer( outState.vesselEdgeBuffer ) );
-                    bgAnastomosis0->Bind( 6, m_resourceManager->GetBuffer( outState.vesselEdgeCountBuffer ) );
-                    bgAnastomosis0->Build();
-
-                    BindingGroup* bgAnastomosis1 =
-                        m_resourceManager->GetBindingGroup( m_resourceManager->CreateBindingGroup( anastomosisPipeHandle, 0 ) );
-                    bgAnastomosis1->Bind( 0, m_resourceManager->GetBuffer( outState.agentBuffers[ 1 ] ) );
-                    bgAnastomosis1->Bind( 1, m_resourceManager->GetBuffer( outState.phenotypeBuffer ) );
-                    bgAnastomosis1->Bind( 2, m_resourceManager->GetBuffer( outState.hashBuffer ) );
-                    bgAnastomosis1->Bind( 3, m_resourceManager->GetBuffer( outState.offsetBuffer ) );
-                    bgAnastomosis1->Bind( 4, m_resourceManager->GetBuffer( outState.agentCountBuffer ) );
-                    bgAnastomosis1->Bind( 5, m_resourceManager->GetBuffer( outState.vesselEdgeBuffer ) );
-                    bgAnastomosis1->Bind( 6, m_resourceManager->GetBuffer( outState.vesselEdgeCountBuffer ) );
-                    bgAnastomosis1->Build();
-
-                    float hashCellSize = blueprint.GetSpatialPartitioning().cellSize;
-
-                    ComputePushConstants anastomosisPC{};
-                    anastomosisPC.fParam0     = anastomosis.contactDistance;
-                    anastomosisPC.offset      = currentOffset;
-                    anastomosisPC.maxCapacity = paddedCount;
-                    anastomosisPC.uParam0     = offsetArraySize;
-                    anastomosisPC.uParam1     = groupIndex;
-                    anastomosisPC.domainSize  = glm::vec4( blueprint.GetDomainSize(), hashCellSize );
-
-                    glm::uvec3  anastomosisDispatch( ( paddedCount + 255 ) / 256, 1, 1 );
-                    ComputeTask anastomosisTask( anastomosisPipe, bgAnastomosis0, bgAnastomosis1, record.targetHz, anastomosisPC,
-                                                anastomosisDispatch );
-                    anastomosisTask.SetTag( "anastomosis" + tagBase );
-                    // No ChainFlip — reads positions only, writes phenotype and edge buffers
-                    outState.computeGraph.AddTask( anastomosisTask );
-
-                    // Vessel Connected Components: 8-pass iterative label propagation over edges
-                    // Each pass propagates the minimum label one hop further; 8 passes handles
-                    // chains up to 8 anastomosis events long.
-                    if( !outState.vesselComponentBuffer.IsValid() )
+                    // Allocate vessel component buffer before creating binding groups (needed at binding 7).
+                    // Labels are read by the anastomosis shader to prevent fusing already-connected cells.
+                    const bool firstAnastomosis = !outState.vesselComponentBuffer.IsValid();
+                    if( firstAnastomosis )
                     {
                         // Component label buffer is global — indexed by absolute agent index
                         uint32_t globalCapacity = 0;
@@ -1567,7 +1586,60 @@ namespace DigitalTwin
                         std::iota( initLabels.begin(), initLabels.end(), 0u );
                         m_streamingManager->UploadBufferImmediate(
                             { { outState.vesselComponentBuffer, initLabels.data(), componentBufferSize } } );
+                    }
 
+                    ComputePipelineDesc   anastomosisDesc{ m_resourceManager->CreateShader( "shaders/compute/biology/anastomosis.comp" ),
+                                                          "AnastomosisPipeline" };
+                    ComputePipelineHandle anastomosisPipeHandle = m_resourceManager->CreatePipeline( anastomosisDesc );
+                    ComputePipeline*      anastomosisPipe       = m_resourceManager->GetPipeline( anastomosisPipeHandle );
+
+                    BindingGroup* bgAnastomosis0 =
+                        m_resourceManager->GetBindingGroup( m_resourceManager->CreateBindingGroup( anastomosisPipeHandle, 0 ) );
+                    bgAnastomosis0->Bind( 0, m_resourceManager->GetBuffer( outState.agentBuffers[ 0 ] ) );
+                    bgAnastomosis0->Bind( 1, m_resourceManager->GetBuffer( outState.phenotypeBuffer ) );
+                    bgAnastomosis0->Bind( 2, m_resourceManager->GetBuffer( outState.hashBuffer ) );
+                    bgAnastomosis0->Bind( 3, m_resourceManager->GetBuffer( outState.offsetBuffer ) );
+                    bgAnastomosis0->Bind( 4, m_resourceManager->GetBuffer( outState.agentCountBuffer ) );
+                    bgAnastomosis0->Bind( 5, m_resourceManager->GetBuffer( outState.vesselEdgeBuffer ) );
+                    bgAnastomosis0->Bind( 6, m_resourceManager->GetBuffer( outState.vesselEdgeCountBuffer ) );
+                    bgAnastomosis0->Bind( 7, m_resourceManager->GetBuffer( outState.vesselComponentBuffer ) );
+                    bgAnastomosis0->Build();
+
+                    BindingGroup* bgAnastomosis1 =
+                        m_resourceManager->GetBindingGroup( m_resourceManager->CreateBindingGroup( anastomosisPipeHandle, 0 ) );
+                    bgAnastomosis1->Bind( 0, m_resourceManager->GetBuffer( outState.agentBuffers[ 1 ] ) );
+                    bgAnastomosis1->Bind( 1, m_resourceManager->GetBuffer( outState.phenotypeBuffer ) );
+                    bgAnastomosis1->Bind( 2, m_resourceManager->GetBuffer( outState.hashBuffer ) );
+                    bgAnastomosis1->Bind( 3, m_resourceManager->GetBuffer( outState.offsetBuffer ) );
+                    bgAnastomosis1->Bind( 4, m_resourceManager->GetBuffer( outState.agentCountBuffer ) );
+                    bgAnastomosis1->Bind( 5, m_resourceManager->GetBuffer( outState.vesselEdgeBuffer ) );
+                    bgAnastomosis1->Bind( 6, m_resourceManager->GetBuffer( outState.vesselEdgeCountBuffer ) );
+                    bgAnastomosis1->Bind( 7, m_resourceManager->GetBuffer( outState.vesselComponentBuffer ) );
+                    bgAnastomosis1->Build();
+
+                    float hashCellSize = blueprint.GetSpatialPartitioning().cellSize;
+
+                    ComputePushConstants anastomosisPC{};
+                    anastomosisPC.fParam0     = anastomosis.contactDistance;
+                    anastomosisPC.fParam1     = anastomosis.allowTipToStalk ? 1.0f : 0.0f;
+                    anastomosisPC.offset      = currentOffset;
+                    anastomosisPC.maxCapacity = paddedCount;
+                    anastomosisPC.uParam0     = offsetArraySize;
+                    anastomosisPC.uParam1     = groupIndex;
+                    anastomosisPC.domainSize  = glm::vec4( blueprint.GetDomainSize(), hashCellSize );
+
+                    glm::uvec3  anastomosisDispatch( ( paddedCount + 255 ) / 256, 1, 1 );
+                    ComputeTask anastomosisTask( anastomosisPipe, bgAnastomosis0, bgAnastomosis1, record.targetHz, anastomosisPC,
+                                                anastomosisDispatch );
+                    anastomosisTask.SetTag( "anastomosis" + tagBase );
+                    // No ChainFlip — reads positions only, writes phenotype and edge buffers
+                    outState.computeGraph.AddTask( anastomosisTask );
+
+                    // Vessel Connected Components: 8-pass iterative label propagation over edges.
+                    // Each pass propagates the minimum label one hop further; 8 passes handles
+                    // chains up to 8 anastomosis events long.
+                    if( firstAnastomosis )
+                    {
                         ComputePipelineDesc   vcDesc{ m_resourceManager->CreateShader( "shaders/compute/biology/vessel_components.comp" ),
                                                       "VesselComponentsPipeline" };
                         ComputePipelineHandle vcPipeHandle = m_resourceManager->CreatePipeline( vcDesc );
@@ -1659,12 +1731,22 @@ namespace DigitalTwin
                     ComputePipelineHandle springPipeHandle = m_resourceManager->CreatePipeline( springDesc );
                     ComputePipeline*      springPipe       = m_resourceManager->GetPipeline( springPipeHandle );
 
+                    // Phenotype buffer fallback: if no behaviour created it yet, bind a dummy.
+                    // The shader skips the cell-type check when reqCT == -1 (any).
+                    Buffer* phenoBuf0 = outState.phenotypeBuffer.IsValid()
+                        ? m_resourceManager->GetBuffer( outState.phenotypeBuffer )
+                        : m_resourceManager->GetBuffer( outState.agentBuffers[ 0 ] );
+                    Buffer* phenoBuf1 = outState.phenotypeBuffer.IsValid()
+                        ? m_resourceManager->GetBuffer( outState.phenotypeBuffer )
+                        : m_resourceManager->GetBuffer( outState.agentBuffers[ 1 ] );
+
                     BindingGroup* bgSpring0 = m_resourceManager->GetBindingGroup( m_resourceManager->CreateBindingGroup( springPipeHandle, 0 ) );
                     bgSpring0->Bind( 0, m_resourceManager->GetBuffer( outState.agentBuffers[ 0 ] ) );
                     bgSpring0->Bind( 1, m_resourceManager->GetBuffer( outState.agentBuffers[ 1 ] ) );
                     bgSpring0->Bind( 2, m_resourceManager->GetBuffer( outState.vesselEdgeBuffer ) );
                     bgSpring0->Bind( 3, m_resourceManager->GetBuffer( outState.vesselEdgeCountBuffer ) );
                     bgSpring0->Bind( 4, m_resourceManager->GetBuffer( outState.agentCountBuffer ) );
+                    bgSpring0->Bind( 5, phenoBuf0 );
                     bgSpring0->Build();
 
                     BindingGroup* bgSpring1 = m_resourceManager->GetBindingGroup( m_resourceManager->CreateBindingGroup( springPipeHandle, 0 ) );
@@ -1673,6 +1755,7 @@ namespace DigitalTwin
                     bgSpring1->Bind( 2, m_resourceManager->GetBuffer( outState.vesselEdgeBuffer ) );
                     bgSpring1->Bind( 3, m_resourceManager->GetBuffer( outState.vesselEdgeCountBuffer ) );
                     bgSpring1->Bind( 4, m_resourceManager->GetBuffer( outState.agentCountBuffer ) );
+                    bgSpring1->Bind( 5, phenoBuf1 );
                     bgSpring1->Build();
 
                     ComputePushConstants springPC{};
@@ -1680,6 +1763,8 @@ namespace DigitalTwin
                     springPC.maxCapacity = paddedCount;
                     springPC.fParam0     = spring.springStiffness;
                     springPC.fParam1     = spring.restingLength;
+                    springPC.fParam2     = spring.dampingCoefficient;
+                    springPC.fParam3     = static_cast<float>( record.requiredCellType );
                     springPC.uParam0     = groupIndex; // grpNdx
 
                     glm::uvec3  dispatch( ( paddedCount + 255 ) / 256, 1, 1 );
@@ -1842,6 +1927,7 @@ namespace DigitalTwin
                         const auto&          anastomosis = std::get<Behaviours::Anastomosis>( record.behaviour );
                         ComputePushConstants pc          = task->GetPushConstants();
                         pc.fParam0                       = anastomosis.contactDistance;
+                        pc.fParam1                       = anastomosis.allowTipToStalk ? 1.0f : 0.0f;
                         task->UpdatePushConstants( pc );
                     }
                 }
@@ -1854,6 +1940,8 @@ namespace DigitalTwin
                         ComputePushConstants pc     = task->GetPushConstants();
                         pc.fParam0                  = spring.springStiffness;
                         pc.fParam1                  = spring.restingLength;
+                        pc.fParam2                  = spring.dampingCoefficient;
+                        pc.fParam3                  = static_cast<float>( record.requiredCellType );
                         task->UpdatePushConstants( pc );
                     }
                 }

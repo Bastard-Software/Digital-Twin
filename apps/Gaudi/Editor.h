@@ -23,17 +23,30 @@ namespace Gaudi
         DigitalTwin::SimulationBlueprint& GetBlueprint() { return m_blueprint; }
         EditorSelection&                  GetSelection() { return m_selection; }
 
+        void RenderMainMenuBar();
+        void RenderDemoBrowser();
+
     private:
-        void SetupInitialBlueprint();
+        void LoadDemo( void ( Editor::*setupFn )() );
+
+        void SetupEmptyBlueprint();
+        void SetupDiffusionDecayDemo();
+        void SetupBrownianMotionDemo();
+        void SetupJKRPackingDemo();
+        void SetupLifecycleDemo();
+        void SetupSecreteDemo();
+        void SetupConsumeDemo();
         void SetupChemotaxisDemo();
         void SetupCellCycleDemo();
-        void SetupAngiogenesisDemo();
         void SetupSimpleVesselDebugDemo();
+        void SetupInitialBlueprint();   // legacy full angiogenesis, kept for internal use
 
     private:
         DigitalTwin::DigitalTwin                  m_engine;
         DigitalTwin::SimulationBlueprint          m_blueprint;
         EditorSelection                           m_selection;
         std::vector<std::shared_ptr<EditorPanel>> m_panels;
+        bool                                      m_shouldQuit      = false;
+        bool                                      m_showDemoBrowser = false;
     };
 } // namespace Gaudi

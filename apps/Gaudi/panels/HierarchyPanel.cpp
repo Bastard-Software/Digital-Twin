@@ -14,6 +14,7 @@ namespace Gaudi
     enum class PendingOp
     {
         None,
+        RenameSimulation,
         AddGroup,
         RenameGroup,
         AddField,
@@ -75,11 +76,31 @@ namespace Gaudi
     {
         ImGui::Begin( m_name.c_str() );
 
+        // No blueprint loaded yet — show a placeholder.
+        if( m_blueprint.GetName().empty() )
+        {
+            ImGui::Spacing();
+            ImGui::TextDisabled( "Use  File > New  or  Demos  to get started." );
+            ImGui::End();
+            return;
+        }
+
         const bool isReset = ( m_engine.GetState() == DigitalTwin::EngineState::RESET );
 
         // ── Top-level simulation node ─────────────────────────────────────────
         ImGuiTreeNodeFlags simFlags = ImGuiTreeNodeFlags_DefaultOpen | ImGuiTreeNodeFlags_SpanAvailWidth | ImGuiTreeNodeFlags_OpenOnArrow;
         bool simOpen = ImGui::TreeNodeEx( "##sim", simFlags, "%s", m_blueprint.GetName().c_str() );
+
+        if( ImGui::BeginPopupContextItem( "##simCtx" ) )
+        {
+            if( ImGui::MenuItem( "Rename Simulation" ) )
+            {
+                strncpy_s( s_nameBuf, m_blueprint.GetName().c_str(), sizeof( s_nameBuf ) - 1 );
+                s_pendingOp  = PendingOp::RenameSimulation;
+                s_pendingIdx = -1;
+            }
+            ImGui::EndPopup();
+        }
 
         if( simOpen )
         {
@@ -423,10 +444,11 @@ namespace Gaudi
         {
             switch( s_pendingOp )
             {
-                case PendingOp::AddGroup:    ImGui::Text( "New Agent Group name:" ); break;
-                case PendingOp::RenameGroup: ImGui::Text( "Rename Agent Group:" );   break;
-                case PendingOp::AddField:    ImGui::Text( "New Grid Field name:" );  break;
-                case PendingOp::RenameField: ImGui::Text( "Rename Grid Field:" );    break;
+                case PendingOp::RenameSimulation: ImGui::Text( "Rename Simulation:" );  break;
+                case PendingOp::AddGroup:         ImGui::Text( "New Agent Group name:" ); break;
+                case PendingOp::RenameGroup:      ImGui::Text( "Rename Agent Group:" );   break;
+                case PendingOp::AddField:         ImGui::Text( "New Grid Field name:" );  break;
+                case PendingOp::RenameField:      ImGui::Text( "Rename Grid Field:" );    break;
                 default: break;
             }
 
@@ -442,6 +464,11 @@ namespace Gaudi
                 const std::string name( s_nameBuf );
                 switch( s_pendingOp )
                 {
+                    case PendingOp::RenameSimulation:
+                        m_blueprint.SetName( name );
+                        m_engine.SetBlueprint( m_blueprint );
+                        break;
+
                     case PendingOp::AddGroup:
                         m_blueprint.AddAgentGroup( name );
                         m_engine.SetBlueprint( m_blueprint );

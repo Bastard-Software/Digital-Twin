@@ -708,7 +708,8 @@ namespace DigitalTwin
             if( !m_config.headless && m_renderer )
             {
                 SimulationState* stateToRender = nullptr;
-                if( m_state != EngineState::RESET && m_simulationState.IsValid() )
+                if( m_state != EngineState::RESET &&
+                    ( m_simulationState.IsValid() || !m_simulationState.gridFields.empty() ) )
                 {
                     stateToRender = &m_simulationState;
                 }

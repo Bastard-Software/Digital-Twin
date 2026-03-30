@@ -403,6 +403,14 @@ namespace DigitalTwin
         else
         {
             cmd->BeginRendering( renderInfo );
+            // Field-only simulations (no agents): still render the active grid field.
+            if( state != nullptr && m_gridVisSettings.active &&
+                m_gridVisSettings.fieldIndex < state->gridFields.size() )
+            {
+                m_gridVisPass->Execute( cmd, m_cameraUBOs[ flightIndex ],
+                                        &state->gridFields[ m_gridVisSettings.fieldIndex ],
+                                        m_gridVisSettings, state->domainSize, flightIndex );
+            }
             cmd->EndRendering();
         }
 

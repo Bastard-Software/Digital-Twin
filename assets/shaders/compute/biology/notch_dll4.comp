@@ -64,14 +64,17 @@ void main() {
     // Skip if necrotic or pending removal (lifecycleState >= 3)
     if (phenotypes.data[globalIdx].lifecycleState >= 3u) return;
 
-    // Skip PhalanxCells — quiescent ECs do not participate in Notch-Dll4 lateral inhibition
-    if (phenotypes.data[globalIdx].cellType == 3u) return;
+    // PhalanxCells participate in the Notch-Dll4 ODE so that lateral inhibition is fully
+    // established across the whole vessel before PhalanxActivation converts any cells.
+    // Without this, boundary cells between activated and quiescent zones had frozen neighbor
+    // Dll4≈0.2 (insufficient inhibition) and could independently become TipCells.
 
     // Accumulate Dll4 from juxtacrine neighbors via vessel edges.
     // This gives each cell inhibitory signal from all connected vessel neighbors,
     // guaranteeing exactly one TipCell per connected vessel segment.
     float sumNeighborDll4 = 0.0;
     int   neighborCount   = 0;
+    bool  hasTipNeighbor  = false;
     uint  numEdges        = edgeCount.count;
     for (uint e = 0; e < numEdges; e++) {
         uint a = edges.data[e].agentA;
@@ -86,6 +89,7 @@ void main() {
 
         sumNeighborDll4 += signaling.data[neighborIdx].dll4;
         neighborCount++;
+        if (phenotypes.data[neighborIdx].cellType == 1u) hasTipNeighbor = true;
     }
 
     // VEGF gates VEGFR2 via Michaelis-Menten saturation: vegfr2BaseExpression is EC50.
@@ -118,9 +122,16 @@ void main() {
 
     // Hysteresis: use both thresholds to create a dead zone [stalkThreshold, tipThreshold].
     // Cells in the dead zone keep their current type, preventing Tip↔Stalk flip-flop.
+    uint cellType = phenotypes.data[globalIdx].cellType;
     if (newDll4 > pc.tipThreshold)
-        phenotypes.data[globalIdx].cellType = 1u; // TipCell
-    else if (newDll4 < pc.stalkThreshold)
-        phenotypes.data[globalIdx].cellType = 2u; // StalkCell
+        phenotypes.data[globalIdx].cellType = 1u; // TipCell — any cell type can win
+    else if (newDll4 < pc.stalkThreshold && cellType != 3u)
+        phenotypes.data[globalIdx].cellType = 2u; // StalkCell — but not from PhalanxCell
     // else: keep current type (Dll4 in dead zone — hysteresis)
+
+    // PhalanxCell recruitment: a quiescent EC adjacent to a TipCell becomes StalkCell to follow
+    // and proliferate behind it. PhalanxActivation handles the bulk vessel quiescence transitions;
+    // this ensures at least 1 StalkCell exists immediately behind each TipCell.
+    if (phenotypes.data[globalIdx].cellType == 3u && hasTipNeighbor)
+        phenotypes.data[globalIdx].cellType = 2u; // Recruit to StalkCell
 }

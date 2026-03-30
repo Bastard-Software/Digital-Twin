@@ -448,15 +448,20 @@ namespace Gaudi
 
     void Editor::SetupSimpleVesselDebugDemo()
     {
-        // Minimal debug blueprint: verify VEGF → TipCell selection before adding chemotaxis/division.
+        // Simple vessel sprouting demo (Guo et al. 2024 biology).
         //
-        // 1 source cell at origin: consumes O2 → goes Hypoxic → secretes VEGF.
-        // 1 vessel of 15 cells at y=+10: all start as PhalanxCell(3).
-        //    PhalanxActivation converts PhalanxCell→StalkCell when local VEGF > threshold.
-        //    NotchDll4 lateral inhibition then picks exactly 1 TipCell from StalkCells.
+        // 1 source cell at (0,0,0): consumes O2 → Hypoxic → secretes VEGF.
+        // 1 vessel of 15 cells at y=+10 (10 units from source).
         //
-        // No chemotaxis, no division, no VesselSpring.
-        // Expected result: ~t=2s, vessel cell nearest origin turns GREEN (TipCell); rest dark red (PhalanxCell).
+        // Correct two-step differentiation pathway:
+        //   1. PhalanxActivation: VEGF > threshold → PhalanxCell activates to StalkCell
+        //      (models VEGF-induced EC activation; only ~3-5 cells nearest source activate)
+        //   2. NotchDll4: activated StalkCells compete; winner (highest VEGF) → TipCell
+        //   3. Chemotaxis: TipCell migrates toward VEGF source
+        //   4. CellCycle (directedMitosis): StalkCell behind TipCell divides → stalk elongates
+        //   5. VesselSpring: all non-Phalanx cells tethered — chain spacing maintained
+        //
+        // Expected sequence: ~t=5s Hypoxic → ~t=10s TipCell selected → migrates → stalk grows.
 
         m_blueprint = DigitalTwin::SimulationBlueprint{};
         m_blueprint.SetName( "Simple Vessel Debug" );
@@ -468,25 +473,27 @@ namespace Gaudi
             .SetMaxDensity( 64 )
             .SetComputeHz( 60.0f );
 
-        // Oxygen: Gaussian centered at source cell (origin), peak=50 > hypoxia threshold (30).
-        // Diffusion spreads the peak outward → center value drops. Cell transitions orange→purple
-        // when local O2 falls below 30. With sigma=8 and D=2, expect transition in ~5-10 seconds.
+        // Source is at (0,0,0), 10 units below the vessel at y=+10.
+        // Effective VEGF characteristic length: λ = h*√(D/k) = 2*√(0.5/0.1) = 4.47 units
+        // (factor of h²=4 from discrete diffusion — shader does not divide by dx²).
+        // At 10 units: ~10% of peak VEGF reaches vessel center, dropping sharply to the sides.
+
+        // Oxygen: sigma=12 ensures vessel at y=+10 gets O2 ≈ 42 (above ProliferationTarget=40).
+        // Source at (0,0,0) starts at peak=60, consumes at 10/s → below 30 → Hypoxic.
         m_blueprint.AddGridField( "Oxygen" )
-            .SetInitializer( DigitalTwin::GridInitializer::Gaussian( glm::vec3( 0.0f ), 8.0f, 50.0f ) )
+            .SetInitializer( DigitalTwin::GridInitializer::Gaussian( glm::vec3( 0.0f, 0.0f, 0.0f ), 12.0f, 60.0f ) )
             .SetDiffusionCoefficient( 2.0f )
             .SetDecayRate( 0.0f )
             .SetComputeHz( 60.0f );
 
-        // VEGF: starts at zero; source cell secretes it when hypoxic.
-        // Low diffusion (0.5) keeps concentration near source so it stays visible;
-        // still diffuses to the vessel at y=+10 (5 voxels) within ~2-3s.
+        // VEGF: decay=0.1 (λ=4.47 effective units), rate=300 reaches vessel from 10 units.
         m_blueprint.AddGridField( "VEGF" )
             .SetInitializer( DigitalTwin::GridInitializer::Constant( 0.0f ) )
             .SetDiffusionCoefficient( 0.5f )
-            .SetDecayRate( 0.02f )
+            .SetDecayRate( 0.1f )
             .SetComputeHz( 60.0f );
 
-        // --- Source cell at origin ---
+        // --- Source cell 10 units below vessel at (0,0,0) ---
         auto& source = m_blueprint.AddAgentGroup( "SourceCell" )
                            .SetCount( 1 )
                            .SetMorphology( DigitalTwin::MorphologyGenerator::CreateSphere( 1.2f ) )
@@ -503,11 +510,8 @@ namespace Gaudi
                                  .SetApoptosisRate( 0.0f )
                                  .Build() )
             .SetHz( 10.0f );
-        // Secrete VEGF only when Hypoxic. Rate=50: with D=0.5 and decay=0.02,
-        // steady-state center ~1.6 units. Lower the Normalization slider in the
-        // VEGF inspector to ~10 to make it visible.
         source.AddBehaviour( DigitalTwin::Behaviours::SecreteField{
-                                 "VEGF", 50.0f,
+                                 "VEGF", 300.0f,
                                  static_cast<int>( DigitalTwin::LifecycleState::Hypoxic ) } )
             .SetHz( 60.0f );
 
@@ -530,14 +534,25 @@ namespace Gaudi
                                DigitalTwin::MorphologyGenerator::CreateSpikySphere( 1.0f, 1.35f ),
                                glm::vec4( 0.0f, 1.0f, 0.3f, 1.0f ) );    // bright green — TipCell
 
-        // VesselSeed: wire up 15 cells into a linear chain (1 group of 15)
+        // 1. VesselSeed: wire up 15 cells into a linear chain
         vessel.AddBehaviour( DigitalTwin::Behaviours::VesselSeed{ std::vector<uint32_t>{ 15u } } );
 
-        // PhalanxActivation: converts PhalanxCell(3)→StalkCell(2) when VEGF > threshold.
-        // Threshold=2 so even weak VEGF signal activates. deactivation=0.5 adds hysteresis.
-        vessel.AddBehaviour( DigitalTwin::Behaviours::PhalanxActivation{ "VEGF", 2.0f, 0.5f } ).SetHz( 60.0f );
+        // 2. PhalanxActivation: spatial gate — only cells with VEGF > threshold activate.
+        //    Threshold=20 targets center 3-5 cells. ConsumeField (below) limits lateral spread.
+        //    Tune threshold by checking VEGF inspector after source goes Hypoxic.
+        vessel.AddBehaviour( DigitalTwin::Behaviours::PhalanxActivation{
+                /* vegfFieldName         */ "VEGF",
+                /* activationThreshold   */ 20.0f,
+                /* deactivationThreshold */ 5.0f } )
+            .SetHz( 60.0f );
 
-        // NotchDll4: lateral inhibition → 1 TipCell per connected vessel chain.
+        // 3. ConsumeField: VEGFR1 (stalk-enriched decoy receptor) — VEGF sink shapes the gradient.
+        //    Rate=2.0 (strong sink) prevents lateral VEGF creep → stops multi-TipCell activation.
+        vessel.AddBehaviour( DigitalTwin::Behaviours::ConsumeField{ "VEGF", 2.0f } )
+            .SetRequiredCellType( 2 )  // StalkCell only
+            .SetHz( 60.0f );
+
+        // 4. NotchDll4: lateral inhibition among activated StalkCells → 1 TipCell.
         vessel.AddBehaviour( DigitalTwin::Behaviours::NotchDll4{
                 /* dll4ProductionRate   */ 1.0f,
                 /* dll4DecayRate        */ 0.1f,
@@ -547,6 +562,30 @@ namespace Gaudi
                 /* stalkThreshold       */ 0.20f,
                 /* vegfFieldName        */ "VEGF",
                 /* subSteps             */ 20u } )
+            .SetHz( 60.0f );
+
+        // 5. CellCycle: StalkCell in proliferation zone (adjacent to TipCell) divides → stalk elongates.
+        //    TipCell guard in mitosis_vessel_append.comp prevents TipCells from dividing.
+        auto stalkCycle = DigitalTwin::BiologyGenerator::StandardCellCycle()
+                              .SetBaseDoublingTime( 6.0f / 3600.0f )  // 6 seconds per doubling
+                              .SetProliferationOxygenTarget( 40.0f )
+                              .SetArrestPressureThreshold( 5.0f )
+                              .SetHypoxiaOxygenThreshold( 5.0f )
+                              .SetNecrosisOxygenThreshold( 1.0f )
+                              .SetApoptosisRate( 0.0f )
+                              .Build();
+        stalkCycle.directedMitosis = true;
+        vessel.AddBehaviour( stalkCycle ).SetHz( 10.0f );
+
+        // 6. Chemotaxis: TipCell follows VEGF gradient toward source.
+        vessel.AddBehaviour( DigitalTwin::Behaviours::Chemotaxis{ "VEGF", 6.0f, 0.002f, 4.0f, 3.0f } )
+            .SetHz( 60.0f )
+            .SetRequiredCellType( static_cast<int>( DigitalTwin::CellType::TipCell ) );
+
+        // 7. VesselSpring: all non-Phalanx cells get spring forces — chain spacing maintained.
+        //    StalkCell daughters from directed mitosis need springs to prevent blobbing.
+        //    PhalanxCells are anchored by vessel_mechanics.comp hardcode (line 48), not by this filter.
+        vessel.AddBehaviour( DigitalTwin::Behaviours::VesselSpring{ 15.0f, 1.5f, 10.0f } )
             .SetHz( 60.0f );
 
         m_engine.SetBlueprint( m_blueprint );

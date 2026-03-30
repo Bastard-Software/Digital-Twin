@@ -105,6 +105,27 @@ void main() {
 
     if (agentsRead.positions[globalIdx].w == 0.0) return;
     if (inOutPhenotypes.data[globalIdx].lifecycleState != 0u) return;
+    // TipCells migrate, they do not divide. Only StalkCells in the proliferation zone divide.
+    if (inOutPhenotypes.data[globalIdx].cellType == 1u) return;
+
+    // PhalanxCell recruitment (safety net for full angiogenesis demo with CellCycle present):
+    // Primary recruitment is in notch_dll4.comp. This catches the 1-frame gap when the TipCell
+    // is selected between NotchDll4 and the mitosis pass.
+    if (inOutPhenotypes.data[globalIdx].cellType == 3u) {
+        bool hasTipNeighbor2 = false;
+        uint numEdges2 = edgeCount.count;
+        for (uint e = 0; e < numEdges2 && !hasTipNeighbor2; e++) {
+            uint other = 0xFFFFFFFF;
+            if      (edges.data[e].agentA == globalIdx) other = edges.data[e].agentB;
+            else if (edges.data[e].agentB == globalIdx) other = edges.data[e].agentA;
+            else continue;
+            if (agentsRead.positions[other].w == 0.0) continue;
+            if (inOutPhenotypes.data[other].cellType == 1u) hasTipNeighbor2 = true;
+        }
+        if (hasTipNeighbor2)
+            inOutPhenotypes.data[globalIdx].cellType = 2u; // Recruit to StalkCell
+        return; // PhalanxCells don't divide
+    }
 
     // Stalk maturation: StalkCells not directly edge-connected to a TipCell quiesce to PhalanxCell.
     // This restricts division to the proliferation zone (the 1 cell behind the TipCell) and stops

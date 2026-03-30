@@ -110,6 +110,8 @@ namespace DigitalTwin
 
         DT_INFO( "[SimulationBuilder] Starting simulation build process..." );
 
+        state.domainSize = blueprint.GetDomainSize();
+
         // 1. Allocate GPU memory for agents and morphology (Mega-Buffers)
         AllocateAgentBuffers( blueprint, state );
 
@@ -1043,6 +1045,7 @@ namespace DigitalTwin
                         ComputePushConstants pc{};
                         pc.fParam0     = rate;
                         pc.fParam1     = static_cast<float>( requiredLifecycleState );
+                        pc.fParam2     = static_cast<float>( record.requiredCellType );
                         pc.offset      = currentOffset;
                         pc.maxCapacity = paddedCount;
                         pc.uParam1     = groupIndex;
@@ -1870,6 +1873,7 @@ namespace DigitalTwin
                         ComputePushConstants pc = task->GetPushConstants();
                         pc.fParam0              = rate;
                         pc.fParam1              = static_cast<float>( reqLifecycleState );
+                        pc.fParam2              = static_cast<float>( record.requiredCellType );
                         task->UpdatePushConstants( pc );
                     }
                 }

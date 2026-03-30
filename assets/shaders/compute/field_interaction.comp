@@ -6,7 +6,7 @@ layout(push_constant) uniform PushConstants {
     float totalTime;
     float rate;
     float reqLifecycleState;
-    float fParam2;
+    float reqCellType;
     float fParam3;
     float fParam4;
     float fParam5;
@@ -51,6 +51,9 @@ void main() {
     // Interaction condition test
     if (pc.reqLifecycleState >= 0.0) {
         if (inPhenotypes.data[globalIdx].lifecycleState != uint(pc.reqLifecycleState)) return;
+    }
+    if (pc.reqCellType >= 0.0) {
+        if (inPhenotypes.data[globalIdx].cellType != uint(pc.reqCellType)) return;
     }
 
     vec3 pos = agents.positions[globalIdx].xyz;

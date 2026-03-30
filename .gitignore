@@ -15,6 +15,7 @@ external/*
 # claude
 .claude/
 CLAUDE.md
+reports/
 
 # helper files
 merged.txt

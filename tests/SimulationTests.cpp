@@ -1985,6 +1985,68 @@ TEST_F( SimulationBuilderTest, Behaviour_CellCycle_StalkCellOnlyDivides )
     state.Destroy( m_resourceManager.get() );
 }
 
+// directedMitosis (mitosis_vessel_append.comp) must not divide TipCells even when biomass >= 1.0.
+TEST_F( SimulationBuilderTest, Behaviour_CellCycle_DirectedMitosis_TipCellDoesNotDivide )
+{
+    if( !m_device )
+        GTEST_SKIP();
+
+    DigitalTwin::SimulationBlueprint blueprint;
+    blueprint.SetDomainSize( glm::vec3( 100.0f ), 2.0f );
+    blueprint.AddGridField( "Oxygen" )
+        .SetInitializer( DigitalTwin::GridInitializer::Constant( 40.0f ) )
+        .SetComputeHz( 60.0f );
+
+    blueprint.AddAgentGroup( "Vessel" )
+        .SetCount( 1 )
+        .SetDistribution( { glm::vec4( 0.0f, 0.0f, 0.0f, 1.0f ) } )
+        .AddBehaviour( []()
+        {
+            auto cycle = DigitalTwin::BiologyGenerator::StandardCellCycle()
+                             .SetBaseDoublingTime( 1.0f / 3600.0f )
+                             .SetProliferationOxygenTarget( 40.0f )
+                             .SetArrestPressureThreshold( 100.0f )
+                             .SetNecrosisOxygenThreshold( 0.0f )
+                             .SetHypoxiaOxygenThreshold( 0.1f )
+                             .SetApoptosisRate( 0.0f )
+                             .Build();
+            cycle.directedMitosis = true;  // uses mitosis_vessel_append.comp
+            return cycle;
+        }() )
+        .SetHz( 60.0f );  // no SetRequiredCellType — update_phenotype grows biomass for ALL cells
+
+    DigitalTwin::SimulationBuilder builder( m_resourceManager.get(), m_streamingManager.get() );
+    DigitalTwin::SimulationState   state = builder.Build( blueprint );
+
+    struct PhenotypeInit { uint32_t lifecycleState; float biomass; float timer; uint32_t cellType; };
+    PhenotypeInit tipPheno = { 0u, 1.1f, 0.0f, 1u };  // TipCell, biomass already above 1.0
+    m_streamingManager->UploadBufferImmediate(
+        { { state.phenotypeBuffer, &tipPheno, sizeof( PhenotypeInit ), 0 } } );
+
+    auto compCtxHandle = m_device->CreateThreadContext( QueueType::COMPUTE );
+    auto compCtx       = m_device->GetThreadContext( compCtxHandle );
+    auto compCmd       = compCtx->GetCommandBuffer( compCtx->CreateCommandBuffer() );
+
+    DigitalTwin::GraphDispatcher dispatcher;
+    compCmd->Begin();
+    for( int i = 0; i < 5; ++i )
+        dispatcher.Dispatch( &state.computeGraph, compCmd, nullptr, 1.0f / 60.0f, static_cast<float>( i ) / 60.0f, 0 );
+    compCmd->End();
+    m_device->GetComputeQueue()->Submit( { compCmd } );
+    m_device->GetComputeQueue()->WaitIdle();
+
+    uint32_t agentCount = 0;
+    m_streamingManager->ReadbackBufferImmediate( state.agentCountBuffer, &agentCount, sizeof( uint32_t ) );
+    EXPECT_EQ( agentCount, 1u ) << "TipCell with high biomass must not divide";
+
+    struct PhenotypeInit2 { uint32_t lifecycleState; float biomass; float timer; uint32_t cellType; };
+    PhenotypeInit2 pheno{};
+    m_streamingManager->ReadbackBufferImmediate( state.phenotypeBuffer, &pheno, sizeof( PhenotypeInit2 ) );
+    EXPECT_EQ( pheno.cellType, 1u ) << "TipCell must remain TipCell";
+
+    state.Destroy( m_resourceManager.get() );
+}
+
 // PhalanxActivation: builder initialises cells as PhalanxCell (3); VEGF above threshold → all
 // cells transition to StalkCell (2) after several frames.
 TEST_F( SimulationBuilderTest, Behaviour_PhalanxActivation_HighVEGF_ActivatesAllCells )
@@ -2418,6 +2480,105 @@ TEST_F( SimulationBuilderTest, Behaviour_CellCycle_DirectedMitosis_NoTipNeighbor
     m_streamingManager->ReadbackBufferImmediate( state.phenotypeBuffer, pheno.data(), 2 * sizeof( PhenotypeInit ) );
     EXPECT_EQ( pheno[ 0 ].cellType, 3u ) << "StalkCell[0] must mature to PhalanxCell after grace period";
     EXPECT_EQ( pheno[ 1 ].cellType, 3u ) << "StalkCell[1] must mature to PhalanxCell after grace period";
+
+    state.Destroy( m_resourceManager.get() );
+}
+
+// NotchDll4 on PhalanxCells: lateral inhibition must select exactly 1 TipCell from a
+// vessel of 5 PhalanxCells. With PhalanxCells now participating in the ODE, noise in
+// initial Dll4 values drives a single winner; all others must stay PhalanxCell (not StalkCell).
+// Adjacent cells get recruited to StalkCell by the NotchDll4 recruitment path.
+//
+// Setup:
+//   - 5 PhalanxCells in a line, chained by VesselSeed{5}
+//   - PhalanxActivation included so builder auto-initialises all cells to PhalanxCell
+//   - NotchDll4 with strong inhibition gain, 20 subSteps/frame, no VEGF gating
+//   - VEGF constant at 1.0 (above PhalanxActivation threshold 0.3 — ensures VEGF gating active)
+//   - 600 frames
+// Expected: exactly 1 TipCell among the 5 agents
+TEST_F( SimulationBuilderTest, Behaviour_NotchDll4_VesselActivation_ExactlyOneTipCell )
+{
+    if( !m_device )
+        GTEST_SKIP();
+
+    SimulationBlueprint blueprint;
+    blueprint.SetDomainSize( glm::vec3( 20.0f, 20.0f, 20.0f ), 1.0f )
+        .ConfigureSpatialPartitioning()
+        .SetCellSize( 10.0f )
+        .SetComputeHz( 60.0f );
+
+    // Constant VEGF above PhalanxActivation threshold (0.3) — uniform field,
+    // so all cells see identical VEGF → VEGF gating is uniform and does not break symmetry.
+    // Symmetry breaking comes from the initial dll4 noise seeded in SimulationBuilder.
+    blueprint.AddGridField( "VEGF" )
+        .SetInitializer( GridInitializer::Constant( 1.0f ) )
+        .SetDiffusionCoefficient( 0.0f )
+        .SetDecayRate( 0.0f )
+        .SetComputeHz( 60.0f );
+
+    // 5 cells in a line on the X-axis, 2 units apart
+    std::vector<glm::vec4> pos = {
+        glm::vec4( -4.0f, 0.0f, 0.0f, 1.0f ),
+        glm::vec4( -2.0f, 0.0f, 0.0f, 1.0f ),
+        glm::vec4(  0.0f, 0.0f, 0.0f, 1.0f ),
+        glm::vec4(  2.0f, 0.0f, 0.0f, 1.0f ),
+        glm::vec4(  4.0f, 0.0f, 0.0f, 1.0f ),
+    };
+
+    auto& endo = blueprint.AddAgentGroup( "Endothelial" )
+        .SetCount( 5 )
+        .SetDistribution( pos );
+
+    // PhalanxActivation first — auto-initialises all cells as PhalanxCell(3).
+    // Threshold lower than the constant VEGF=1.0 so activation is immediate.
+    endo.AddBehaviour( Behaviours::PhalanxActivation{ "VEGF", 0.3f, 0.1f } )
+        .SetHz( 60.0f );
+
+    // VesselSeed chains all 5 cells into a single vessel segment (4 edges).
+    endo.AddBehaviour( Behaviours::VesselSeed{ std::vector<uint32_t>{ 5u } } );
+
+    // NotchDll4: strong inhibition (gain=50) + many subSteps → fast convergence.
+    // vegfFieldName="VEGF" → vegfGating = localVEGF/(localVEGF+vegfr2BaseExpression) = 1/(1+0.2)≈0.83
+    // Uniform gating means initial dll4 noise (±0.15, seed=42) drives exactly one winner.
+    endo.AddBehaviour( Behaviours::NotchDll4{
+            /* dll4ProductionRate   */ 1.0f,
+            /* dll4DecayRate        */ 0.1f,
+            /* notchInhibitionGain  */ 50.0f,
+            /* vegfr2BaseExpression */ 0.2f,
+            /* tipThreshold         */ 0.8f,
+            /* stalkThreshold       */ 0.3f,
+            /* vegfFieldName        */ "VEGF",
+            /* subSteps             */ 20u } )
+        .SetHz( 60.0f );
+
+    SimulationBuilder builder( m_resourceManager.get(), m_streamingManager.get() );
+    SimulationState   state = builder.Build( blueprint );
+
+    auto compCtxHandle = m_device->CreateThreadContext( QueueType::COMPUTE );
+    auto compCtx       = m_device->GetThreadContext( compCtxHandle );
+    auto compCmd       = compCtx->GetCommandBuffer( compCtx->CreateCommandBuffer() );
+
+    GraphDispatcher dispatcher;
+    compCmd->Begin();
+    for( int i = 0; i < 600; ++i )
+        dispatcher.Dispatch( &state.computeGraph, compCmd, nullptr, 1.0f / 60.0f, static_cast<float>( i ) / 60.0f, 0 );
+    compCmd->End();
+    m_device->GetComputeQueue()->Submit( { compCmd } );
+    m_device->GetComputeQueue()->WaitIdle();
+
+    struct PhenotypeData { uint32_t lifecycleState; float biomass; float timer; uint32_t cellType; };
+    std::vector<PhenotypeData> result( 5 );
+    m_streamingManager->ReadbackBufferImmediate( state.phenotypeBuffer, result.data(), 5 * sizeof( PhenotypeData ) );
+
+    int tipCount = 0;
+    for( int i = 0; i < 5; ++i )
+    {
+        uint32_t ct = result[ i ].cellType;
+        EXPECT_TRUE( ct == 1u || ct == 2u || ct == 3u )
+            << "Agent " << i << ": expected TipCell(1)/StalkCell(2)/PhalanxCell(3), got " << ct;
+        if( ct == 1u ) tipCount++;
+    }
+    EXPECT_EQ( tipCount, 1 ) << "Lateral inhibition must select exactly 1 TipCell from 5 PhalanxCells";
 
     state.Destroy( m_resourceManager.get() );
 }

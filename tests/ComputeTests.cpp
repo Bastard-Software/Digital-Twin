@@ -3595,12 +3595,12 @@ TEST_F( ComputeTest, Shader_VesselMechanics_DampingReducesDisplacement )
     EXPECT_LT( damped, undamped ) << "Damped displacement must be less than undamped";
 }
 
-// Cell-type filter: reqCT=TipCell(1) — only TipCells receive spring force.
-// Agent 0 (PhalanxCell=3) must stay at its input position.
-// Agent 1 (TipCell=1) must move toward agent 0 (spring force applies).
+// Cell-type filter: reqCT=Default(0) — only Default cells receive spring force.
+// Agent 0 (PhalanxCell=3) must stay at its input position (filtered by reqCT).
+// Agent 1 (Default=0) must move toward agent 0 (spring force applies).
 //
-// Setup: agent 0 at (-2,0,0) PhalanxCell, agent 1 at (2,0,0) TipCell, 4 units apart,
-//        restingLength=2, k=10, dt=1. fParam3=1.0 (TipCell only).
+// Setup: agent 0 at (-2,0,0) PhalanxCell, agent 1 at (2,0,0) Default, 4 units apart,
+//        restingLength=2, k=10, dt=1. fParam3=0.0 (Default only).
 TEST_F( ComputeTest, Shader_VesselMechanics_CellTypeFilter_NonTipCellSkipped )
 {
     if( !m_device )
@@ -3611,12 +3611,12 @@ TEST_F( ComputeTest, Shader_VesselMechanics_CellTypeFilter_NonTipCellSkipped )
 
     std::vector<glm::vec4> agentsIn = {
         glm::vec4( -2.0f, 0.0f, 0.0f, 1.0f ),  // agent 0: PhalanxCell
-        glm::vec4(  2.0f, 0.0f, 0.0f, 1.0f ),  // agent 1: TipCell
+        glm::vec4(  2.0f, 0.0f, 0.0f, 1.0f ),  // agent 1: Default
     };
     std::vector<glm::vec4> agentsOut( 2, glm::vec4( 0.0f ) );
     std::vector<PhenotypeData> phenotypes = {
         { 0u, 0.5f, 0.0f, 3u },  // PhalanxCell
-        { 0u, 0.5f, 0.0f, 1u },  // TipCell
+        { 0u, 0.5f, 0.0f, 0u },  // Default
     };
 
     size_t agBz = 2 * sizeof( glm::vec4 );
@@ -3658,7 +3658,7 @@ TEST_F( ComputeTest, Shader_VesselMechanics_CellTypeFilter_NonTipCellSkipped )
     pc.dt          = 1.0f;
     pc.fParam0     = 10.0f;  // springStiffness
     pc.fParam1     = 2.0f;   // restingLength
-    pc.fParam3     = 1.0f;   // reqCT = TipCell (1)
+    pc.fParam3     = 0.0f;   // reqCT = Default (0)
     pc.offset      = 0;
     pc.maxCapacity = 2;
     pc.uParam0     = 0;
@@ -3681,17 +3681,18 @@ TEST_F( ComputeTest, Shader_VesselMechanics_CellTypeFilter_NonTipCellSkipped )
     EXPECT_FLOAT_EQ( result[ 0 ].x, agentsIn[ 0 ].x ) << "PhalanxCell (filtered) must not move";
     EXPECT_FLOAT_EQ( result[ 0 ].w, 1.0f );
 
-    // TipCell must move toward PhalanxCell (in -X direction)
-    EXPECT_LT( result[ 1 ].x, agentsIn[ 1 ].x ) << "TipCell must move toward PhalanxCell";
+    // Default cell must move toward PhalanxCell (in -X direction)
+    EXPECT_LT( result[ 1 ].x, agentsIn[ 1 ].x ) << "Default cell must move toward PhalanxCell";
     EXPECT_FLOAT_EQ( result[ 1 ].w, 1.0f );
 
     m_rm->DestroyBuffer( ib ); m_rm->DestroyBuffer( ob ); m_rm->DestroyBuffer( eb );
     m_rm->DestroyBuffer( ecb ); m_rm->DestroyBuffer( cb ); m_rm->DestroyBuffer( phb );
 }
 
-// PhalanxCell anchor invariant: even when reqCT==-1 (any type allowed), PhalanxCells
-// must never be displaced by spring forces. Three-agent chain: Phalanx(0)—Stalk(1)—Tip(2).
-// PhalanxCell at -4 must stay fixed; StalkCell and TipCell must be pulled toward each other.
+// PhalanxCell anchor invariant: when anchorPhalanxCells is set (fParam4=1.0), PhalanxCells
+// must never be displaced by spring forces, even when reqCT==-1 (any type allowed).
+// Three-agent chain: Phalanx(0)—Stalk(1)—Default(2). PhalanxCell and StalkCell are both
+// anchored by fParam4=1.0; Default cell must be pulled toward the anchored StalkCell.
 TEST_F( ComputeTest, Shader_VesselMechanics_PhalanxCellAnchored )
 {
     if( !m_device )
@@ -3701,18 +3702,18 @@ TEST_F( ComputeTest, Shader_VesselMechanics_PhalanxCellAnchored )
     struct PhenotypeData { uint32_t lifecycleState; float biomass; float timer; uint32_t cellType; };
 
     // PhalanxCell placed at restLen distance (stretch=0, no force from that edge).
-    // TipCell placed at 4 units from StalkCell (stretch=2, pulls StalkCell in +X).
-    // Asymmetric so spring forces on StalkCell don't cancel.
+    // Default placed at 4 units from StalkCell (stretch=2). Both PhalanxCell and StalkCell
+    // are anchored by fParam4=1.0; only Default cell receives the spring force.
     std::vector<glm::vec4> agentsIn = {
         glm::vec4( -2.0f, 0.0f, 0.0f, 1.0f ),  // agent 0: PhalanxCell (at restLen=2 from StalkCell)
         glm::vec4(  0.0f, 0.0f, 0.0f, 1.0f ),  // agent 1: StalkCell
-        glm::vec4(  4.0f, 0.0f, 0.0f, 1.0f ),  // agent 2: TipCell (4 units from StalkCell, stretch=2)
+        glm::vec4(  4.0f, 0.0f, 0.0f, 1.0f ),  // agent 2: Default (4 units from StalkCell, stretch=2)
     };
     std::vector<glm::vec4>  agentsOut( 3, glm::vec4( 0.0f ) );
     std::vector<PhenotypeData> phenotypes = {
         { 0u, 0.5f, 0.0f, 3u },  // PhalanxCell
         { 0u, 0.5f, 0.0f, 2u },  // StalkCell
-        { 0u, 0.5f, 0.0f, 1u },  // TipCell
+        { 0u, 0.5f, 0.0f, 0u },  // Default
     };
 
     std::vector<VesselEdge> edges = { { 0u, 1u, 2.0f, 0u }, { 1u, 2u, 2.0f, 0u } };
@@ -3755,7 +3756,8 @@ TEST_F( ComputeTest, Shader_VesselMechanics_PhalanxCellAnchored )
     pc.dt          = 1.0f;
     pc.fParam0     = 10.0f;  // springStiffness
     pc.fParam1     = 2.0f;   // restingLength
-    pc.fParam3     = -1.0f;  // reqCT = any — the critical case where PhalanxCell must still be anchored
+    pc.fParam3     = -1.0f;  // reqCT = any
+    pc.fParam4     = 1.0f;   // anchorPhalanxCells — anchors both PhalanxCell and StalkCell
     pc.offset      = 0;
     pc.maxCapacity = 3;
     pc.uParam0     = 0;
@@ -3774,22 +3776,200 @@ TEST_F( ComputeTest, Shader_VesselMechanics_PhalanxCellAnchored )
     std::vector<glm::vec4> result( 3 );
     m_stream->ReadbackBufferImmediate( ob, result.data(), agBz );
 
-    // PhalanxCell must NOT move — hardcoded anchor overrides reqCT==-1
-    EXPECT_FLOAT_EQ( result[ 0 ].x, -2.0f ) << "PhalanxCell must remain anchored (reqCT==-1 but still excluded)";
+    // PhalanxCell must NOT move — anchored by fParam4=1.0
+    EXPECT_FLOAT_EQ( result[ 0 ].x, -2.0f ) << "PhalanxCell must remain anchored";
     EXPECT_FLOAT_EQ( result[ 0 ].y,  0.0f );
     EXPECT_FLOAT_EQ( result[ 0 ].z,  0.0f );
     EXPECT_FLOAT_EQ( result[ 0 ].w,  1.0f );
 
-    // StalkCell must be pulled toward TipCell (stretch=2 from TipCell side, zero from PhalanxCell side)
-    EXPECT_GT( result[ 1 ].x, 0.0f ) << "StalkCell must be displaced toward TipCell";
+    // StalkCell must NOT move — also anchored when anchorPhalanxCells is set
+    EXPECT_FLOAT_EQ( result[ 1 ].x, 0.0f ) << "StalkCell also anchored by anchorPhalanxCells=1.0";
 
-    // TipCell must move toward StalkCell (net force in -X direction)
-    EXPECT_LT( result[ 2 ].x, 4.0f ) << "TipCell must be pulled toward StalkCell";
+    // Default cell must move toward StalkCell (net force in -X direction, stretch=2)
+    EXPECT_LT( result[ 2 ].x, 4.0f ) << "Default cell must be pulled toward anchored StalkCell";
     EXPECT_FLOAT_EQ( result[ 2 ].w, 1.0f );
 
     m_rm->DestroyBuffer( ib ); m_rm->DestroyBuffer( ob ); m_rm->DestroyBuffer( eb );
     m_rm->DestroyBuffer( ecb ); m_rm->DestroyBuffer( cb ); m_rm->DestroyBuffer( phb );
 }
+
+// StalkCell connected by a RING edge (flags=0x1) must be anchored in place even when there
+// is a non-zero spring force on it (stretched edge). The ring edge signals the cell is part
+// of the parent vessel wall, not the sprout chain.
+TEST_F( ComputeTest, Shader_VesselSpring_StalkCellWithRingEdge_IsAnchored )
+{
+    if( !m_device )
+        GTEST_SKIP();
+
+    struct VesselEdge    { uint32_t agentA; uint32_t agentB; float dist; uint32_t flags; };
+    struct PhenotypeData { uint32_t lifecycleState; float biomass; float timer; uint32_t cellType; };
+
+    // Two StalkCells separated by 6 units with restLen=2 — strong spring pull.
+    // The edge is RING (flags=0x1), so both cells must be anchored and stay put.
+    std::vector<glm::vec4> agentsIn = {
+        glm::vec4( 0.0f, 0.0f, 0.0f, 1.0f ), // StalkCell
+        glm::vec4( 6.0f, 0.0f, 0.0f, 1.0f ), // StalkCell
+    };
+    std::vector<glm::vec4>  agentsOut( 2, glm::vec4( 0.0f ) );
+    std::vector<PhenotypeData> phenotypes = {
+        { 0u, 0.5f, 0.0f, 2u }, // StalkCell
+        { 0u, 0.5f, 0.0f, 2u }, // StalkCell
+    };
+
+    VesselEdge edge      = { 0u, 1u, 2.0f, 0x1u }; // RING edge, stretch = 4
+    uint32_t   edgeCount = 1;
+    uint32_t   agentCount = 2;
+    size_t     agBz  = 2 * sizeof( glm::vec4 );
+    size_t     phBz  = 2 * sizeof( PhenotypeData );
+
+    BufferHandle ib  = m_rm->CreateBuffer( { agBz,                 BufferType::STORAGE, "RingAncIn"   } );
+    BufferHandle ob  = m_rm->CreateBuffer( { agBz,                 BufferType::STORAGE, "RingAncOut"  } );
+    BufferHandle eb  = m_rm->CreateBuffer( { sizeof( VesselEdge ), BufferType::STORAGE, "RingAncEdge" } );
+    BufferHandle ecb = m_rm->CreateBuffer( { sizeof( uint32_t ),   BufferType::STORAGE, "RingAncEc"   } );
+    BufferHandle cb  = m_rm->CreateBuffer( { sizeof( uint32_t ),   BufferType::STORAGE, "RingAncCnt"  } );
+    BufferHandle phb = m_rm->CreateBuffer( { phBz,                 BufferType::STORAGE, "RingAncPheno"} );
+
+    m_stream->UploadBufferImmediate( {
+        { ib,  agentsIn.data(),   agBz,                 0 },
+        { ob,  agentsOut.data(),  agBz,                 0 },
+        { eb,  &edge,             sizeof( VesselEdge ), 0 },
+        { ecb, &edgeCount,        sizeof( uint32_t ),   0 },
+        { cb,  &agentCount,       sizeof( uint32_t ),   0 },
+        { phb, phenotypes.data(), phBz,                 0 },
+    } );
+
+    ComputePipelineDesc   pd{ m_rm->CreateShader( "shaders/compute/biology/vessel_mechanics.comp" ), "TestRingAnchor" };
+    ComputePipelineHandle ph = m_rm->CreatePipeline( pd );
+    ComputePipeline*      pp = m_rm->GetPipeline( ph );
+
+    BindingGroup* bg = m_rm->GetBindingGroup( m_rm->CreateBindingGroup( ph, 0 ) );
+    bg->Bind( 0, m_rm->GetBuffer( ib ) );
+    bg->Bind( 1, m_rm->GetBuffer( ob ) );
+    bg->Bind( 2, m_rm->GetBuffer( eb ) );
+    bg->Bind( 3, m_rm->GetBuffer( ecb ) );
+    bg->Bind( 4, m_rm->GetBuffer( cb ) );
+    bg->Bind( 5, m_rm->GetBuffer( phb ) );
+    bg->Build();
+
+    ComputePushConstants pc{};
+    pc.dt      = 1.0f;
+    pc.fParam0 = 10.0f; // springStiffness
+    pc.fParam1 = 2.0f;  // restingLength
+    pc.fParam3 = -1.0f; // reqCT = any
+    pc.fParam4 = 1.0f;  // anchorPhalanxCells = enabled (also gates ring-edge anchor)
+    pc.offset  = 0; pc.maxCapacity = 2; pc.uParam0 = 0;
+
+    auto ctx = m_device->GetThreadContext( m_device->CreateThreadContext( QueueType::COMPUTE ) );
+    auto cmd = ctx->GetCommandBuffer( ctx->CreateCommandBuffer() );
+    cmd->Begin();
+    cmd->SetPipeline( pp );
+    cmd->SetBindingGroup( bg, pp->GetLayout(), VK_PIPELINE_BIND_POINT_COMPUTE );
+    cmd->PushConstants( pp->GetLayout(), VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof( pc ), &pc );
+    cmd->Dispatch( 1, 1, 1 );
+    cmd->End();
+    m_device->GetComputeQueue()->Submit( { cmd } );
+    m_device->GetComputeQueue()->WaitIdle();
+
+    std::vector<glm::vec4> result( 2 );
+    m_stream->ReadbackBufferImmediate( ob, result.data(), agBz );
+
+    // Both cells have a RING edge — they must not move despite the large spring stretch
+    EXPECT_FLOAT_EQ( result[ 0 ].x, 0.0f ) << "StalkCell with RING edge must be anchored";
+    EXPECT_FLOAT_EQ( result[ 1 ].x, 6.0f ) << "StalkCell with RING edge must be anchored";
+
+    m_rm->DestroyBuffer( ib ); m_rm->DestroyBuffer( ob ); m_rm->DestroyBuffer( eb );
+    m_rm->DestroyBuffer( ecb ); m_rm->DestroyBuffer( cb ); m_rm->DestroyBuffer( phb );
+}
+
+// StalkCell connected by only a SPROUT edge (flags=0x8) must move under spring forces —
+// it is part of the active sprout chain, not the parent vessel wall.
+TEST_F( ComputeTest, Shader_VesselSpring_StalkCellWithSproutEdge_Moves )
+{
+    if( !m_device )
+        GTEST_SKIP();
+
+    struct VesselEdge    { uint32_t agentA; uint32_t agentB; float dist; uint32_t flags; };
+    struct PhenotypeData { uint32_t lifecycleState; float biomass; float timer; uint32_t cellType; };
+
+    // Same layout as ring test but edge is SPROUT (flags=0x8) — neither cell is anchored.
+    std::vector<glm::vec4> agentsIn = {
+        glm::vec4( 0.0f, 0.0f, 0.0f, 1.0f ), // StalkCell
+        glm::vec4( 6.0f, 0.0f, 0.0f, 1.0f ), // StalkCell
+    };
+    std::vector<glm::vec4>  agentsOut( 2, glm::vec4( 0.0f ) );
+    std::vector<PhenotypeData> phenotypes = {
+        { 0u, 0.5f, 0.0f, 2u }, // StalkCell
+        { 0u, 0.5f, 0.0f, 2u }, // StalkCell
+    };
+
+    VesselEdge edge       = { 0u, 1u, 2.0f, 0x8u }; // SPROUT edge, stretch = 4
+    uint32_t   edgeCount  = 1;
+    uint32_t   agentCount = 2;
+    size_t     agBz  = 2 * sizeof( glm::vec4 );
+    size_t     phBz  = 2 * sizeof( PhenotypeData );
+
+    BufferHandle ib  = m_rm->CreateBuffer( { agBz,                 BufferType::STORAGE, "SprMvIn"   } );
+    BufferHandle ob  = m_rm->CreateBuffer( { agBz,                 BufferType::STORAGE, "SprMvOut"  } );
+    BufferHandle eb  = m_rm->CreateBuffer( { sizeof( VesselEdge ), BufferType::STORAGE, "SprMvEdge" } );
+    BufferHandle ecb = m_rm->CreateBuffer( { sizeof( uint32_t ),   BufferType::STORAGE, "SprMvEc"   } );
+    BufferHandle cb  = m_rm->CreateBuffer( { sizeof( uint32_t ),   BufferType::STORAGE, "SprMvCnt"  } );
+    BufferHandle phb = m_rm->CreateBuffer( { phBz,                 BufferType::STORAGE, "SprMvPheno"} );
+
+    m_stream->UploadBufferImmediate( {
+        { ib,  agentsIn.data(),   agBz,                 0 },
+        { ob,  agentsOut.data(),  agBz,                 0 },
+        { eb,  &edge,             sizeof( VesselEdge ), 0 },
+        { ecb, &edgeCount,        sizeof( uint32_t ),   0 },
+        { cb,  &agentCount,       sizeof( uint32_t ),   0 },
+        { phb, phenotypes.data(), phBz,                 0 },
+    } );
+
+    ComputePipelineDesc   pd{ m_rm->CreateShader( "shaders/compute/biology/vessel_mechanics.comp" ), "TestSproutMoves" };
+    ComputePipelineHandle ph = m_rm->CreatePipeline( pd );
+    ComputePipeline*      pp = m_rm->GetPipeline( ph );
+
+    BindingGroup* bg = m_rm->GetBindingGroup( m_rm->CreateBindingGroup( ph, 0 ) );
+    bg->Bind( 0, m_rm->GetBuffer( ib ) );
+    bg->Bind( 1, m_rm->GetBuffer( ob ) );
+    bg->Bind( 2, m_rm->GetBuffer( eb ) );
+    bg->Bind( 3, m_rm->GetBuffer( ecb ) );
+    bg->Bind( 4, m_rm->GetBuffer( cb ) );
+    bg->Bind( 5, m_rm->GetBuffer( phb ) );
+    bg->Build();
+
+    ComputePushConstants pc{};
+    pc.dt      = 1.0f;
+    pc.fParam0 = 10.0f; // springStiffness
+    pc.fParam1 = 2.0f;  // restingLength
+    pc.fParam3 = -1.0f; // reqCT = any
+    pc.fParam4 = 0.0f;  // anchorPhalanxCells = disabled — StalkCells in sprout chain are free to move
+    pc.offset  = 0; pc.maxCapacity = 2; pc.uParam0 = 0;
+
+    auto ctx = m_device->GetThreadContext( m_device->CreateThreadContext( QueueType::COMPUTE ) );
+    auto cmd = ctx->GetCommandBuffer( ctx->CreateCommandBuffer() );
+    cmd->Begin();
+    cmd->SetPipeline( pp );
+    cmd->SetBindingGroup( bg, pp->GetLayout(), VK_PIPELINE_BIND_POINT_COMPUTE );
+    cmd->PushConstants( pp->GetLayout(), VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof( pc ), &pc );
+    cmd->Dispatch( 1, 1, 1 );
+    cmd->End();
+    m_device->GetComputeQueue()->Submit( { cmd } );
+    m_device->GetComputeQueue()->WaitIdle();
+
+    std::vector<glm::vec4> result( 2 );
+    m_stream->ReadbackBufferImmediate( ob, result.data(), agBz );
+
+    // SPROUT edge with anchorPhalanxCells=false — both StalkCells are free to move
+    EXPECT_GT( result[ 0 ].x, 0.0f ) << "StalkCell with SPROUT edge must move toward its neighbor";
+    EXPECT_LT( result[ 1 ].x, 6.0f ) << "StalkCell with SPROUT edge must move toward its neighbor";
+
+    m_rm->DestroyBuffer( ib ); m_rm->DestroyBuffer( ob ); m_rm->DestroyBuffer( eb );
+    m_rm->DestroyBuffer( ecb ); m_rm->DestroyBuffer( cb ); m_rm->DestroyBuffer( phb );
+}
+
+// =================================================================================================
+// mitosis_vessel_append.comp — sprouting mitosis tests
+// =================================================================================================
 
 // Stalk maturation: a StalkCell edge-connected only to another StalkCell (no TipCell) must
 // convert to PhalanxCell and NOT divide, even with biomass >= 1.0.
@@ -3826,6 +4006,7 @@ TEST_F( ComputeTest, Shader_VesselMitosis_StalkNoTipNeighbor_MaturesToPhalanx )
     BufferHandle cB  = m_rm->CreateBuffer( { cntBz, BufferType::STORAGE, "VMaCnt" } );
     BufferHandle eB  = m_rm->CreateBuffer( { edBz,  BufferType::STORAGE, "VMaE"   } );
     BufferHandle ecB = m_rm->CreateBuffer( { cntBz, BufferType::STORAGE, "VMaEc"  } );
+    BufferHandle oB  = m_rm->CreateBuffer( { agBz,  BufferType::STORAGE, "VMaOr"  } );
 
     m_stream->UploadBufferImmediate( {
         { abR, agents.data(), agBz,  0 },
@@ -3845,6 +4026,7 @@ TEST_F( ComputeTest, Shader_VesselMitosis_StalkNoTipNeighbor_MaturesToPhalanx )
     bg->Bind( 3, m_rm->GetBuffer( cB ) );
     bg->Bind( 4, m_rm->GetBuffer( eB ) );
     bg->Bind( 5, m_rm->GetBuffer( ecB ) );
+    bg->Bind( 6, m_rm->GetBuffer( oB ) );
     bg->Build();
 
     ComputePushConstants pc{};
@@ -3875,6 +4057,7 @@ TEST_F( ComputeTest, Shader_VesselMitosis_StalkNoTipNeighbor_MaturesToPhalanx )
 
     m_rm->DestroyBuffer( abR ); m_rm->DestroyBuffer( abW ); m_rm->DestroyBuffer( pb );
     m_rm->DestroyBuffer( cB );  m_rm->DestroyBuffer( eB );  m_rm->DestroyBuffer( ecB );
+    m_rm->DestroyBuffer( oB );
 }
 
 // Grace period: before totalTime >= 1.5 s, StalkCells without TipCell neighbor must NOT
@@ -3912,6 +4095,7 @@ TEST_F( ComputeTest, Shader_VesselMitosis_GracePeriod_StalkNotConvertedBeforeGra
     BufferHandle cB  = m_rm->CreateBuffer( { cntBz, BufferType::STORAGE, "VMgCnt" } );
     BufferHandle eB  = m_rm->CreateBuffer( { edBz,  BufferType::STORAGE, "VMgE"   } );
     BufferHandle ecB = m_rm->CreateBuffer( { cntBz, BufferType::STORAGE, "VMgEc"  } );
+    BufferHandle oB  = m_rm->CreateBuffer( { agBz,  BufferType::STORAGE, "VMgOr"  } );
 
     m_stream->UploadBufferImmediate( {
         { abR, agents.data(), agBz,  0 },
@@ -3931,6 +4115,7 @@ TEST_F( ComputeTest, Shader_VesselMitosis_GracePeriod_StalkNotConvertedBeforeGra
     bg->Bind( 3, m_rm->GetBuffer( cB ) );
     bg->Bind( 4, m_rm->GetBuffer( eB ) );
     bg->Bind( 5, m_rm->GetBuffer( ecB ) );
+    bg->Bind( 6, m_rm->GetBuffer( oB ) );
     bg->Build();
 
     ComputePushConstants pc{};
@@ -3959,10 +4144,11 @@ TEST_F( ComputeTest, Shader_VesselMitosis_GracePeriod_StalkNotConvertedBeforeGra
 
     m_rm->DestroyBuffer( abR ); m_rm->DestroyBuffer( abW ); m_rm->DestroyBuffer( pb );
     m_rm->DestroyBuffer( cB );  m_rm->DestroyBuffer( eB );  m_rm->DestroyBuffer( ecB );
+    m_rm->DestroyBuffer( oB );
 }
 
 // Edge chain split: when a StalkCell adjacent to a TipCell divides, the TipCell-adjacency
-// edge must be transferred to the daughter so the proliferation front advances linearly.
+// edge must be transferred to the daughter so the proliferation front advances.
 // Before: parent ↔ TipCell   After: parent ↔ daughter ↔ TipCell
 TEST_F( ComputeTest, Shader_VesselMitosis_EdgeChainSplit_DaughterBecomesAdjacentToTip )
 {
@@ -3972,7 +4158,7 @@ TEST_F( ComputeTest, Shader_VesselMitosis_EdgeChainSplit_DaughterBecomesAdjacent
     struct PhenotypeData { uint32_t lifecycleState; float biomass; float timer; uint32_t cellType; };
     struct VesselEdge    { uint32_t agentA; uint32_t agentB; float dist; uint32_t flags; };
 
-    // 3 input cells + 1 slot for the daughter
+    // 3 input cells + 1 slot for daughter (index 3)
     uint32_t maxCap = 8;
     size_t   agBz   = maxCap * sizeof( glm::vec4 );
     size_t   phBz   = maxCap * sizeof( PhenotypeData );
@@ -4005,6 +4191,7 @@ TEST_F( ComputeTest, Shader_VesselMitosis_EdgeChainSplit_DaughterBecomesAdjacent
     BufferHandle cB  = m_rm->CreateBuffer( { cntBz, BufferType::STORAGE, "VMesCnt" } );
     BufferHandle eB  = m_rm->CreateBuffer( { edBz,  BufferType::STORAGE, "VMesE"   } );
     BufferHandle ecB = m_rm->CreateBuffer( { cntBz, BufferType::STORAGE, "VMesEc"  } );
+    BufferHandle oB  = m_rm->CreateBuffer( { agBz,  BufferType::STORAGE, "VMesOr"  } );
 
     m_stream->UploadBufferImmediate( {
         { abR, agents.data(), agBz,  0 },
@@ -4024,6 +4211,7 @@ TEST_F( ComputeTest, Shader_VesselMitosis_EdgeChainSplit_DaughterBecomesAdjacent
     bg->Bind( 3, m_rm->GetBuffer( cB ) );
     bg->Bind( 4, m_rm->GetBuffer( eB ) );
     bg->Bind( 5, m_rm->GetBuffer( ecB ) );
+    bg->Bind( 6, m_rm->GetBuffer( oB ) );
     bg->Build();
 
     ComputePushConstants pc{};
@@ -4043,20 +4231,21 @@ TEST_F( ComputeTest, Shader_VesselMitosis_EdgeChainSplit_DaughterBecomesAdjacent
     m_device->GetComputeQueue()->WaitIdle();
 
     std::vector<PhenotypeData> resPheno( maxCap );
-    std::vector<VesselEdge>    resEdges( maxCap );
+    std::vector<VesselEdge> resEdges( maxCap );
     uint32_t resCount, resEdgeCount;
-    m_stream->ReadbackBufferImmediate( pb,  resPheno.data(), phBz  );
-    m_stream->ReadbackBufferImmediate( eB,  resEdges.data(), edBz  );
-    m_stream->ReadbackBufferImmediate( cB,  &resCount,       cntBz );
-    m_stream->ReadbackBufferImmediate( ecB, &resEdgeCount,   cntBz );
+    m_stream->ReadbackBufferImmediate( pb,  resPheno.data(),  phBz  );
+    m_stream->ReadbackBufferImmediate( eB,  resEdges.data(),  edBz  );
+    m_stream->ReadbackBufferImmediate( cB,  &resCount,        cntBz );
+    m_stream->ReadbackBufferImmediate( ecB, &resEdgeCount,    cntBz );
 
-    uint32_t daughterIdx = 3u; // atomicAdd on agentCount=3 → daughter at index 3
+    // agentCount=3 → daughter at index 3
+    uint32_t daughterIdx = 3u;
 
-    EXPECT_EQ( resCount,     4u ) << "Division must produce a daughter cell";
-    EXPECT_EQ( resEdgeCount, 3u ) << "One new edge written (parent↔daughter); total = 3";
+    EXPECT_EQ( resCount,     4u ) << "Division must produce 1 daughter";
+    EXPECT_EQ( resEdgeCount, 3u ) << "2 existing + 1 new SPROUT edge = 3 total";
     EXPECT_EQ( resPheno[ daughterIdx ].cellType, 2u ) << "Daughter must be StalkCell";
 
-    // Verify edge 0 (originally parent↔TipCell) was updated to daughter↔TipCell
+    // Edge 0 (originally parent↔TipCell) must be updated to daughter↔TipCell
     bool daughterHasTipEdge = false;
     bool parentHasTipEdge   = false;
     for( uint32_t e = 0; e < resEdgeCount; e++ )
@@ -4069,16 +4258,17 @@ TEST_F( ComputeTest, Shader_VesselMitosis_EdgeChainSplit_DaughterBecomesAdjacent
         bool bIsParent   = resEdges[ e ].agentB == 0u;
 
         if( ( aIsDaughter && bIsTip ) || ( bIsDaughter && aIsTip ) ) daughterHasTipEdge = true;
-        if( ( aIsParent   && bIsTip ) || ( bIsParent   && aIsTip ) ) parentHasTipEdge   = true;
+        if( ( aIsParent && bIsTip ) || ( bIsParent && aIsTip ) ) parentHasTipEdge = true;
     }
-    EXPECT_TRUE( daughterHasTipEdge ) << "Daughter must be adjacent to TipCell after edge chain split";
-    EXPECT_FALSE( parentHasTipEdge  ) << "Parent must NOT retain TipCell adjacency — it must quiesce next tick";
+    EXPECT_TRUE( daughterHasTipEdge ) << "Daughter must be adjacent to TipCell (proliferation front)";
+    EXPECT_FALSE( parentHasTipEdge  ) << "Parent must NOT retain TipCell adjacency — it quiesces next tick";
 
     m_rm->DestroyBuffer( abR ); m_rm->DestroyBuffer( abW ); m_rm->DestroyBuffer( pb );
     m_rm->DestroyBuffer( cB );  m_rm->DestroyBuffer( eB );  m_rm->DestroyBuffer( ecB );
+    m_rm->DestroyBuffer( oB );
 }
 
-// Stalk division: a StalkCell edge-connected to a TipCell must still divide normally.
+// Stalk division: a StalkCell edge-connected to a TipCell must divide and produce a daughter.
 TEST_F( ComputeTest, Shader_VesselMitosis_TipNeighbor_Divides )
 {
     if( !m_device )
@@ -4112,6 +4302,7 @@ TEST_F( ComputeTest, Shader_VesselMitosis_TipNeighbor_Divides )
     BufferHandle cB  = m_rm->CreateBuffer( { cntBz, BufferType::STORAGE, "VMdCnt" } );
     BufferHandle eB  = m_rm->CreateBuffer( { edBz,  BufferType::STORAGE, "VMdE"   } );
     BufferHandle ecB = m_rm->CreateBuffer( { cntBz, BufferType::STORAGE, "VMdEc"  } );
+    BufferHandle oB  = m_rm->CreateBuffer( { agBz,  BufferType::STORAGE, "VMdOr"  } );
 
     m_stream->UploadBufferImmediate( {
         { abR, agents.data(), agBz,  0 },
@@ -4131,6 +4322,7 @@ TEST_F( ComputeTest, Shader_VesselMitosis_TipNeighbor_Divides )
     bg->Bind( 3, m_rm->GetBuffer( cB ) );
     bg->Bind( 4, m_rm->GetBuffer( eB ) );
     bg->Bind( 5, m_rm->GetBuffer( ecB ) );
+    bg->Bind( 6, m_rm->GetBuffer( oB ) );
     bg->Build();
 
     ComputePushConstants pc{};
@@ -4157,13 +4349,16 @@ TEST_F( ComputeTest, Shader_VesselMitosis_TipNeighbor_Divides )
 
     EXPECT_EQ( resPheno[ 0 ].cellType, 2u )     << "StalkCell with TipCell neighbor must remain StalkCell";
     EXPECT_NEAR( resPheno[ 0 ].biomass, 0.5f, 0.01f ) << "Mother biomass reset after division";
-    EXPECT_EQ( resCount, 3u )                   << "Division must have incremented the counter";
+    // Single daughter at slot 2
+    EXPECT_EQ( resCount, 3u )                   << "Division must produce 1 daughter";
     EXPECT_EQ( resPheno[ 2 ].cellType, 2u )     << "Daughter must be StalkCell";
     EXPECT_NEAR( resPheno[ 2 ].biomass, 0.5f, 0.01f ) << "Daughter biomass must start at 0.5";
-    EXPECT_EQ( resEdgeCount, 2u )               << "Division must write one new vessel edge";
+    // 1 new SPROUT edge; total = 1 (transferred) + 1 (new) = 2
+    EXPECT_EQ( resEdgeCount, 2u )               << "Division must write 1 new vessel edge";
 
     m_rm->DestroyBuffer( abR ); m_rm->DestroyBuffer( abW ); m_rm->DestroyBuffer( pb );
     m_rm->DestroyBuffer( cB );  m_rm->DestroyBuffer( eB );  m_rm->DestroyBuffer( ecB );
+    m_rm->DestroyBuffer( oB );
 }
 
 TEST_F( ComputeTest, Shader_VesselMitosis_TipCellDoesNotDivide )
@@ -4198,6 +4393,7 @@ TEST_F( ComputeTest, Shader_VesselMitosis_TipCellDoesNotDivide )
     BufferHandle cB  = m_rm->CreateBuffer( { cntBz, BufferType::STORAGE, "VMACnt" } );
     BufferHandle eB  = m_rm->CreateBuffer( { edBz,  BufferType::STORAGE, "VMAE"   } );
     BufferHandle ecB = m_rm->CreateBuffer( { cntBz, BufferType::STORAGE, "VMAEc"  } );
+    BufferHandle oB  = m_rm->CreateBuffer( { agBz,  BufferType::STORAGE, "VMAOr"  } );
 
     m_stream->UploadBufferImmediate( {
         { abR, agents.data(), agBz,  0 },
@@ -4217,6 +4413,7 @@ TEST_F( ComputeTest, Shader_VesselMitosis_TipCellDoesNotDivide )
     bg->Bind( 3, m_rm->GetBuffer( cB ) );
     bg->Bind( 4, m_rm->GetBuffer( eB ) );
     bg->Bind( 5, m_rm->GetBuffer( ecB ) );
+    bg->Bind( 6, m_rm->GetBuffer( oB ) );
     bg->Build();
 
     ComputePushConstants pc{};
@@ -4248,6 +4445,7 @@ TEST_F( ComputeTest, Shader_VesselMitosis_TipCellDoesNotDivide )
 
     m_rm->DestroyBuffer( abR ); m_rm->DestroyBuffer( abW ); m_rm->DestroyBuffer( pb );
     m_rm->DestroyBuffer( cB );  m_rm->DestroyBuffer( eB );  m_rm->DestroyBuffer( ecB );
+    m_rm->DestroyBuffer( oB );
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -4616,6 +4814,93 @@ TEST_F( ComputeTest, Shader_NotchDll4_Recruitment_NoTipNeighbor_StaysPhalanx )
     m_rm->DestroyTexture( vTex );
 }
 
+// PhalanxCell connected to a TipCell only via a RING edge (flags=0x1) must NOT be
+// recruited to StalkCell. The ring edge is a circumferential tube-wall contact; the
+// TipCell is in the same ring, not axially ahead of the PhalanxCell. Recruiting via
+// ring edges causes the flip-flop bug (stuck yellow cylinder in tube wall) because
+// mitosis_vessel_append.comp applies the same ring-edge filter for its check.
+//
+// Setup: 2 cells, 1 RING edge. Cell 0 = PhalanxCell, Cell 1 = TipCell. 1 dispatch.
+// Expected: cell 0 stays PhalanxCell.
+TEST_F( ComputeTest, Shader_NotchDll4_PhalanxRecruitment_IgnoresRingEdges )
+{
+    if( !m_device )
+        GTEST_SKIP();
+
+    struct SignalingData { float dll4; float nicd; float vegfr2; float pad; };
+    struct PhenotypeData { uint32_t lifecycleState; float biomass; float timer; uint32_t cellType; };
+    struct VesselEdge    { uint32_t agentA; uint32_t agentB; float dist; uint32_t flags; };
+
+    std::vector<glm::vec4>    agents     = { glm::vec4(0,0,0,1), glm::vec4(1,0,0,1) };
+    std::vector<SignalingData> signaling  = { {0.0f,0.0f,0.0f,0.0f}, {0.9f,0.0f,0.0f,0.0f} }; // TipCell has high Dll4
+    std::vector<PhenotypeData> phenotypes = { {0u,0.5f,0.0f,3u}, {0u,0.5f,0.0f,1u} }; // PhalanxCell, TipCell
+    VesselEdge edge       = { 0u, 1u, 1.0f, 0x1u }; // RING edge — must be ignored for recruitment
+    uint32_t   edgeCount  = 1;
+    uint32_t   agentCount = 2;
+
+    size_t agSz = 2*sizeof(glm::vec4), sigSz = 2*sizeof(SignalingData), phSz = 2*sizeof(PhenotypeData);
+    size_t cSz  = sizeof(uint32_t);
+
+    BufferHandle  agBuf  = m_rm->CreateBuffer( { agSz,               BufferType::STORAGE,  "PxRingAg"   } );
+    BufferHandle  sigBuf = m_rm->CreateBuffer( { sigSz,              BufferType::STORAGE,  "PxRingSig"  } );
+    BufferHandle  phBuf  = m_rm->CreateBuffer( { phSz,               BufferType::STORAGE,  "PxRingPh"   } );
+    BufferHandle  eBuf   = m_rm->CreateBuffer( { sizeof(VesselEdge), BufferType::STORAGE,  "PxRingE"    } );
+    BufferHandle  ecBuf  = m_rm->CreateBuffer( { cSz,                BufferType::STORAGE,  "PxRingEC"   } );
+    BufferHandle  cBuf   = m_rm->CreateBuffer( { cSz,                BufferType::INDIRECT, "PxRingCnt"  } );
+    TextureHandle vTex   = m_rm->CreateTexture( { 1,1,1, TextureType::Texture3D, VK_FORMAT_R32_SFLOAT,
+                                                  TextureUsage::STORAGE | TextureUsage::TRANSFER_DST, "PxRingVEGF" } );
+    float zero = 0.0f;
+    m_stream->UploadTextureImmediate( vTex, &zero, sizeof(float) );
+    m_stream->UploadBufferImmediate( {
+        { agBuf,  agents.data(),     agSz,               0 },
+        { sigBuf, signaling.data(),  sigSz,              0 },
+        { phBuf,  phenotypes.data(), phSz,               0 },
+        { eBuf,   &edge,             sizeof(VesselEdge), 0 },
+        { ecBuf,  &edgeCount,        cSz,                0 },
+        { cBuf,   &agentCount,       cSz,                0 },
+    } );
+
+    ComputePipelineHandle ph5 = m_rm->CreatePipeline( ComputePipelineDesc{ m_rm->CreateShader( "shaders/compute/biology/notch_dll4.comp" ), "PxRing" } );
+    ComputePipeline*      pp  = m_rm->GetPipeline( ph5 );
+    BindingGroup* bg = m_rm->GetBindingGroup( m_rm->CreateBindingGroup( ph5, 0 ) );
+    bg->Bind( 0, m_rm->GetBuffer( agBuf  ) );
+    bg->Bind( 1, m_rm->GetBuffer( sigBuf ) );
+    bg->Bind( 2, m_rm->GetBuffer( phBuf  ) );
+    bg->Bind( 3, m_rm->GetBuffer( eBuf   ) );
+    bg->Bind( 4, m_rm->GetBuffer( ecBuf  ) );
+    bg->Bind( 5, m_rm->GetBuffer( cBuf   ) );
+    bg->Bind( 6, m_rm->GetTexture( vTex ), VK_IMAGE_LAYOUT_GENERAL );
+    bg->Build();
+
+    ComputePushConstants pc{};
+    pc.dt = 0.1f; pc.fParam0 = 1.0f; pc.fParam1 = 0.1f; pc.fParam2 = 5.0f;
+    pc.fParam3 = 1.0f; pc.fParam4 = 0.8f; pc.fParam5 = 0.3f;
+    pc.offset = 0; pc.maxCapacity = 2; pc.uParam0 = 0u; pc.uParam1 = 0;
+    pc.domainSize = glm::vec4( 100.0f, 100.0f, 100.0f, 0.0f );
+    pc.gridSize   = glm::uvec4( 1u, 1u, 1u, 0u );
+
+    auto ctx = m_device->GetThreadContext( m_device->CreateThreadContext( QueueType::COMPUTE ) );
+    auto cmd = ctx->GetCommandBuffer( ctx->CreateCommandBuffer() );
+    cmd->Begin();
+    cmd->SetPipeline( pp );
+    cmd->SetBindingGroup( bg, pp->GetLayout(), VK_PIPELINE_BIND_POINT_COMPUTE );
+    cmd->PushConstants( pp->GetLayout(), VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(pc), &pc );
+    cmd->Dispatch( 1, 1, 1 );
+    cmd->End();
+    m_device->GetComputeQueue()->Submit( { cmd } );
+    m_device->GetComputeQueue()->WaitIdle();
+
+    std::vector<PhenotypeData> result( 2 );
+    m_stream->ReadbackBufferImmediate( phBuf, result.data(), phSz );
+
+    EXPECT_EQ( result[ 0 ].cellType, 3u ) << "PhalanxCell connected via ring edge to TipCell must NOT be recruited";
+    EXPECT_EQ( result[ 1 ].cellType, 1u ) << "TipCell must remain TipCell";
+
+    m_rm->DestroyBuffer( agBuf ); m_rm->DestroyBuffer( sigBuf ); m_rm->DestroyBuffer( phBuf );
+    m_rm->DestroyBuffer( eBuf  ); m_rm->DestroyBuffer( ecBuf  ); m_rm->DestroyBuffer( cBuf  );
+    m_rm->DestroyTexture( vTex );
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // mitosis_vessel_append — PhalanxCell recruitment safety-net tests
 // ─────────────────────────────────────────────────────────────────────────────
@@ -4659,6 +4944,7 @@ TEST_F( ComputeTest, Shader_VesselMitosis_Recruitment_PhalanxAdjacentToTip_Becom
     BufferHandle cB  = m_rm->CreateBuffer( { cSz,   BufferType::INDIRECT, "MxPxTipCnt"   } );
     BufferHandle eB  = m_rm->CreateBuffer( { eSz,   BufferType::STORAGE,  "MxPxTipE"     } );
     BufferHandle ecB = m_rm->CreateBuffer( { cSz,   BufferType::STORAGE,  "MxPxTipEC"    } );
+    BufferHandle oB  = m_rm->CreateBuffer( { posSz, BufferType::STORAGE,  "MxPxTipOr"    } );
 
     m_stream->UploadBufferImmediate( {
         { abR, posR.data(),   posSz,               0 },
@@ -4680,6 +4966,7 @@ TEST_F( ComputeTest, Shader_VesselMitosis_Recruitment_PhalanxAdjacentToTip_Becom
     bg->Bind( 3, m_rm->GetBuffer( cB  ) );
     bg->Bind( 4, m_rm->GetBuffer( eB  ) );
     bg->Bind( 5, m_rm->GetBuffer( ecB ) );
+    bg->Bind( 6, m_rm->GetBuffer( oB  ) );
     bg->Build();
 
     ComputePushConstants pc{};
@@ -4707,6 +4994,7 @@ TEST_F( ComputeTest, Shader_VesselMitosis_Recruitment_PhalanxAdjacentToTip_Becom
 
     m_rm->DestroyBuffer( abR ); m_rm->DestroyBuffer( abW ); m_rm->DestroyBuffer( pb );
     m_rm->DestroyBuffer( cB );  m_rm->DestroyBuffer( eB );  m_rm->DestroyBuffer( ecB );
+    m_rm->DestroyBuffer( oB );
 }
 
 // PhalanxCell adjacent only to a StalkCell must NOT be recruited by the mitosis shader.
@@ -4746,6 +5034,7 @@ TEST_F( ComputeTest, Shader_VesselMitosis_Recruitment_PhalanxNoTip_StaysPhalanx 
     BufferHandle cB  = m_rm->CreateBuffer( { cSz,   BufferType::INDIRECT, "MxPxNoTipCnt"  } );
     BufferHandle eB  = m_rm->CreateBuffer( { eSz,   BufferType::STORAGE,  "MxPxNoTipE"    } );
     BufferHandle ecB = m_rm->CreateBuffer( { cSz,   BufferType::STORAGE,  "MxPxNoTipEC"   } );
+    BufferHandle oB  = m_rm->CreateBuffer( { posSz, BufferType::STORAGE,  "MxPxNoTipOr"   } );
 
     m_stream->UploadBufferImmediate( {
         { abR, posR.data(),  posSz,               0 },
@@ -4767,6 +5056,7 @@ TEST_F( ComputeTest, Shader_VesselMitosis_Recruitment_PhalanxNoTip_StaysPhalanx 
     bg->Bind( 3, m_rm->GetBuffer( cB  ) );
     bg->Bind( 4, m_rm->GetBuffer( eB  ) );
     bg->Bind( 5, m_rm->GetBuffer( ecB ) );
+    bg->Bind( 6, m_rm->GetBuffer( oB  ) );
     bg->Build();
 
     ComputePushConstants pc{};
@@ -4794,6 +5084,282 @@ TEST_F( ComputeTest, Shader_VesselMitosis_Recruitment_PhalanxNoTip_StaysPhalanx 
 
     m_rm->DestroyBuffer( abR ); m_rm->DestroyBuffer( abW ); m_rm->DestroyBuffer( pb );
     m_rm->DestroyBuffer( cB );  m_rm->DestroyBuffer( eB );  m_rm->DestroyBuffer( ecB );
+    m_rm->DestroyBuffer( oB );
+}
+
+// =================================================================================================
+// mitosis_vessel_append — ring topology tests (edge flag filtering)
+// =================================================================================================
+
+// StalkCell with an AXIAL edge to TipCell should divide.
+// StalkCell with only a RING edge to TipCell should mature to PhalanxCell (ring edges ignored).
+TEST_F( ComputeTest, Shader_VesselMitosis_RingTopology_OnlyAxialNeighborDivides )
+{
+    if( !m_device )
+        GTEST_SKIP();
+
+    struct PhenotypeData { uint32_t lifecycleState; float biomass; float timer; uint32_t cellType; };
+    struct VesselEdge    { uint32_t agentA; uint32_t agentB; float dist; uint32_t flags; };
+
+    uint32_t maxCap = 8;
+    size_t   agBz   = maxCap * sizeof( glm::vec4 );
+    size_t   phBz   = maxCap * sizeof( PhenotypeData );
+    size_t   edBz   = maxCap * sizeof( VesselEdge );
+    size_t   cntBz  = sizeof( uint32_t );
+
+    // Cell 0: StalkCell at (0,0,0) — connected to TipCell via AXIAL edge → should divide
+    // Cell 1: TipCell at (3,0,0)
+    // Cell 2: StalkCell at (0,3,0) — connected to TipCell via RING edge only → should mature
+    std::vector<glm::vec4> agents( maxCap, glm::vec4( 0.0f ) );
+    agents[ 0 ] = glm::vec4(  0.0f, 0.0f, 0.0f, 1.0f );
+    agents[ 1 ] = glm::vec4(  3.0f, 0.0f, 0.0f, 1.0f );
+    agents[ 2 ] = glm::vec4(  0.0f, 3.0f, 0.0f, 1.0f );
+
+    std::vector<PhenotypeData> pheno( maxCap, { 0u, 0.0f, 0.0f, 0u } );
+    pheno[ 0 ] = { 0u, 1.1f, 0.0f, 2u }; // StalkCell, biomass ready
+    pheno[ 1 ] = { 0u, 0.5f, 0.0f, 1u }; // TipCell
+    pheno[ 2 ] = { 0u, 1.1f, 0.0f, 2u }; // StalkCell, biomass ready
+
+    std::vector<VesselEdge> edgeBuf( maxCap, { 0u, 0u, 0.0f, 0u } );
+    edgeBuf[ 0 ] = { 0u, 1u, 3.0f, 0x2u }; // Cell 0 ↔ Cell 1 : AXIAL
+    edgeBuf[ 1 ] = { 2u, 1u, 3.0f, 0x1u }; // Cell 2 ↔ Cell 1 : RING
+    uint32_t edgeCount  = 2u;
+    uint32_t agentCount = 3u;
+
+    BufferHandle abR = m_rm->CreateBuffer( { agBz,  BufferType::STORAGE, "RngR"  } );
+    BufferHandle abW = m_rm->CreateBuffer( { agBz,  BufferType::STORAGE, "RngW"  } );
+    BufferHandle pb  = m_rm->CreateBuffer( { phBz,  BufferType::STORAGE, "RngPh" } );
+    BufferHandle cB  = m_rm->CreateBuffer( { cntBz, BufferType::STORAGE, "RngC"  } );
+    BufferHandle eB  = m_rm->CreateBuffer( { edBz,  BufferType::STORAGE, "RngE"  } );
+    BufferHandle ecB = m_rm->CreateBuffer( { cntBz, BufferType::STORAGE, "RngEc" } );
+    BufferHandle oB  = m_rm->CreateBuffer( { agBz,  BufferType::STORAGE, "RngOr" } );
+
+    m_stream->UploadBufferImmediate( {
+        { abR, agents.data(), agBz,  0 },
+        { abW, agents.data(), agBz,  0 },
+        { pb,  pheno.data(),  phBz,  0 },
+        { cB,  &agentCount,   cntBz, 0 },
+        { eB,  edgeBuf.data(), edBz, 0 },
+        { ecB, &edgeCount,    cntBz, 0 },
+    } );
+
+    ComputePipelineDesc   pd{ m_rm->CreateShader( "shaders/compute/biology/mitosis_vessel_append.comp" ), "RingAxialDiv" };
+    ComputePipelineHandle ph = m_rm->CreatePipeline( pd );
+    BindingGroup* bg = m_rm->GetBindingGroup( m_rm->CreateBindingGroup( ph, 0 ) );
+    bg->Bind( 0, m_rm->GetBuffer( abR ) ); bg->Bind( 1, m_rm->GetBuffer( abW ) );
+    bg->Bind( 2, m_rm->GetBuffer( pb  ) ); bg->Bind( 3, m_rm->GetBuffer( cB  ) );
+    bg->Bind( 4, m_rm->GetBuffer( eB  ) ); bg->Bind( 5, m_rm->GetBuffer( ecB ) );
+    bg->Bind( 6, m_rm->GetBuffer( oB  ) );
+    bg->Build();
+
+    ComputePushConstants pc{};
+    pc.totalTime = 10.0f; // past grace period so maturation fires
+    pc.maxCapacity = maxCap; pc.uParam1 = 0;
+
+    auto ctx = m_device->GetThreadContext( m_device->CreateThreadContext( QueueType::COMPUTE ) );
+    auto cmd = ctx->GetCommandBuffer( ctx->CreateCommandBuffer() );
+    cmd->Begin();
+    cmd->SetPipeline( m_rm->GetPipeline( ph ) );
+    cmd->SetBindingGroup( bg, m_rm->GetPipeline( ph )->GetLayout(), VK_PIPELINE_BIND_POINT_COMPUTE );
+    cmd->PushConstants( m_rm->GetPipeline( ph )->GetLayout(), VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof( pc ), &pc );
+    cmd->Dispatch( 1, 1, 1 );
+    cmd->End();
+    m_device->GetComputeQueue()->Submit( { cmd } );
+    m_device->GetComputeQueue()->WaitIdle();
+
+    std::vector<PhenotypeData> resPheno( maxCap );
+    uint32_t resCount;
+    m_stream->ReadbackBufferImmediate( pb, resPheno.data(), phBz );
+    m_stream->ReadbackBufferImmediate( cB, &resCount, cntBz );
+
+    // Cell 0 divides → daughter at slot 3; cell 2 matures (ring edge only)
+    EXPECT_EQ( resCount, 4u )             << "Cell 0 (axial TipCell neighbor) must produce 1 daughter → count = 4";
+    EXPECT_EQ( resPheno[0].cellType, 2u ) << "Dividing StalkCell must remain StalkCell";
+    EXPECT_EQ( resPheno[3].cellType, 2u ) << "Daughter of axial StalkCell must be StalkCell";
+    EXPECT_EQ( resPheno[2].cellType, 3u ) << "Ring-only TipCell neighbor must mature to PhalanxCell";
+
+    m_rm->DestroyBuffer( abR ); m_rm->DestroyBuffer( abW ); m_rm->DestroyBuffer( pb );
+    m_rm->DestroyBuffer( cB );  m_rm->DestroyBuffer( eB );  m_rm->DestroyBuffer( ecB );
+    m_rm->DestroyBuffer( oB );
+}
+
+// Division axis must point toward the TipCell even when the dividing cell has 4 edges
+// (2 ring + 2 axial). Daughter position should be between mother and TipCell (+x direction).
+TEST_F( ComputeTest, Shader_VesselMitosis_RingTopology_VesselAxisPointsTowardTip )
+{
+    if( !m_device )
+        GTEST_SKIP();
+
+    struct PhenotypeData { uint32_t lifecycleState; float biomass; float timer; uint32_t cellType; };
+    struct VesselEdge    { uint32_t agentA; uint32_t agentB; float dist; uint32_t flags; };
+
+    uint32_t maxCap = 8;
+    size_t   agBz   = maxCap * sizeof( glm::vec4 );
+    size_t   phBz   = maxCap * sizeof( PhenotypeData );
+    size_t   edBz   = maxCap * sizeof( VesselEdge );
+    size_t   cntBz  = sizeof( uint32_t );
+
+    // Cell 0: StalkCell at origin — 4 edges: TipCell ahead (+x), stalk behind (-x), 2 ring (±y)
+    // axis=(1,0,0) → daughter placed at (1.5, 0, 0)
+    std::vector<glm::vec4> agents( maxCap, glm::vec4( 0.0f ) );
+    agents[ 0 ] = glm::vec4(  0.0f,  0.0f, 0.0f, 1.0f ); // dividing StalkCell
+    agents[ 1 ] = glm::vec4(  3.0f,  0.0f, 0.0f, 1.0f ); // TipCell ahead
+    agents[ 2 ] = glm::vec4( -3.0f,  0.0f, 0.0f, 1.0f ); // StalkCell behind
+    agents[ 3 ] = glm::vec4(  0.0f,  2.0f, 0.0f, 1.0f ); // ring neighbor
+    agents[ 4 ] = glm::vec4(  0.0f, -2.0f, 0.0f, 1.0f ); // ring neighbor
+
+    std::vector<PhenotypeData> pheno( maxCap, { 0u, 0.0f, 0.0f, 0u } );
+    pheno[ 0 ] = { 0u, 1.1f, 0.0f, 2u }; // StalkCell, biomass ready
+    pheno[ 1 ] = { 0u, 0.5f, 0.0f, 1u }; // TipCell
+    pheno[ 2 ] = { 0u, 0.5f, 0.0f, 2u }; // StalkCell behind
+    pheno[ 3 ] = { 0u, 0.5f, 0.0f, 3u }; // PhalanxCell ring
+    pheno[ 4 ] = { 0u, 0.5f, 0.0f, 3u }; // PhalanxCell ring
+
+    std::vector<VesselEdge> edgeBuf( maxCap, { 0u, 0u, 0.0f, 0u } );
+    edgeBuf[ 0 ] = { 0u, 1u, 3.0f, 0x2u }; // Cell 0 ↔ TipCell  : AXIAL
+    edgeBuf[ 1 ] = { 0u, 2u, 3.0f, 0x2u }; // Cell 0 ↔ behind   : AXIAL
+    edgeBuf[ 2 ] = { 0u, 3u, 2.0f, 0x1u }; // Cell 0 ↔ ring+y   : RING
+    edgeBuf[ 3 ] = { 0u, 4u, 2.0f, 0x1u }; // Cell 0 ↔ ring-y   : RING
+    uint32_t edgeCount  = 4u;
+    uint32_t agentCount = 5u;
+
+    BufferHandle abR = m_rm->CreateBuffer( { agBz,  BufferType::STORAGE, "AxisR"  } );
+    BufferHandle abW = m_rm->CreateBuffer( { agBz,  BufferType::STORAGE, "AxisW"  } );
+    BufferHandle pb  = m_rm->CreateBuffer( { phBz,  BufferType::STORAGE, "AxisPh" } );
+    BufferHandle cB  = m_rm->CreateBuffer( { cntBz, BufferType::STORAGE, "AxisC"  } );
+    BufferHandle eB  = m_rm->CreateBuffer( { edBz,  BufferType::STORAGE, "AxisE"  } );
+    BufferHandle ecB = m_rm->CreateBuffer( { cntBz, BufferType::STORAGE, "AxisEc" } );
+    BufferHandle oB  = m_rm->CreateBuffer( { agBz,  BufferType::STORAGE, "AxisOr" } );
+
+    m_stream->UploadBufferImmediate( {
+        { abR, agents.data(),  agBz,  0 },
+        { abW, agents.data(),  agBz,  0 },
+        { pb,  pheno.data(),   phBz,  0 },
+        { cB,  &agentCount,    cntBz, 0 },
+        { eB,  edgeBuf.data(), edBz,  0 },
+        { ecB, &edgeCount,     cntBz, 0 },
+    } );
+
+    ComputePipelineDesc   pd{ m_rm->CreateShader( "shaders/compute/biology/mitosis_vessel_append.comp" ), "RingAxisDir" };
+    ComputePipelineHandle ph = m_rm->CreatePipeline( pd );
+    BindingGroup* bg = m_rm->GetBindingGroup( m_rm->CreateBindingGroup( ph, 0 ) );
+    bg->Bind( 0, m_rm->GetBuffer( abR ) ); bg->Bind( 1, m_rm->GetBuffer( abW ) );
+    bg->Bind( 2, m_rm->GetBuffer( pb  ) ); bg->Bind( 3, m_rm->GetBuffer( cB  ) );
+    bg->Bind( 4, m_rm->GetBuffer( eB  ) ); bg->Bind( 5, m_rm->GetBuffer( ecB ) );
+    bg->Bind( 6, m_rm->GetBuffer( oB  ) );
+    bg->Build();
+
+    ComputePushConstants pc{};
+    pc.totalTime = 10.0f; pc.maxCapacity = maxCap; pc.uParam1 = 0;
+
+    auto ctx = m_device->GetThreadContext( m_device->CreateThreadContext( QueueType::COMPUTE ) );
+    auto cmd = ctx->GetCommandBuffer( ctx->CreateCommandBuffer() );
+    cmd->Begin();
+    cmd->SetPipeline( m_rm->GetPipeline( ph ) );
+    cmd->SetBindingGroup( bg, m_rm->GetPipeline( ph )->GetLayout(), VK_PIPELINE_BIND_POINT_COMPUTE );
+    cmd->PushConstants( m_rm->GetPipeline( ph )->GetLayout(), VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof( pc ), &pc );
+    cmd->Dispatch( 1, 1, 1 );
+    cmd->End();
+    m_device->GetComputeQueue()->Submit( { cmd } );
+    m_device->GetComputeQueue()->WaitIdle();
+
+    std::vector<glm::vec4> resPos( maxCap );
+    uint32_t resCount;
+    m_stream->ReadbackBufferImmediate( abW, resPos.data(), agBz );
+    m_stream->ReadbackBufferImmediate( cB,  &resCount,     cntBz );
+
+    // Cell 0 divides → daughter at slot 5.
+    // axis=(1,0,0) → daughter = motherPos + (1,0,0)*1.5 = (1.5, 0, 0)
+    ASSERT_EQ( resCount, 6u ) << "Cell 0 must produce 1 daughter → count = 6";
+    EXPECT_GT( resPos[ 5 ].x,  0.0f )          << "Daughter x must be positive (toward TipCell)";
+    EXPECT_NEAR( resPos[ 5 ].y,  0.0f, 0.05f ) << "Daughter y must be near 0";
+    EXPECT_NEAR( resPos[ 5 ].z,  0.0f, 0.1f )  << "Daughter z must be near 0";
+
+    m_rm->DestroyBuffer( abR ); m_rm->DestroyBuffer( abW ); m_rm->DestroyBuffer( pb );
+    m_rm->DestroyBuffer( cB );  m_rm->DestroyBuffer( eB );  m_rm->DestroyBuffer( ecB );
+    m_rm->DestroyBuffer( oB );
+}
+
+// StalkCell whose only TipCell edge is a RING edge must mature to PhalanxCell (ring edges
+// do not confer TipCell adjacency for the proliferation zone).
+TEST_F( ComputeTest, Shader_VesselMitosis_RingTopology_StalkMaturation_IgnoresRingEdges )
+{
+    if( !m_device )
+        GTEST_SKIP();
+
+    struct PhenotypeData { uint32_t lifecycleState; float biomass; float timer; uint32_t cellType; };
+    struct VesselEdge    { uint32_t agentA; uint32_t agentB; float dist; uint32_t flags; };
+
+    uint32_t maxCap = 4;
+    size_t   agBz   = maxCap * sizeof( glm::vec4 );
+    size_t   phBz   = maxCap * sizeof( PhenotypeData );
+    size_t   edBz   = maxCap * sizeof( VesselEdge );
+    size_t   cntBz  = sizeof( uint32_t );
+
+    std::vector<glm::vec4> agents( maxCap, glm::vec4( 0.0f ) );
+    agents[ 0 ] = glm::vec4( 0.0f, 0.0f, 0.0f, 1.0f ); // StalkCell
+    agents[ 1 ] = glm::vec4( 0.0f, 2.0f, 0.0f, 1.0f ); // TipCell (ring neighbor of 0)
+
+    std::vector<PhenotypeData> pheno( maxCap, { 0u, 0.0f, 0.0f, 0u } );
+    pheno[ 0 ] = { 0u, 0.5f, 0.0f, 2u }; // StalkCell, biomass not ready
+    pheno[ 1 ] = { 0u, 0.5f, 0.0f, 1u }; // TipCell
+
+    std::vector<VesselEdge> edgeBuf( maxCap, { 0u, 0u, 0.0f, 0u } );
+    edgeBuf[ 0 ] = { 0u, 1u, 2.0f, 0x1u }; // RING edge only — must be ignored for adjacency
+    uint32_t edgeCount  = 1u;
+    uint32_t agentCount = 2u;
+
+    BufferHandle abR = m_rm->CreateBuffer( { agBz,  BufferType::STORAGE, "MatR"  } );
+    BufferHandle abW = m_rm->CreateBuffer( { agBz,  BufferType::STORAGE, "MatW"  } );
+    BufferHandle pb  = m_rm->CreateBuffer( { phBz,  BufferType::STORAGE, "MatPh" } );
+    BufferHandle cB  = m_rm->CreateBuffer( { cntBz, BufferType::STORAGE, "MatC"  } );
+    BufferHandle eB  = m_rm->CreateBuffer( { edBz,  BufferType::STORAGE, "MatE"  } );
+    BufferHandle ecB = m_rm->CreateBuffer( { cntBz, BufferType::STORAGE, "MatEc" } );
+    BufferHandle oB  = m_rm->CreateBuffer( { agBz,  BufferType::STORAGE, "MatOr" } );
+
+    m_stream->UploadBufferImmediate( {
+        { abR, agents.data(),  agBz,  0 },
+        { abW, agents.data(),  agBz,  0 },
+        { pb,  pheno.data(),   phBz,  0 },
+        { cB,  &agentCount,    cntBz, 0 },
+        { eB,  edgeBuf.data(), edBz,  0 },
+        { ecB, &edgeCount,     cntBz, 0 },
+    } );
+
+    ComputePipelineDesc   pd{ m_rm->CreateShader( "shaders/compute/biology/mitosis_vessel_append.comp" ), "RingMaturation" };
+    ComputePipelineHandle ph = m_rm->CreatePipeline( pd );
+    BindingGroup* bg = m_rm->GetBindingGroup( m_rm->CreateBindingGroup( ph, 0 ) );
+    bg->Bind( 0, m_rm->GetBuffer( abR ) ); bg->Bind( 1, m_rm->GetBuffer( abW ) );
+    bg->Bind( 2, m_rm->GetBuffer( pb  ) ); bg->Bind( 3, m_rm->GetBuffer( cB  ) );
+    bg->Bind( 4, m_rm->GetBuffer( eB  ) ); bg->Bind( 5, m_rm->GetBuffer( ecB ) );
+    bg->Bind( 6, m_rm->GetBuffer( oB  ) );
+    bg->Build();
+
+    ComputePushConstants pc{};
+    pc.totalTime = 10.0f; // past 3.0s grace period → maturation fires
+    pc.maxCapacity = maxCap; pc.uParam1 = 0;
+
+    auto ctx = m_device->GetThreadContext( m_device->CreateThreadContext( QueueType::COMPUTE ) );
+    auto cmd = ctx->GetCommandBuffer( ctx->CreateCommandBuffer() );
+    cmd->Begin();
+    cmd->SetPipeline( m_rm->GetPipeline( ph ) );
+    cmd->SetBindingGroup( bg, m_rm->GetPipeline( ph )->GetLayout(), VK_PIPELINE_BIND_POINT_COMPUTE );
+    cmd->PushConstants( m_rm->GetPipeline( ph )->GetLayout(), VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof( pc ), &pc );
+    cmd->Dispatch( 1, 1, 1 );
+    cmd->End();
+    m_device->GetComputeQueue()->Submit( { cmd } );
+    m_device->GetComputeQueue()->WaitIdle();
+
+    std::vector<PhenotypeData> resPheno( maxCap );
+    m_stream->ReadbackBufferImmediate( pb, resPheno.data(), phBz );
+
+    EXPECT_EQ( resPheno[ 0 ].cellType, 3u )
+        << "StalkCell with only a RING edge to TipCell must mature to PhalanxCell";
+    EXPECT_EQ( resPheno[ 1 ].cellType, 1u ) << "TipCell must remain TipCell";
+
+    m_rm->DestroyBuffer( abR ); m_rm->DestroyBuffer( abW ); m_rm->DestroyBuffer( pb );
+    m_rm->DestroyBuffer( cB );  m_rm->DestroyBuffer( eB );  m_rm->DestroyBuffer( ecB );
+    m_rm->DestroyBuffer( oB );
 }
 
 // =================================================================================================

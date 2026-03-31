@@ -47,6 +47,14 @@ void main() {
     // PhalanxCells are quiescent vessel lining — anchored when anchorPhalanxCells is set.
     if (pc.anchorPhalanxCells > 0.5 && phenotypes.data[globalIdx].cellType == 3u) return;
 
+    // StalkCells are anchored — sprout elongation occurs through division, not StalkCell migration.
+    // Both tube-wall StalkCells (ring edges) and sprout-chain StalkCells are held in place.
+    if (pc.anchorPhalanxCells > 0.5 && phenotypes.data[globalIdx].cellType == 2u) return;
+
+    // TipCells migrate exclusively via chemotaxis — no spring forces from this shader.
+    // Vessel edges connect TipCells to stalk cells for topology/biology shaders only.
+    if (phenotypes.data[globalIdx].cellType == 1u) return;
+
     vec3  myPos       = myData.xyz;
     vec3  springForce = vec3(0.0);
     uint  numEdges    = edgeCount.count;

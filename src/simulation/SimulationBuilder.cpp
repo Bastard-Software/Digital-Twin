@@ -912,7 +912,7 @@ namespace DigitalTwin
                     bgPheno1->Bind( 4, m_resourceManager->GetBuffer( outState.agentCountBuffer ) );
                     bgPheno1->Build();
 
-                    // Ensure vessel edge buffers exist — mitosis writes a new edge for each StalkCell division
+                    // Ensure vessel edge buffers exist.
                     if( !outState.vesselEdgeBuffer.IsValid() )
                     {
                         struct VesselEdge { uint32_t agentA; uint32_t agentB; float dist; uint32_t flags; };
@@ -933,6 +933,8 @@ namespace DigitalTwin
                     bgMitosis0->Bind( 3, m_resourceManager->GetBuffer( outState.agentCountBuffer ) );
                     bgMitosis0->Bind( 4, m_resourceManager->GetBuffer( outState.vesselEdgeBuffer ) );
                     bgMitosis0->Bind( 5, m_resourceManager->GetBuffer( outState.vesselEdgeCountBuffer ) );
+                    if( cellCycle.directedMitosis )
+                        bgMitosis0->Bind( 6, m_resourceManager->GetBuffer( outState.orientationBuffer ) );
                     bgMitosis0->Build();
 
                     BindingGroup* bgMitosis1 = m_resourceManager->GetBindingGroup( m_resourceManager->CreateBindingGroup( mitosisPipeHandle, 0 ) );
@@ -942,6 +944,8 @@ namespace DigitalTwin
                     bgMitosis1->Bind( 3, m_resourceManager->GetBuffer( outState.agentCountBuffer ) );
                     bgMitosis1->Bind( 4, m_resourceManager->GetBuffer( outState.vesselEdgeBuffer ) );
                     bgMitosis1->Bind( 5, m_resourceManager->GetBuffer( outState.vesselEdgeCountBuffer ) );
+                    if( cellCycle.directedMitosis )
+                        bgMitosis1->Bind( 6, m_resourceManager->GetBuffer( outState.orientationBuffer ) );
                     bgMitosis1->Build();
 
                     // 4. Configure Push Constants
@@ -1724,12 +1728,14 @@ namespace DigitalTwin
                         // Compute per-edge rest length from initial cell positions so the spring
                         // shader can use the correct length for each edge independently.
                         const auto& groupPositions = group.GetPositions();
-                        for( const auto& [a, b] : vesselSeed.explicitEdges )
+                        for( size_t i = 0; i < vesselSeed.explicitEdges.size(); ++i )
                         {
+                            const auto& [a, b] = vesselSeed.explicitEdges[ i ];
                             float edgeDist = 0.0f;
                             if( a < groupPositions.size() && b < groupPositions.size() )
                                 edgeDist = glm::length( glm::vec3( groupPositions[ a ] ) - glm::vec3( groupPositions[ b ] ) );
-                            seedEdges.push_back( { currentOffset + a, currentOffset + b, edgeDist, 0u } );
+                            uint32_t flag = ( i < vesselSeed.edgeFlags.size() ) ? vesselSeed.edgeFlags[ i ] : 0u;
+                            seedEdges.push_back( { currentOffset + a, currentOffset + b, edgeDist, flag } );
                         }
                     }
                     else

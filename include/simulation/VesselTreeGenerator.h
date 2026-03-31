@@ -14,6 +14,7 @@ namespace DigitalTwin
         std::vector<glm::vec4>                    positions;     // xyz=pos, w=1.0
         std::vector<glm::vec4>                    normals;       // per-cell outward radial normal (w=0)
         std::vector<std::pair<uint32_t,uint32_t>> edges;         // all edges: ring + axial + junction
+        std::vector<uint32_t>                     edgeFlags;     // parallel to edges: RING=0x1, AXIAL=0x2, JUNCTION=0x4
         std::vector<uint32_t>                     segmentCounts; // one per branch = ringSize * numRings
         uint32_t                                  totalCells = 0;
     };

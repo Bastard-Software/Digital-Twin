@@ -582,3 +582,49 @@ TEST( VesselTreeGeneratorTest, Reproducible_SameSeed )
         EXPECT_NEAR( r1.positions[ i ].z, r2.positions[ i ].z, 1e-5f );
     }
 }
+
+TEST( VesselTreeGeneratorTest, EdgeFlags_SizeMatchesEdges )
+{
+    auto tree = VesselTreeGenerator::BranchingTree()
+        .SetLength( 10.0f ).SetRingSize( 6 ).SetBranchingDepth( 1 ).SetSeed( 42 ).Build();
+
+    ASSERT_EQ( tree.edgeFlags.size(), tree.edges.size() )
+        << "edgeFlags must be parallel to edges";
+}
+
+TEST( VesselTreeGeneratorTest, EdgeFlags_RingEdgesTaggedCorrectly )
+{
+    // Single straight trunk, no branches — all edges are ring or axial
+    auto tree = VesselTreeGenerator::BranchingTree()
+        .SetLength( 10.0f ).SetRingSize( 6 ).SetBranchingDepth( 0 ).SetSeed( 42 ).Build();
+
+    ASSERT_EQ( tree.edgeFlags.size(), tree.edges.size() );
+
+    int ringCount  = 0;
+    int axialCount = 0;
+    for( uint32_t f : tree.edgeFlags )
+    {
+        if( f == 0x1u ) ++ringCount;
+        else if( f == 0x2u ) ++axialCount;
+        else ADD_FAILURE() << "Unexpected flag " << f << " on trunk-only tree";
+    }
+
+    EXPECT_GT( ringCount,  0 ) << "Expected ring edges";
+    EXPECT_GT( axialCount, 0 ) << "Expected axial edges";
+    EXPECT_EQ( ringCount + axialCount, static_cast<int>( tree.edges.size() ) );
+}
+
+TEST( VesselTreeGeneratorTest, EdgeFlags_JunctionEdgesTaggedCorrectly )
+{
+    auto tree = VesselTreeGenerator::BranchingTree()
+        .SetLength( 10.0f ).SetRingSize( 6 ).SetBranchingDepth( 1 ).SetSeed( 42 ).Build();
+
+    ASSERT_EQ( tree.edgeFlags.size(), tree.edges.size() );
+
+    bool hasJunction = false;
+    for( uint32_t f : tree.edgeFlags )
+    {
+        if( f == 0x4u ) { hasJunction = true; break; }
+    }
+    EXPECT_TRUE( hasJunction ) << "Branching tree must have junction edges (0x4)";
+}

@@ -2292,7 +2292,7 @@ TEST_F( SimulationBuilderTest, Behaviour_VesselSpring_PhalanxCellAnchored )
     std::vector<glm::vec4> pos = {
         glm::vec4( -4.0f, 0.0f, 0.0f, 1.0f ),  // PhalanxCell
         glm::vec4(  0.0f, 0.0f, 0.0f, 1.0f ),  // StalkCell
-        glm::vec4(  4.0f, 0.0f, 0.0f, 1.0f ),  // TipCell
+        glm::vec4(  4.0f, 0.0f, 0.0f, 1.0f ),  // Default
     };
 
     auto& vessel = blueprint.AddAgentGroup( "Vessel" ).SetCount( 3 ).SetDistribution( pos );
@@ -2303,12 +2303,12 @@ TEST_F( SimulationBuilderTest, Behaviour_VesselSpring_PhalanxCellAnchored )
     SimulationBuilder builder( m_resourceManager.get(), m_streamingManager.get() );
     SimulationState   state = builder.Build( blueprint );
 
-    // Set cell types: PhalanxCell(0), StalkCell(1), TipCell(2)
+    // Set cell types: PhalanxCell(0), StalkCell(1), Default(2)
     struct PhenotypeData { uint32_t lifecycleState; float biomass; float timer; uint32_t cellType; };
     std::vector<PhenotypeData> phenotypes( 3, { 0u, 0.5f, 0.0f, 0u } );
     phenotypes[ 0 ].cellType = 3u; // PhalanxCell
     phenotypes[ 1 ].cellType = 2u; // StalkCell
-    phenotypes[ 2 ].cellType = 1u; // TipCell
+    phenotypes[ 2 ].cellType = 0u; // Default
     m_streamingManager->UploadBufferImmediate( { { state.phenotypeBuffer, phenotypes.data(), 3 * sizeof( PhenotypeData ) } } );
 
     auto compCtxHandle = m_device->CreateThreadContext( QueueType::COMPUTE );
@@ -2327,18 +2327,21 @@ TEST_F( SimulationBuilderTest, Behaviour_VesselSpring_PhalanxCellAnchored )
     std::vector<glm::vec4> agents( 3 );
     m_streamingManager->ReadbackBufferImmediate( state.agentBuffers[ activeIdx ], agents.data(), 3 * sizeof( glm::vec4 ) );
 
-    // PhalanxCell must not move — hardcoded anchor in shader overrides reqCT==-1
+    // PhalanxCell must not move — anchored by anchorPhalanxCells=true (default)
     EXPECT_FLOAT_EQ( agents[ 0 ].x, -4.0f ) << "PhalanxCell must remain anchored";
 
-    // StalkCell and TipCell must move (spring forces active — spacing=4, restLen=2, k=20)
-    EXPECT_NE( agents[ 1 ].x, 0.0f )  << "StalkCell must be displaced by spring forces";
-    EXPECT_LT( agents[ 2 ].x, 4.0f )  << "TipCell must be pulled toward StalkCell";
+    // StalkCell is also anchored when anchorPhalanxCells=true
+    EXPECT_FLOAT_EQ( agents[ 1 ].x, 0.0f ) << "StalkCell also anchored by anchorPhalanxCells=true";
+
+    // Default cell (agent 2) must be pulled toward the anchored StalkCell
+    EXPECT_LT( agents[ 2 ].x, 4.0f ) << "Default cell must be pulled toward StalkCell";
 
     state.Destroy( m_resourceManager.get() );
 }
 
 // VesselSpring PhalanxCell unanchored: when anchorPhalanxCells=false, PhalanxCells receive
-// spring forces and must move. All three cells (PhalanxCell, StalkCell, TipCell) must be displaced.
+// spring forces and must move. PhalanxCell and Default cell are displaced; StalkCell at center
+// receives symmetric forces from both edges and has zero net displacement.
 TEST_F( SimulationBuilderTest, Behaviour_VesselSpring_PhalanxCellUnanchored )
 {
     if( !m_device )
@@ -2348,9 +2351,9 @@ TEST_F( SimulationBuilderTest, Behaviour_VesselSpring_PhalanxCellUnanchored )
     blueprint.SetDomainSize( glm::vec3( 20.0f ), 1.0f );
 
     std::vector<glm::vec4> pos = {
-        glm::vec4( -4.0f, 0.0f, 0.0f, 1.0f ),  // PhalanxCell — should move when unanchored
-        glm::vec4(  0.0f, 0.0f, 0.0f, 1.0f ),  // StalkCell
-        glm::vec4(  4.0f, 0.0f, 0.0f, 1.0f ),  // TipCell
+        glm::vec4( -4.0f, 0.0f, 0.0f, 1.0f ),  // PhalanxCell — moves when unanchored
+        glm::vec4(  0.0f, 0.0f, 0.0f, 1.0f ),  // StalkCell — symmetric forces, net zero
+        glm::vec4(  4.0f, 0.0f, 0.0f, 1.0f ),  // Default
     };
 
     DigitalTwin::Behaviours::VesselSpring spring{};
@@ -2371,7 +2374,7 @@ TEST_F( SimulationBuilderTest, Behaviour_VesselSpring_PhalanxCellUnanchored )
     std::vector<PhenotypeData> phenotypes( 3, { 0u, 0.5f, 0.0f, 0u } );
     phenotypes[ 0 ].cellType = 3u; // PhalanxCell
     phenotypes[ 1 ].cellType = 2u; // StalkCell
-    phenotypes[ 2 ].cellType = 1u; // TipCell
+    phenotypes[ 2 ].cellType = 0u; // Default
     m_streamingManager->UploadBufferImmediate( { { state.phenotypeBuffer, phenotypes.data(), 3 * sizeof( PhenotypeData ) } } );
 
     auto compCtxHandle = m_device->CreateThreadContext( QueueType::COMPUTE );
@@ -2390,10 +2393,12 @@ TEST_F( SimulationBuilderTest, Behaviour_VesselSpring_PhalanxCellUnanchored )
     std::vector<glm::vec4> agents( 3 );
     m_streamingManager->ReadbackBufferImmediate( state.agentBuffers[ activeIdx ], agents.data(), 3 * sizeof( glm::vec4 ) );
 
-    // With anchorPhalanxCells=false, PhalanxCell must also move
+    // With anchorPhalanxCells=false, PhalanxCell must move
     EXPECT_NE( agents[ 0 ].x, -4.0f ) << "PhalanxCell must move when anchorPhalanxCells=false";
-    EXPECT_NE( agents[ 1 ].x,  0.0f ) << "StalkCell must be displaced by spring forces";
-    EXPECT_LT( agents[ 2 ].x,  4.0f ) << "TipCell must be pulled toward StalkCell";
+    // StalkCell receives equal and opposite forces from both edges — net displacement is zero
+    EXPECT_NEAR( agents[ 1 ].x, 0.0f, 0.01f ) << "StalkCell symmetric forces give zero net displacement";
+    // Default cell must be pulled toward StalkCell
+    EXPECT_LT( agents[ 2 ].x,  4.0f ) << "Default cell must be pulled toward StalkCell";
 
     state.Destroy( m_resourceManager.get() );
 }
@@ -2749,6 +2754,43 @@ TEST_F( SimulationBuilderTest, SimulationBuilder_OrientationBuffer_DefaultWhenEm
     EXPECT_NEAR( readback[ 0 ].x, 0.0f, 1e-5f );
     EXPECT_NEAR( readback[ 0 ].y, 1.0f, 1e-5f ) << "Default orientation must be (0,1,0,0)";
     EXPECT_NEAR( readback[ 0 ].z, 0.0f, 1e-5f );
+
+    state.Destroy( m_resourceManager.get() );
+}
+
+// VesselSeed with edgeFlags uploads the correct per-edge flags to the GPU edge buffer.
+// Uses a 3-cell triangle: edge 0→1 is RING (0x1), edge 1→2 is AXIAL (0x2), edge 2→0 is JUNCTION (0x4).
+TEST_F( SimulationBuilderTest, Behaviour_VesselSeed_ExplicitEdges_FlagsUploaded )
+{
+    if( !m_device )
+        GTEST_SKIP();
+
+    SimulationBlueprint blueprint;
+    blueprint.SetDomainSize( glm::vec3( 20.0f ), 2.0f );
+
+    std::vector<glm::vec4> pos = {
+        glm::vec4( 0.0f, 0.0f, 0.0f, 1.0f ),
+        glm::vec4( 2.0f, 0.0f, 0.0f, 1.0f ),
+        glm::vec4( 1.0f, 2.0f, 0.0f, 1.0f ),
+    };
+
+    Behaviours::VesselSeed seed;
+    seed.segmentCounts = { 3u };
+    seed.explicitEdges = { { 0u, 1u }, { 1u, 2u }, { 2u, 0u } };
+    seed.edgeFlags     = { 0x1u, 0x2u, 0x4u }; // RING, AXIAL, JUNCTION
+
+    blueprint.AddAgentGroup( "Ring" ).SetCount( 3 ).SetDistribution( pos ).AddBehaviour( seed );
+
+    SimulationBuilder builder( m_resourceManager.get(), m_streamingManager.get() );
+    SimulationState   state = builder.Build( blueprint );
+
+    struct VesselEdge { uint32_t agentA, agentB; float dist; uint32_t flags; };
+    std::vector<VesselEdge> edges( 3 );
+    m_streamingManager->ReadbackBufferImmediate( state.vesselEdgeBuffer, edges.data(), 3 * sizeof( VesselEdge ) );
+
+    EXPECT_EQ( edges[ 0 ].flags, 0x1u ) << "Edge 0→1 must be RING";
+    EXPECT_EQ( edges[ 1 ].flags, 0x2u ) << "Edge 1→2 must be AXIAL";
+    EXPECT_EQ( edges[ 2 ].flags, 0x4u ) << "Edge 2→0 must be JUNCTION";
 
     state.Destroy( m_resourceManager.get() );
 }

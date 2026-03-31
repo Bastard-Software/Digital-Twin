@@ -224,6 +224,7 @@ namespace DigitalTwin
                     }
                 }
                 result.edges.push_back( { job.parentLastRing[ bestParent ], cellBase + cj } );
+                result.edgeFlags.push_back( 0x4u ); // EDGE_JUNCTION
             }
         }
 
@@ -232,7 +233,10 @@ namespace DigitalTwin
         {
             uint32_t base = cellBase + r * ringSize;
             for( uint32_t j = 0; j < ringSize; ++j )
+            {
                 result.edges.push_back( { base + j, base + ( j + 1 ) % ringSize } );
+                result.edgeFlags.push_back( 0x1u ); // EDGE_RING
+            }
         }
 
         // ---- Axial edges (between adjacent rings) ----
@@ -241,7 +245,10 @@ namespace DigitalTwin
             uint32_t b0 = cellBase + r * ringSize;
             uint32_t b1 = cellBase + ( r + 1 ) * ringSize;
             for( uint32_t j = 0; j < ringSize; ++j )
+            {
                 result.edges.push_back( { b0 + j, b1 + j } );
+                result.edgeFlags.push_back( 0x2u ); // EDGE_AXIAL
+            }
         }
 
         // ---- Recurse into children ----

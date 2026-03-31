@@ -215,7 +215,9 @@ TEST_F( ComputeTest, Shader_FieldInteraction_AtomicAdd )
     // 4. Setup Push Constants
     ComputePushConstants pc{};
     pc.dt          = 1.0f;
-    pc.fParam0     = 15.0f; // Simulate 15.0 units of interaction
+    pc.fParam0     = 15.0f;  // rate
+    pc.fParam1     = -1.0f;  // reqLifecycleState = -1 (any)
+    pc.fParam2     = -1.0f;  // reqCellType = -1 (any)
     pc.maxCapacity = 1;
     pc.offset      = 0;
     pc.uParam1     = 0;
@@ -4792,4 +4794,148 @@ TEST_F( ComputeTest, Shader_VesselMitosis_Recruitment_PhalanxNoTip_StaysPhalanx 
 
     m_rm->DestroyBuffer( abR ); m_rm->DestroyBuffer( abW ); m_rm->DestroyBuffer( pb );
     m_rm->DestroyBuffer( cB );  m_rm->DestroyBuffer( eB );  m_rm->DestroyBuffer( ecB );
+}
+
+// =================================================================================================
+// BrownianMotion shader tests
+// =================================================================================================
+
+// Verify that an alive agent moves after a single dispatch (speed=10, dt=1 → guaranteed displacement)
+TEST_F( ComputeTest, Shader_BrownianMotion_AgentMoves )
+{
+    if( !m_device )
+        GTEST_SKIP();
+
+    glm::vec4 agentIn  = glm::vec4( 0.0f, 0.0f, 0.0f, 1.0f );
+    glm::vec4 agentOut = glm::vec4( 0.0f );
+
+    BufferHandle inBuf    = m_rm->CreateBuffer( { sizeof( glm::vec4 ),  BufferType::STORAGE,  "BrownInBuf" } );
+    BufferHandle outBuf   = m_rm->CreateBuffer( { sizeof( glm::vec4 ),  BufferType::STORAGE,  "BrownOutBuf" } );
+    BufferHandle countBuf = m_rm->CreateBuffer( { sizeof( uint32_t ),   BufferType::INDIRECT, "BrownCountBuf" } );
+
+    m_stream->UploadBufferImmediate( { { inBuf,  &agentIn,  sizeof( glm::vec4 ) } } );
+    m_stream->UploadBufferImmediate( { { outBuf, &agentOut, sizeof( glm::vec4 ) } } );
+    uint32_t count = 1;
+    m_stream->UploadBufferImmediate( { { countBuf, &count, sizeof( uint32_t ) } } );
+
+    struct PhenotypeData { uint32_t lifecycleState; float biomass; float timer; uint32_t cellType; };
+    PhenotypeData phenotype = { 0u, 0.5f, 0.0f, 0u }; // alive (Normoxic)
+    BufferHandle  phenoBuf  = m_rm->CreateBuffer( { sizeof( PhenotypeData ), BufferType::STORAGE, "BrownPhenoBuf" } );
+    m_stream->UploadBufferImmediate( { { phenoBuf, &phenotype, sizeof( PhenotypeData ) } } );
+
+    ComputePipelineDesc   pipeDesc{};
+    pipeDesc.shader                  = m_rm->CreateShader( "shaders/compute/brownian.comp" );
+    ComputePipelineHandle pipeHandle = m_rm->CreatePipeline( pipeDesc );
+    ComputePipeline*      pipeline   = m_rm->GetPipeline( pipeHandle );
+
+    BindingGroup* bg = m_rm->GetBindingGroup( m_rm->CreateBindingGroup( pipeHandle, 0 ) );
+    bg->Bind( 0, m_rm->GetBuffer( inBuf ) );
+    bg->Bind( 1, m_rm->GetBuffer( outBuf ) );
+    bg->Bind( 2, m_rm->GetBuffer( countBuf ) );
+    bg->Bind( 3, m_rm->GetBuffer( phenoBuf ) );
+    bg->Build();
+
+    ComputePushConstants pc{};
+    pc.dt          = 1.0f;
+    pc.totalTime   = 0.0f;
+    pc.fParam0     = 10.0f;                       // speed
+    pc.fParam1     = -1.0f;                       // reqCT = -1 (any)
+    pc.offset      = 0;
+    pc.maxCapacity = 1;
+    pc.uParam0     = static_cast<uint32_t>( -1 ); // reqLC = -1 (any)
+    pc.uParam1     = 0;                           // grpNdx
+
+    auto ctx = m_device->GetThreadContext( m_device->CreateThreadContext( QueueType::COMPUTE ) );
+    auto cmd = ctx->GetCommandBuffer( ctx->CreateCommandBuffer() );
+    cmd->Begin();
+    cmd->SetPipeline( pipeline );
+    cmd->SetBindingGroup( bg, pipeline->GetLayout(), VK_PIPELINE_BIND_POINT_COMPUTE );
+    cmd->PushConstants( pipeline->GetLayout(), VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof( pc ), &pc );
+    cmd->Dispatch( 1, 1, 1 );
+    cmd->End();
+    m_device->GetComputeQueue()->Submit( { cmd } );
+    m_device->GetComputeQueue()->WaitIdle();
+
+    glm::vec4 result;
+    m_stream->ReadbackBufferImmediate( outBuf, &result, sizeof( glm::vec4 ) );
+
+    // RNG with globalIdx=0, totalTime=0 gives rx=-1 → displacement = 10 in X
+    float displacement = glm::length( glm::vec3( result ) - glm::vec3( agentIn ) );
+    EXPECT_GT( displacement, 0.0f ) << "BrownianMotion: alive agent did not move";
+    EXPECT_FLOAT_EQ( result.w, 1.0f ) << "w flag was corrupted";
+
+    m_rm->DestroyBuffer( inBuf );
+    m_rm->DestroyBuffer( outBuf );
+    m_rm->DestroyBuffer( countBuf );
+    m_rm->DestroyBuffer( phenoBuf );
+}
+
+// Verify that a dead (Necrotic, lifecycleState=3) agent is written through unchanged
+TEST_F( ComputeTest, Shader_BrownianMotion_DeadSlot_Skipped )
+{
+    if( !m_device )
+        GTEST_SKIP();
+
+    glm::vec4 agentIn  = glm::vec4( 5.0f, 3.0f, -2.0f, 1.0f );
+    glm::vec4 agentOut = glm::vec4( 0.0f );
+
+    BufferHandle inBuf    = m_rm->CreateBuffer( { sizeof( glm::vec4 ),  BufferType::STORAGE,  "BrownDeadInBuf" } );
+    BufferHandle outBuf   = m_rm->CreateBuffer( { sizeof( glm::vec4 ),  BufferType::STORAGE,  "BrownDeadOutBuf" } );
+    BufferHandle countBuf = m_rm->CreateBuffer( { sizeof( uint32_t ),   BufferType::INDIRECT, "BrownDeadCountBuf" } );
+
+    m_stream->UploadBufferImmediate( { { inBuf,  &agentIn,  sizeof( glm::vec4 ) } } );
+    m_stream->UploadBufferImmediate( { { outBuf, &agentOut, sizeof( glm::vec4 ) } } );
+    uint32_t count = 1;
+    m_stream->UploadBufferImmediate( { { countBuf, &count, sizeof( uint32_t ) } } );
+
+    struct PhenotypeData { uint32_t lifecycleState; float biomass; float timer; uint32_t cellType; };
+    PhenotypeData phenotype = { 3u, 0.5f, 0.0f, 0u }; // lifecycleState=3 (Necrotic)
+    BufferHandle  phenoBuf  = m_rm->CreateBuffer( { sizeof( PhenotypeData ), BufferType::STORAGE, "BrownDeadPhenoBuf" } );
+    m_stream->UploadBufferImmediate( { { phenoBuf, &phenotype, sizeof( PhenotypeData ) } } );
+
+    ComputePipelineDesc   pipeDesc{};
+    pipeDesc.shader                  = m_rm->CreateShader( "shaders/compute/brownian.comp" );
+    ComputePipelineHandle pipeHandle = m_rm->CreatePipeline( pipeDesc );
+    ComputePipeline*      pipeline   = m_rm->GetPipeline( pipeHandle );
+
+    BindingGroup* bg = m_rm->GetBindingGroup( m_rm->CreateBindingGroup( pipeHandle, 0 ) );
+    bg->Bind( 0, m_rm->GetBuffer( inBuf ) );
+    bg->Bind( 1, m_rm->GetBuffer( outBuf ) );
+    bg->Bind( 2, m_rm->GetBuffer( countBuf ) );
+    bg->Bind( 3, m_rm->GetBuffer( phenoBuf ) );
+    bg->Build();
+
+    ComputePushConstants pc{};
+    pc.dt          = 1.0f;
+    pc.totalTime   = 0.0f;
+    pc.fParam0     = 100.0f;                      // high speed — would move far if not skipped
+    pc.fParam1     = -1.0f;
+    pc.offset      = 0;
+    pc.maxCapacity = 1;
+    pc.uParam0     = static_cast<uint32_t>( -1 );
+    pc.uParam1     = 0;
+
+    auto ctx = m_device->GetThreadContext( m_device->CreateThreadContext( QueueType::COMPUTE ) );
+    auto cmd = ctx->GetCommandBuffer( ctx->CreateCommandBuffer() );
+    cmd->Begin();
+    cmd->SetPipeline( pipeline );
+    cmd->SetBindingGroup( bg, pipeline->GetLayout(), VK_PIPELINE_BIND_POINT_COMPUTE );
+    cmd->PushConstants( pipeline->GetLayout(), VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof( pc ), &pc );
+    cmd->Dispatch( 1, 1, 1 );
+    cmd->End();
+    m_device->GetComputeQueue()->Submit( { cmd } );
+    m_device->GetComputeQueue()->WaitIdle();
+
+    glm::vec4 result;
+    m_stream->ReadbackBufferImmediate( outBuf, &result, sizeof( glm::vec4 ) );
+
+    EXPECT_FLOAT_EQ( result.x, agentIn.x ) << "Dead agent x was modified";
+    EXPECT_FLOAT_EQ( result.y, agentIn.y ) << "Dead agent y was modified";
+    EXPECT_FLOAT_EQ( result.z, agentIn.z ) << "Dead agent z was modified";
+    EXPECT_FLOAT_EQ( result.w, agentIn.w ) << "Dead agent w was modified";
+
+    m_rm->DestroyBuffer( inBuf );
+    m_rm->DestroyBuffer( outBuf );
+    m_rm->DestroyBuffer( countBuf );
+    m_rm->DestroyBuffer( phenoBuf );
 }

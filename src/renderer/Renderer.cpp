@@ -354,6 +354,7 @@ namespace DigitalTwin
             renderScene.readIndex         = state->latestAgentBuffer;
             renderScene.agentCountBuffer   = state->agentCountBuffer;
             renderScene.phenotypeBuffer    = state->phenotypeBuffer;
+            renderScene.orientationBuffer  = state->orientationBuffer;
             renderScene.agentReorderBuffer = state->agentReorderBuffer;
             renderScene.drawMetaBuffer     = state->drawMetaBuffer;
             renderScene.drawCount          = state->drawCommandCount;

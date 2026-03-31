@@ -39,6 +39,7 @@ namespace Gaudi
         void SetupChemotaxisDemo();
         void SetupCellCycleDemo();
         void SetupSimpleVesselDebugDemo();
+        void SetupStaticVesselTreeDemo();
         void SetupInitialBlueprint();   // legacy full angiogenesis, kept for internal use
 
     private:

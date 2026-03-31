@@ -99,14 +99,18 @@ namespace DigitalTwin::Behaviours
         float springStiffness    = 5.0f;  // Hooke's k — force per unit stretch per second
         float restingLength      = 2.0f;  // Equilibrium cell-cell distance
         float dampingCoefficient = 0.0f;  // Implicit Euler velocity drag. 0 = no damping.
+        // When true (default), PhalanxCells are exempt from spring forces (quiescent vessel wall).
+        // Set false for static vessel demos where all cells are PhalanxCells and springs must hold them.
+        bool  anchorPhalanxCells = true;
     };
 
-    // Seeds initial vessel edges between consecutive agents within each named segment.
-    // Build-time only — no GPU shader. Segments are contiguous slices of the group's agent array.
-    // e.g. segmentCounts={5,5} on a 10-cell group seeds 4+4=8 edges covering two vessel lines.
+    // Seeds initial vessel edges at build time — no GPU shader. Two modes:
+    //   explicitEdges non-empty: upload exactly those edges (supports 2D ring topology from VesselTreeGenerator).
+    //   explicitEdges empty:     fall back to consecutive-pair chains within each segmentCounts segment.
     struct VesselSeed
     {
-        std::vector<uint32_t> segmentCounts;
+        std::vector<uint32_t>                     segmentCounts; // one entry per branch (used for validation + fallback)
+        std::vector<std::pair<uint32_t,uint32_t>> explicitEdges; // if non-empty, overrides segmentCounts for edge upload
     };
 
     // Vessel injects a substance into the field (O2, glucose). Rate > 0.

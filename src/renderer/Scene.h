@@ -17,6 +17,7 @@ namespace DigitalTwin
         BufferHandle agentBuffers[ 2 ];
         BufferHandle agentCountBuffer;
         BufferHandle phenotypeBuffer;
+        BufferHandle orientationBuffer; // per-agent outward normals for mesh rotation (may be invalid)
         BufferHandle agentReorderBuffer;
         BufferHandle drawMetaBuffer;
         uint32_t     drawCount        = 0;

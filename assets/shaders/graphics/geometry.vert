@@ -41,6 +41,10 @@ layout(std430, set = 0, binding = 5) readonly buffer ReorderBuffer {
     uint indices[];
 } reorderBuffer;
 
+layout(std430, set = 0, binding = 6) readonly buffer Orientations {
+    vec4 orientations[];
+};
+
 layout(location = 0) out vec3 outNormal;
 layout(location = 1) out vec4 outColor;
 
@@ -53,10 +57,40 @@ void main()
     Agent a = agents[agentIdx];
 
     vec3 scale = vec3(a.position.w);
-    vec3 worldPos = (v.pos.xyz * scale) + a.position.xyz;
+
+    // Per-cell orientation: rotate mesh from default +Y axis to stored outward normal.
+    vec3 storedNormal = orientations[agentIdx].xyz;
+    vec3 meshPos      = v.pos.xyz;
+    vec3 meshNrm      = v.normal.xyz;
+
+    float nLen = length(storedNormal);
+    if (nLen > 0.5) // valid orientation provided
+    {
+        vec3  n    = storedNormal / nLen;
+        vec3  from = vec3(0.0, 1.0, 0.0);
+        float cosA = dot(from, n);
+
+        if (cosA < -0.9999)
+        {
+            // Anti-parallel: 180° around X axis
+            meshPos = vec3( meshPos.x, -meshPos.y, -meshPos.z);
+            meshNrm = vec3( meshNrm.x, -meshNrm.y, -meshNrm.z);
+        }
+        else if (cosA < 0.9999)
+        {
+            // General: half-angle quaternion q = normalize(cross(from,n), 1+cosA)
+            // Apply: p' = p + 2*cross(q.xyz, cross(q.xyz, p) + q.w*p)
+            vec4 q = normalize(vec4(cross(from, n), 1.0 + cosA));
+            meshPos = meshPos + 2.0 * cross(q.xyz, cross(q.xyz, meshPos) + q.w * meshPos);
+            meshNrm = meshNrm + 2.0 * cross(q.xyz, cross(q.xyz, meshNrm) + q.w * meshNrm);
+        }
+        // else cosA >= 0.9999: already aligned, no rotation needed
+    }
+
+    vec3 worldPos = (meshPos * scale) + a.position.xyz;
 
     gl_Position = camera.viewProj * vec4(worldPos, 1.0);
-    outNormal = v.normal.xyz;
+    outNormal = meshNrm;
 
     vec4 baseColor = groupData.colors[gl_DrawIDARB];
     uint state = phenotypes.data[agentIdx].lifecycleState;

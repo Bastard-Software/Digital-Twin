@@ -286,6 +286,35 @@ namespace DigitalTwin
                             if( behaviour.rate <= 0.0f )
                                 result.AddError( "AgentGroup '" + group.GetName() + "': " + typeName + " rate must be > 0" );
                         }
+
+                        if constexpr( std::is_same_v<T, Behaviours::VesselSeed> )
+                        {
+                            if( behaviour.segmentCounts.empty() )
+                            {
+                                result.AddError( "AgentGroup '" + group.GetName() +
+                                                 "': VesselSeed segmentCounts must not be empty" );
+                            }
+                            else
+                            {
+                                uint32_t sum     = 0;
+                                bool     hasZero = false;
+                                for( uint32_t sc : behaviour.segmentCounts )
+                                {
+                                    if( sc == 0 )
+                                    {
+                                        result.AddError( "AgentGroup '" + group.GetName() +
+                                                         "': VesselSeed segmentCounts contains a zero entry" );
+                                        hasZero = true;
+                                        break;
+                                    }
+                                    sum += sc;
+                                }
+                                if( !hasZero && sum > group.GetCount() )
+                                    result.AddError( "AgentGroup '" + group.GetName() +
+                                                     "': VesselSeed segmentCounts sum (" + std::to_string( sum ) +
+                                                     ") exceeds group count (" + std::to_string( group.GetCount() ) + ")" );
+                            }
+                        }
                     },
                     record.behaviour );
             }

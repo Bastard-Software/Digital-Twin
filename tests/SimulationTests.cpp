@@ -2337,6 +2337,67 @@ TEST_F( SimulationBuilderTest, Behaviour_VesselSpring_PhalanxCellAnchored )
     state.Destroy( m_resourceManager.get() );
 }
 
+// VesselSpring PhalanxCell unanchored: when anchorPhalanxCells=false, PhalanxCells receive
+// spring forces and must move. All three cells (PhalanxCell, StalkCell, TipCell) must be displaced.
+TEST_F( SimulationBuilderTest, Behaviour_VesselSpring_PhalanxCellUnanchored )
+{
+    if( !m_device )
+        GTEST_SKIP();
+
+    SimulationBlueprint blueprint;
+    blueprint.SetDomainSize( glm::vec3( 20.0f ), 1.0f );
+
+    std::vector<glm::vec4> pos = {
+        glm::vec4( -4.0f, 0.0f, 0.0f, 1.0f ),  // PhalanxCell — should move when unanchored
+        glm::vec4(  0.0f, 0.0f, 0.0f, 1.0f ),  // StalkCell
+        glm::vec4(  4.0f, 0.0f, 0.0f, 1.0f ),  // TipCell
+    };
+
+    DigitalTwin::Behaviours::VesselSpring spring{};
+    spring.springStiffness    = 20.0f;
+    spring.restingLength      = 2.0f;
+    spring.dampingCoefficient = 0.0f;
+    spring.anchorPhalanxCells = false; // PhalanxCells NOT anchored
+
+    auto& vessel = blueprint.AddAgentGroup( "Vessel" ).SetCount( 3 ).SetDistribution( pos );
+    vessel.AddBehaviour( DigitalTwin::Behaviours::BrownianMotion{ 0.0f } ).SetHz( 60.0f );
+    vessel.AddBehaviour( DigitalTwin::Behaviours::VesselSeed{ std::vector<uint32_t>{ 3u } } );
+    vessel.AddBehaviour( spring ).SetHz( 60.0f );
+
+    SimulationBuilder builder( m_resourceManager.get(), m_streamingManager.get() );
+    SimulationState   state = builder.Build( blueprint );
+
+    struct PhenotypeData { uint32_t lifecycleState; float biomass; float timer; uint32_t cellType; };
+    std::vector<PhenotypeData> phenotypes( 3, { 0u, 0.5f, 0.0f, 0u } );
+    phenotypes[ 0 ].cellType = 3u; // PhalanxCell
+    phenotypes[ 1 ].cellType = 2u; // StalkCell
+    phenotypes[ 2 ].cellType = 1u; // TipCell
+    m_streamingManager->UploadBufferImmediate( { { state.phenotypeBuffer, phenotypes.data(), 3 * sizeof( PhenotypeData ) } } );
+
+    auto compCtxHandle = m_device->CreateThreadContext( QueueType::COMPUTE );
+    auto compCtx       = m_device->GetThreadContext( compCtxHandle );
+    auto compCmd       = compCtx->GetCommandBuffer( compCtx->CreateCommandBuffer() );
+
+    GraphDispatcher dispatcher;
+    uint32_t        activeIdx = 0;
+    compCmd->Begin();
+    for( int i = 0; i < 10; ++i )
+        activeIdx = dispatcher.Dispatch( &state.computeGraph, compCmd, nullptr, 1.0f / 60.0f, static_cast<float>( i ) / 60.0f, activeIdx );
+    compCmd->End();
+    m_device->GetComputeQueue()->Submit( { compCmd } );
+    m_device->GetComputeQueue()->WaitIdle();
+
+    std::vector<glm::vec4> agents( 3 );
+    m_streamingManager->ReadbackBufferImmediate( state.agentBuffers[ activeIdx ], agents.data(), 3 * sizeof( glm::vec4 ) );
+
+    // With anchorPhalanxCells=false, PhalanxCell must also move
+    EXPECT_NE( agents[ 0 ].x, -4.0f ) << "PhalanxCell must move when anchorPhalanxCells=false";
+    EXPECT_NE( agents[ 1 ].x,  0.0f ) << "StalkCell must be displaced by spring forces";
+    EXPECT_LT( agents[ 2 ].x,  4.0f ) << "TipCell must be pulled toward StalkCell";
+
+    state.Destroy( m_resourceManager.get() );
+}
+
 // NotchDll4 hysteresis integration: cell starting as TipCell with Dll4 in the dead zone
 // must retain TipCell after multiple compute graph dispatches.
 TEST_F( SimulationBuilderTest, Behaviour_NotchDll4_Hysteresis )
@@ -2579,6 +2640,115 @@ TEST_F( SimulationBuilderTest, Behaviour_NotchDll4_VesselActivation_ExactlyOneTi
         if( ct == 1u ) tipCount++;
     }
     EXPECT_EQ( tipCount, 1 ) << "Lateral inhibition must select exactly 1 TipCell from 5 PhalanxCells";
+
+    state.Destroy( m_resourceManager.get() );
+}
+
+// VesselSeed with explicitEdges uploads the exact edge pairs to the GPU edge buffer.
+// Uses a small 3-cell ring (triangle) with explicit circumferential edges 0→1, 1→2, 2→0.
+TEST_F( SimulationBuilderTest, Behaviour_VesselSeed_ExplicitEdges_WiresCorrectly )
+{
+    if( !m_device )
+        GTEST_SKIP();
+
+    SimulationBlueprint blueprint;
+    blueprint.SetDomainSize( glm::vec3( 20.0f ), 2.0f );
+
+    std::vector<glm::vec4> pos = {
+        glm::vec4( 0.0f, 0.0f, 0.0f, 1.0f ),
+        glm::vec4( 2.0f, 0.0f, 0.0f, 1.0f ),
+        glm::vec4( 1.0f, 2.0f, 0.0f, 1.0f ),
+    };
+
+    Behaviours::VesselSeed seed;
+    seed.segmentCounts = { 3u };
+    seed.explicitEdges = { { 0u, 1u }, { 1u, 2u }, { 2u, 0u } }; // closed ring
+
+    blueprint.AddAgentGroup( "Ring" ).SetCount( 3 ).SetDistribution( pos ).AddBehaviour( seed );
+
+    SimulationBuilder builder( m_resourceManager.get(), m_streamingManager.get() );
+    SimulationState   state = builder.Build( blueprint );
+
+    EXPECT_TRUE( state.vesselEdgeBuffer.IsValid() );
+
+    uint32_t edgeCount = 0;
+    m_streamingManager->ReadbackBufferImmediate( state.vesselEdgeCountBuffer, &edgeCount, sizeof( uint32_t ) );
+    EXPECT_EQ( edgeCount, 3u ) << "Exactly 3 explicit edges must be seeded";
+
+    struct VesselEdge { uint32_t agentA, agentB; float dist; uint32_t flags; };
+    std::vector<VesselEdge> edges( 3 );
+    m_streamingManager->ReadbackBufferImmediate( state.vesselEdgeBuffer, edges.data(), 3 * sizeof( VesselEdge ) );
+
+    EXPECT_EQ( edges[ 0 ].agentA, 0u ); EXPECT_EQ( edges[ 0 ].agentB, 1u );
+    EXPECT_EQ( edges[ 1 ].agentA, 1u ); EXPECT_EQ( edges[ 1 ].agentB, 2u );
+    EXPECT_EQ( edges[ 2 ].agentA, 2u ); EXPECT_EQ( edges[ 2 ].agentB, 0u );
+
+    state.Destroy( m_resourceManager.get() );
+}
+
+// Orientation buffer is allocated and correctly uploaded when a group provides orientations.
+TEST_F( SimulationBuilderTest, SimulationBuilder_OrientationBuffer_Allocated )
+{
+    if( !m_device )
+        GTEST_SKIP();
+
+    SimulationBlueprint blueprint;
+    blueprint.SetDomainSize( glm::vec3( 20.0f ), 1.0f );
+
+    std::vector<glm::vec4> pos = {
+        glm::vec4( 0.0f, 0.0f, 0.0f, 1.0f ),
+        glm::vec4( 2.0f, 0.0f, 0.0f, 1.0f ),
+    };
+    std::vector<glm::vec4> ori = {
+        glm::vec4( 1.0f, 0.0f, 0.0f, 0.0f ),  // face +X
+        glm::vec4( 0.0f, 0.0f, 1.0f, 0.0f ),  // face +Z
+    };
+
+    blueprint.AddAgentGroup( "Vessel" ).SetCount( 2 ).SetDistribution( pos ).SetOrientations( ori );
+
+    SimulationBuilder builder( m_resourceManager.get(), m_streamingManager.get() );
+    SimulationState   state = builder.Build( blueprint );
+
+    EXPECT_TRUE( state.orientationBuffer.IsValid() ) << "Orientation buffer must be allocated";
+
+    // Read back and verify the two orientations were uploaded correctly
+    std::vector<glm::vec4> readback( 2 );
+    m_streamingManager->ReadbackBufferImmediate( state.orientationBuffer, readback.data(), 2 * sizeof( glm::vec4 ) );
+
+    EXPECT_NEAR( readback[ 0 ].x, 1.0f, 1e-5f );
+    EXPECT_NEAR( readback[ 0 ].y, 0.0f, 1e-5f );
+    EXPECT_NEAR( readback[ 0 ].z, 0.0f, 1e-5f );
+    EXPECT_NEAR( readback[ 1 ].x, 0.0f, 1e-5f );
+    EXPECT_NEAR( readback[ 1 ].y, 0.0f, 1e-5f );
+    EXPECT_NEAR( readback[ 1 ].z, 1.0f, 1e-5f );
+
+    state.Destroy( m_resourceManager.get() );
+}
+
+// Orientation buffer is allocated with default (0,1,0,0) when a group provides no orientations.
+TEST_F( SimulationBuilderTest, SimulationBuilder_OrientationBuffer_DefaultWhenEmpty )
+{
+    if( !m_device )
+        GTEST_SKIP();
+
+    SimulationBlueprint blueprint;
+    blueprint.SetDomainSize( glm::vec3( 20.0f ), 1.0f );
+
+    std::vector<glm::vec4> pos = { glm::vec4( 0.0f, 0.0f, 0.0f, 1.0f ) };
+    blueprint.AddAgentGroup( "Cells" ).SetCount( 1 ).SetDistribution( pos );
+    // No SetOrientations call — should get default
+
+    SimulationBuilder builder( m_resourceManager.get(), m_streamingManager.get() );
+    SimulationState   state = builder.Build( blueprint );
+
+    EXPECT_TRUE( state.orientationBuffer.IsValid() ) << "Orientation buffer must always be allocated";
+
+    std::vector<glm::vec4> readback( 1 );
+    m_streamingManager->ReadbackBufferImmediate( state.orientationBuffer, readback.data(), sizeof( glm::vec4 ) );
+
+    EXPECT_NEAR( readback[ 0 ].x, 0.0f, 1e-5f );
+    EXPECT_NEAR( readback[ 0 ].y, 1.0f, 1e-5f ) << "Default orientation must be (0,1,0,0)";
+    EXPECT_NEAR( readback[ 0 ].z, 0.0f, 1e-5f );
 
     state.Destroy( m_resourceManager.get() );
 }

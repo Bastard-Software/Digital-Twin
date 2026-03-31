@@ -8,7 +8,7 @@ layout(push_constant) uniform PushConstants {
     float restingLength;       // fParam1: equilibrium edge length
     float dampingCoefficient;  // fParam2: implicit Euler damping (0 = no damping)
     float reqCT;               // fParam3: required cell type (-1.0 = any)
-    float fParam4;
+    float anchorPhalanxCells; // fParam4: 1.0 = PhalanxCells skip spring forces (default), 0.0 = all cells get springs
     float fParam5;
     uint  offset;
     uint  maxCapacity;
@@ -44,8 +44,8 @@ void main() {
     int reqCT = int(pc.reqCT);
     if (reqCT >= 0 && int(phenotypes.data[globalIdx].cellType) != reqCT) return;
 
-    // PhalanxCells are quiescent vessel lining — anchored, never displaced by springs.
-    if (phenotypes.data[globalIdx].cellType == 3u) return;
+    // PhalanxCells are quiescent vessel lining — anchored when anchorPhalanxCells is set.
+    if (pc.anchorPhalanxCells > 0.5 && phenotypes.data[globalIdx].cellType == 3u) return;
 
     vec3  myPos       = myData.xyz;
     vec3  springForce = vec3(0.0);
@@ -66,7 +66,9 @@ void main() {
         float dist    = length(delta);
         if (dist < 0.001) continue;
 
-        float stretch  = dist - pc.restingLength;
+        // Per-edge rest length when seeded from initial geometry; fall back to global otherwise.
+        float restLen  = (edge.dist > 0.001) ? edge.dist : pc.restingLength;
+        float stretch  = dist - restLen;
         springForce   += pc.springStiffness * stretch * (delta / dist);
     }
 

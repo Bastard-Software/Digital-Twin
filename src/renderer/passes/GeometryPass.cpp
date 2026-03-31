@@ -88,6 +88,12 @@ namespace DigitalTwin
             bg->Bind( 4, m_resourceManager->GetBuffer( scene->GetAgentReadBuffer() ) );
         // Binding 5: reorder buffer — maps draw-command instance indices to global agent indices
         bg->Bind( 5, m_resourceManager->GetBuffer( scene->agentReorderBuffer ) );
+        // Binding 6: orientation buffer — per-agent outward normal for mesh rotation.
+        // Falls back to agent buffer as dummy when no orientations exist (preserves existing demos).
+        if( scene->orientationBuffer.IsValid() )
+            bg->Bind( 6, m_resourceManager->GetBuffer( scene->orientationBuffer ) );
+        else
+            bg->Bind( 6, m_resourceManager->GetBuffer( scene->GetAgentReadBuffer() ) );
         bg->Build();
 
         GraphicsPipeline* pipeline = m_resourceManager->GetPipeline( m_pipeline );

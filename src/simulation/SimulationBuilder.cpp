@@ -46,6 +46,8 @@ namespace DigitalTwin
             resourceManager->DestroyBuffer( agentCountBuffer );
         if( phenotypeBuffer.IsValid() )
             resourceManager->DestroyBuffer( phenotypeBuffer );
+        if( orientationBuffer.IsValid() )
+            resourceManager->DestroyBuffer( orientationBuffer );
         if( signalingBuffer.IsValid() )
             resourceManager->DestroyBuffer( signalingBuffer );
         if( vesselEdgeBuffer.IsValid() )
@@ -200,6 +202,7 @@ namespace DigitalTwin
         std::vector<Vertex>                       megaVertices;
         std::vector<uint32_t>                     megaIndices;
         std::vector<glm::vec4>                    megaPositions;
+        std::vector<glm::vec4>                    megaOrientations; // per-agent normals; default (0,1,0,0) when not provided
         std::vector<VkDrawIndexedIndirectCommand> indirectCommands;
         std::vector<glm::vec4>                    groupColors;
         std::vector<DrawMeta>                     drawMetaEntries;
@@ -207,6 +210,7 @@ namespace DigitalTwin
         megaVertices.reserve( totalVertices );
         megaIndices.reserve( totalIndices );
         megaPositions.reserve( totalAgents );
+        megaOrientations.reserve( totalAgents );
         indirectCommands.reserve( totalDrawCommands );
         groupColors.reserve( totalDrawCommands );
         drawMetaEntries.reserve( totalDrawCommands );
@@ -266,11 +270,20 @@ namespace DigitalTwin
                 currentReorderOffset += capacity;
             }
 
-            // --- Agent positions (unchanged — one region per group) ---
+            // --- Agent positions ---
             uint32_t copyCount = std::min( group.GetCount(), static_cast<uint32_t>( group.GetPositions().size() ) );
             megaPositions.insert( megaPositions.end(), group.GetPositions().begin(), group.GetPositions().begin() + copyCount );
             for( uint32_t i = copyCount; i < capacity; ++i )
                 megaPositions.push_back( glm::vec4( 0.0f ) );
+
+            // --- Agent orientations (per-cell outward normal; default +Y when not provided) ---
+            {
+                const auto& orientations = group.GetOrientations();
+                uint32_t    oriCount     = std::min( group.GetCount(), static_cast<uint32_t>( orientations.size() ) );
+                megaOrientations.insert( megaOrientations.end(), orientations.begin(), orientations.begin() + oriCount );
+                for( uint32_t i = oriCount; i < capacity; ++i )
+                    megaOrientations.push_back( glm::vec4( 0.0f, 1.0f, 0.0f, 0.0f ) ); // default: face +Y
+            }
 
             currentAgentOffset += capacity;
             groupIdx++;
@@ -300,6 +313,10 @@ namespace DigitalTwin
         outState.agentCountBuffer =
             m_resourceManager->CreateBuffer( { outState.groupCount * sizeof( uint32_t ), BufferType::INDIRECT, "AgentCountBuffer" } );
 
+        // Orientation buffer — static, single copy, written once at init
+        outState.orientationBuffer = m_resourceManager->CreateBuffer(
+            { megaOrientations.size() * sizeof( glm::vec4 ), BufferType::STORAGE, "OrientationBuffer" } );
+
         // Reorder buffer: maps draw-command instance indices → global agent indices
         outState.agentReorderBuffer = m_resourceManager->CreateBuffer(
             { totalReorderSlots * sizeof( uint32_t ), BufferType::STORAGE, "AgentReorderBuffer" } );
@@ -327,6 +344,7 @@ namespace DigitalTwin
         // Always upload agents
         uploads.push_back( { outState.agentBuffers[ 0 ], megaPositions.data(), megaPositions.size() * sizeof( glm::vec4 ) } );
         uploads.push_back( { outState.agentBuffers[ 1 ], megaPositions.data(), megaPositions.size() * sizeof( glm::vec4 ) } );
+        uploads.push_back( { outState.orientationBuffer, megaOrientations.data(), megaOrientations.size() * sizeof( glm::vec4 ) } );
         std::vector<uint32_t> initialCounts;
         for( const auto& group: blueprint.GetGroups() )
         {
@@ -1684,23 +1702,46 @@ namespace DigitalTwin
                         uint32_t flags;
                     };
 
-                    // Allocate vessel edge buffers if not already allocated by Anastomosis
+                    // Allocate vessel edge buffers if not already allocated by Anastomosis/NotchDll4.
+                    // When explicit edges are present, allocate extra capacity for runtime growth.
                     if( !outState.vesselEdgeBuffer.IsValid() )
                     {
-                        size_t edgeBufferSize      = paddedCount * sizeof( VesselEdge );
-                        outState.vesselEdgeBuffer  = m_resourceManager->CreateBuffer( { edgeBufferSize, BufferType::STORAGE, "VesselEdgeBuffer" } );
+                        size_t slotCount = vesselSeed.explicitEdges.empty()
+                            ? paddedCount
+                            : std::max( static_cast<size_t>( paddedCount ) * 4,
+                                        vesselSeed.explicitEdges.size() * 2 );
+                        outState.vesselEdgeBuffer = m_resourceManager->CreateBuffer(
+                            { slotCount * sizeof( VesselEdge ), BufferType::STORAGE, "VesselEdgeBuffer" } );
                         outState.vesselEdgeCountBuffer =
                             m_resourceManager->CreateBuffer( { sizeof( uint32_t ), BufferType::STORAGE, "VesselEdgeCountBuffer" } );
                     }
 
-                    // Build seed edges: consecutive pairs within each contiguous segment
+                    // Build seed edges
                     std::vector<VesselEdge> seedEdges;
-                    uint32_t               slotOffset = 0;
-                    for( uint32_t segCount : vesselSeed.segmentCounts )
+                    if( !vesselSeed.explicitEdges.empty() )
                     {
-                        for( uint32_t i = 0; i + 1 < segCount; ++i )
-                            seedEdges.push_back( { currentOffset + slotOffset + i, currentOffset + slotOffset + i + 1, 0.0f, 0u } );
-                        slotOffset += segCount;
+                        // 2D ring topology: upload the explicit edge list from VesselTreeGenerator.
+                        // Compute per-edge rest length from initial cell positions so the spring
+                        // shader can use the correct length for each edge independently.
+                        const auto& groupPositions = group.GetPositions();
+                        for( const auto& [a, b] : vesselSeed.explicitEdges )
+                        {
+                            float edgeDist = 0.0f;
+                            if( a < groupPositions.size() && b < groupPositions.size() )
+                                edgeDist = glm::length( glm::vec3( groupPositions[ a ] ) - glm::vec3( groupPositions[ b ] ) );
+                            seedEdges.push_back( { currentOffset + a, currentOffset + b, edgeDist, 0u } );
+                        }
+                    }
+                    else
+                    {
+                        // Legacy 1D chain fallback: consecutive pairs within each contiguous segment
+                        uint32_t slotOffset = 0;
+                        for( uint32_t segCount : vesselSeed.segmentCounts )
+                        {
+                            for( uint32_t i = 0; i + 1 < segCount; ++i )
+                                seedEdges.push_back( { currentOffset + slotOffset + i, currentOffset + slotOffset + i + 1, 0.0f, 0u } );
+                            slotOffset += segCount;
+                        }
                     }
 
                     // Upload edges at byte offset 0; Anastomosis will append after these at runtime
@@ -1768,6 +1809,7 @@ namespace DigitalTwin
                     springPC.fParam1     = spring.restingLength;
                     springPC.fParam2     = spring.dampingCoefficient;
                     springPC.fParam3     = static_cast<float>( record.requiredCellType );
+                    springPC.fParam4     = spring.anchorPhalanxCells ? 1.0f : 0.0f;
                     springPC.uParam0     = groupIndex; // grpNdx
 
                     glm::uvec3  dispatch( ( paddedCount + 255 ) / 256, 1, 1 );
@@ -1946,6 +1988,7 @@ namespace DigitalTwin
                         pc.fParam1                  = spring.restingLength;
                         pc.fParam2                  = spring.dampingCoefficient;
                         pc.fParam3                  = static_cast<float>( record.requiredCellType );
+                        pc.fParam4                  = spring.anchorPhalanxCells ? 1.0f : 0.0f;
                         task->UpdatePushConstants( pc );
                     }
                 }

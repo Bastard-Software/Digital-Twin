@@ -52,6 +52,14 @@ namespace DigitalTwin
             m_positions = positions;
             return *this;
         }
+        // Per-cell outward orientation normal (xyz=normal, w=0). When provided, the renderer
+        // rotates each cell's mesh so its +Y axis aligns with the stored normal.
+        // Used by VesselTreeGenerator to orient disc cells outward from the tube centerline.
+        AgentGroup& SetOrientations( const std::vector<glm::vec4>& orientations )
+        {
+            m_orientations = orientations;
+            return *this;
+        }
         AgentGroup& SetColor( const glm::vec4& color )
         {
             m_color = color;
@@ -86,6 +94,7 @@ namespace DigitalTwin
         uint32_t                             GetCount() const { return m_count; }
         const MorphologyData&                GetMorphology() const { return m_morphology; }
         const std::vector<glm::vec4>&        GetPositions() const { return m_positions; }
+        const std::vector<glm::vec4>&        GetOrientations() const { return m_orientations; }
         const glm::vec4&                     GetColor() const { return m_color; }
         int                                  GetInitialCellType() const { return m_initialCellType; }
         const std::vector<BehaviourRecord>&  GetBehaviours() const { return m_behaviours; }
@@ -97,6 +106,7 @@ namespace DigitalTwin
         uint32_t                      m_count = 0;
         MorphologyData                m_morphology;
         std::vector<glm::vec4>        m_positions;
+        std::vector<glm::vec4>        m_orientations; // per-cell normals (empty = use default +Y)
         glm::vec4                     m_color = glm::vec4( 1.0f );
         int                           m_initialCellType = 0;
         std::vector<BehaviourRecord>  m_behaviours;

@@ -58,33 +58,43 @@ void main()
 
     vec3 scale = vec3(a.position.w);
 
-    // Per-cell orientation: rotate mesh from default +Y axis to stored outward normal.
-    vec3 storedNormal = orientations[agentIdx].xyz;
-    vec3 meshPos      = v.pos.xyz;
-    vec3 meshNrm      = v.normal.xyz;
+    // Per-cell orientation (dual mode):
+    //   w == 0  → legacy: shortest-arc from +Y to stored xyz normal (no twist control)
+    //   w != 0  → full unit quaternion (qx,qy,qz,qw) — controls direction AND axial twist
+    vec4 orient  = orientations[agentIdx];
+    vec3 meshPos = v.pos.xyz;
+    vec3 meshNrm = v.normal.xyz;
 
-    float nLen = length(storedNormal);
-    if (nLen > 0.5) // valid orientation provided
+    if (abs(orient.w) > 0.001)
     {
-        vec3  n    = storedNormal / nLen;
-        vec3  from = vec3(0.0, 1.0, 0.0);
-        float cosA = dot(from, n);
+        // Full quaternion mode: apply directly — used by sprout daughter cells
+        vec4 q = orient;
+        meshPos = meshPos + 2.0 * cross(q.xyz, cross(q.xyz, meshPos) + q.w * meshPos);
+        meshNrm = meshNrm + 2.0 * cross(q.xyz, cross(q.xyz, meshNrm) + q.w * meshNrm);
+    }
+    else
+    {
+        // Legacy shortest-arc mode — used by parent tube cells and non-vessel agents
+        vec3  storedNormal = orient.xyz;
+        float nLen         = length(storedNormal);
+        if (nLen > 0.5)
+        {
+            vec3  n    = storedNormal / nLen;
+            vec3  from = vec3(0.0, 1.0, 0.0);
+            float cosA = dot(from, n);
 
-        if (cosA < -0.9999)
-        {
-            // Anti-parallel: 180° around X axis
-            meshPos = vec3( meshPos.x, -meshPos.y, -meshPos.z);
-            meshNrm = vec3( meshNrm.x, -meshNrm.y, -meshNrm.z);
+            if (cosA < -0.9999)
+            {
+                meshPos = vec3( meshPos.x, -meshPos.y, -meshPos.z);
+                meshNrm = vec3( meshNrm.x, -meshNrm.y, -meshNrm.z);
+            }
+            else if (cosA < 0.9999)
+            {
+                vec4 q = normalize(vec4(cross(from, n), 1.0 + cosA));
+                meshPos = meshPos + 2.0 * cross(q.xyz, cross(q.xyz, meshPos) + q.w * meshPos);
+                meshNrm = meshNrm + 2.0 * cross(q.xyz, cross(q.xyz, meshNrm) + q.w * meshNrm);
+            }
         }
-        else if (cosA < 0.9999)
-        {
-            // General: half-angle quaternion q = normalize(cross(from,n), 1+cosA)
-            // Apply: p' = p + 2*cross(q.xyz, cross(q.xyz, p) + q.w*p)
-            vec4 q = normalize(vec4(cross(from, n), 1.0 + cosA));
-            meshPos = meshPos + 2.0 * cross(q.xyz, cross(q.xyz, meshPos) + q.w * meshPos);
-            meshNrm = meshNrm + 2.0 * cross(q.xyz, cross(q.xyz, meshNrm) + q.w * meshNrm);
-        }
-        // else cosA >= 0.9999: already aligned, no rotation needed
     }
 
     vec3 worldPos = (meshPos * scale) + a.position.xyz;

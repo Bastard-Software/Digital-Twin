@@ -111,6 +111,7 @@ namespace DigitalTwin::Behaviours
     {
         std::vector<uint32_t>                     segmentCounts; // one entry per branch (used for validation + fallback)
         std::vector<std::pair<uint32_t,uint32_t>> explicitEdges; // if non-empty, overrides segmentCounts for edge upload
+        std::vector<uint32_t>                     edgeFlags;     // parallel to explicitEdges: RING=0x1, AXIAL=0x2, JUNCTION=0x4
     };
 
     // Vessel injects a substance into the field (O2, glucose). Rate > 0.

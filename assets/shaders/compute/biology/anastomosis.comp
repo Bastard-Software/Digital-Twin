@@ -6,7 +6,7 @@ layout(push_constant) uniform PushConstants {
     float totalTime;
     float contactDistance;   // fParam0 — max distance for anastomosis
     float allowTipToStalk;   // fParam1 — 1.0 = TipCell can fuse with StalkCell from a different component
-    float _pad1;             // fParam2 unused
+    float edgeBufferCapacity; // fParam2 — max edge slots in vesselEdgeBuffer (= group paddedCount)
     float _pad2;             // fParam3 unused
     float _pad3;             // fParam4 unused
     float _pad4;             // fParam5 unused
@@ -112,11 +112,11 @@ void main() {
 
                     // Record the vessel edge
                     uint edgeIdx = atomicAdd(edgeCount.count, 1u);
-                    if (edgeIdx < pc.maxCapacity) {
+                    if (edgeIdx < uint(pc.edgeBufferCapacity)) {
                         edges.data[edgeIdx].agentA = globalIdx;
                         edges.data[edgeIdx].agentB = neighborAgentIdx;
                         edges.data[edgeIdx].dist   = dist;
-                        edges.data[edgeIdx].flags  = 0u;
+                        edges.data[edgeIdx].flags  = 0x8u; // SPROUT — vessel_components propagates labels across this junction
                     }
 
                     return; // one anastomosis event per TipCell per dispatch

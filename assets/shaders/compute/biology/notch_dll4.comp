@@ -128,11 +128,19 @@ void main() {
 
     // Hysteresis: use both thresholds to create a dead zone [stalkThreshold, tipThreshold].
     // Cells in the dead zone keep their current type, preventing Tip↔Stalk flip-flop.
+    // TipCell commitment: once selected, a TipCell is not demoted back to StalkCell by
+    // transient Dll4 dips. Observed failure mode without this guard: TipCell migrates out,
+    // local Notch signaling transiently drops Dll4 below stalkThreshold → TipCell demoted to
+    // StalkCell → PhalanxActivation (deactivationThreshold=7) and the 3 s grace-period
+    // maturation in mitosis_vessel_append matured the whole sprout to PhalanxCell. Later
+    // VEGF recovery caused PhalanxActivation to re-fire over a wider ring set, producing a
+    // 4-StalkCell burst on re-selection instead of the expected single proliferation-zone
+    // StalkCell. phalanx_activation.comp:46 applies the same TipCell-committed policy.
     uint cellType = phenotypes.data[globalIdx].cellType;
     if (newDll4 > pc.tipThreshold)
         phenotypes.data[globalIdx].cellType = 1u; // TipCell — any cell type can win
-    else if (newDll4 < pc.stalkThreshold && cellType != 3u)
-        phenotypes.data[globalIdx].cellType = 2u; // StalkCell — but not from PhalanxCell
+    else if (newDll4 < pc.stalkThreshold && cellType != 3u && cellType != 1u)
+        phenotypes.data[globalIdx].cellType = 2u; // StalkCell — not from PhalanxCell or TipCell
     // else: keep current type (Dll4 in dead zone — hysteresis)
 
     // PhalanxCell recruitment: a quiescent EC adjacent to a TipCell becomes StalkCell to follow

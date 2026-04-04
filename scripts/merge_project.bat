@@ -38,6 +38,8 @@ set "CHK=%FILEPATH:\tests\=X%"
 if not "%CHK%"=="%FILEPATH%" exit /b
 set "CHK=%FILEPATH:\cmake\=X%"
 if not "%CHK%"=="%FILEPATH%" exit /b
+set "CHK=%FILEPATH:\reports\=X%"
+if not "%CHK%"=="%FILEPATH%" exit /b
 set "CHK=%FILEPATH:\src\rhi\=X%"
 if not "%CHK%"=="%FILEPATH%" exit /b
 set "CHK=%FILEPATH:\src\platform\=X%"

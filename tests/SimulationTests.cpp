@@ -1312,7 +1312,10 @@ TEST_F( SimulationBuilderTest, Behaviour_Anastomosis_TipToStalk )
 // Vessel Connected Components — integration tests (Builder + GPU)
 // ===========================================================================================
 
-// Two TipCells anastomose → vessel_components assigns them the same label.
+// Two TipCells anastomose → anastomosis.comp creates an edge with flags=0x8 (SPROUT).
+// vessel_components propagates labels along SPROUT edges → labels merge into a single component.
+// This is necessary for perfusion: the same-component guard prevents self-fusion (correct),
+// and future sprouts from the merged vessel will share the same component (also correct).
 TEST_F( SimulationBuilderTest, Behaviour_Anastomosis_ComponentLabels )
 {
     if( !m_device )
@@ -1358,7 +1361,75 @@ TEST_F( SimulationBuilderTest, Behaviour_Anastomosis_ComponentLabels )
     std::vector<uint32_t> labels( 2 );
     m_streamingManager->ReadbackBufferImmediate( state.vesselComponentBuffer, labels.data(), 2 * sizeof( uint32_t ) );
 
-    EXPECT_EQ( labels[ 0 ], labels[ 1 ] ) << "Anastomosed agents must share the same component label";
+    EXPECT_EQ( labels[ 0 ], labels[ 1 ] ) << "Anastomosis creates a SPROUT edge (flags=0x8) — vessel_components must merge component labels";
+
+    state.Destroy( m_resourceManager.get() );
+}
+
+
+// Spatial hash covers ALL agent groups: agents from group 1 (offset=131072) must be hashed
+// so that hash-based behaviours (Anastomosis, JKR) can find them as neighbours.
+// Without the fix, group 1 agents are invisible to the hash and TipCells from that group
+// can never find each other — anastomosis never fires.
+TEST_F( SimulationBuilderTest, SpatialHash_MultiGroup_AnastomosisFindsGroupOneAgents )
+{
+    if( !m_device )
+        GTEST_SKIP();
+
+    SimulationBlueprint blueprint;
+    blueprint.SetDomainSize( glm::vec3( 100.0f ), 1.0f )
+        .ConfigureSpatialPartitioning()
+        .SetCellSize( 30.0f )
+        .SetComputeHz( 60.0f );
+
+    // Group 0 — a dummy group to push the vessel group to offset 131072.
+    // This is the regression case: before the fix, only offset-0 agents were hashed.
+    blueprint.AddAgentGroup( "Dummy" )
+        .SetCount( 1 )
+        .SetDistribution( { glm::vec4( 50.0f, 50.0f, 50.0f, 1.0f ) } ); // far from vessel agents
+
+    // Group 1 — two TipCells within contactDistance.  If the hash covers this group,
+    // Anastomosis will fire and both agents become StalkCells (cellType=2).
+    std::vector<glm::vec4> pos = {
+        glm::vec4( 0.0f, 0.0f, 0.0f, 1.0f ),
+        glm::vec4( 2.0f, 0.0f, 0.0f, 1.0f )
+    };
+    blueprint.AddAgentGroup( "Vessel" )
+        .SetCount( 2 )
+        .SetDistribution( pos )
+        .AddBehaviour( Behaviours::Anastomosis{ /* contactDistance */ 5.0f } )
+        .SetHz( 60.0f );
+
+    SimulationBuilder builder( m_resourceManager.get(), m_streamingManager.get() );
+    SimulationState   state = builder.Build( blueprint );
+
+    // Force ALL agents to TipCell (cellType=1) so the two vessel TipCells can anastomose.
+    // globalCapacity = 262144 (2 groups × 131072).
+    ForceAllCellType( m_streamingManager.get(), state.phenotypeBuffer, 1u, 262144 );
+
+    auto compCtxHandle = m_device->CreateThreadContext( QueueType::COMPUTE );
+    auto compCtx       = m_device->GetThreadContext( compCtxHandle );
+    auto compCmd       = compCtx->GetCommandBuffer( compCtx->CreateCommandBuffer() );
+
+    GraphDispatcher dispatcher;
+    compCmd->Begin();
+    dispatcher.Dispatch( &state.computeGraph, compCmd, nullptr, 1.0f / 60.0f, 0.0f, 0 );
+    compCmd->End();
+
+    m_device->GetComputeQueue()->Submit( { compCmd } );
+    m_device->GetComputeQueue()->WaitIdle();
+
+    // Read back phenotype of the two vessel agents (at absolute indices 131072 and 131073)
+    struct PhenotypeData { uint32_t lifecycleState; float biomass; float timer; uint32_t cellType; };
+    std::vector<PhenotypeData> allPheno( 262144 );
+    m_streamingManager->ReadbackBufferImmediate( state.phenotypeBuffer, allPheno.data(),
+                                                 262144 * sizeof( PhenotypeData ) );
+
+    uint32_t cellType0 = allPheno[ 131072 ].cellType;
+    uint32_t cellType1 = allPheno[ 131073 ].cellType;
+
+    EXPECT_EQ( cellType0, 2u ) << "Vessel TipCell[0] (group 1, idx 131072) must convert to StalkCell after anastomosis";
+    EXPECT_EQ( cellType1, 2u ) << "Vessel TipCell[1] (group 1, idx 131073) must convert to StalkCell after anastomosis";
 
     state.Destroy( m_resourceManager.get() );
 }
@@ -1413,6 +1484,229 @@ TEST_F( SimulationBuilderTest, Behaviour_Perfusion_StalkCell_InjectsOxygen )
     uint32_t           centerIdx = 5 + 5 * 10 + 5 * 100;
 
     EXPECT_GT( gridData[ centerIdx ], 0.0f ) << "StalkCell must inject O2: center voxel should increase from 0";
+
+    state.Destroy( m_resourceManager.get() );
+}
+
+// PhalanxCell + Perfusion → O2 field increases at agent voxel (Phase 4 fix verification).
+TEST_F( SimulationBuilderTest, Behaviour_Perfusion_PhalanxCell_InjectsOxygen )
+{
+    if( !m_device )
+        GTEST_SKIP();
+
+    SimulationBlueprint blueprint;
+    blueprint.SetDomainSize( glm::vec3( 10.0f ), 1.0f );
+
+    blueprint.AddGridField( "Oxygen" )
+        .SetInitializer( DigitalTwin::GridInitializer::Constant( 0.0f ) )
+        .SetDiffusionCoefficient( 0.01f )
+        .SetComputeHz( 1.0f );
+
+    std::vector<glm::vec4> oneCell = { glm::vec4( 0.0f, 0.0f, 0.0f, 1.0f ) };
+
+    blueprint.AddAgentGroup( "Vessel" )
+        .SetCount( 1 )
+        .SetDistribution( oneCell )
+        .AddBehaviour( Behaviours::Perfusion{ "Oxygen", 10.0f } )
+        .SetHz( 1.0f );
+
+    SimulationBuilder builder( m_resourceManager.get(), m_streamingManager.get() );
+    SimulationState   state = builder.Build( blueprint );
+
+    // Force agent to PhalanxCell (cellType=3) — the Phase 4 fix allows these to perfuse
+    ForceAllCellType( m_streamingManager.get(), state.phenotypeBuffer, 3u, 131072 );
+
+    auto compCtxHandle = m_device->CreateThreadContext( QueueType::COMPUTE );
+    auto compCtx       = m_device->GetThreadContext( compCtxHandle );
+    auto compCmd       = compCtx->GetCommandBuffer( compCtx->CreateCommandBuffer() );
+
+    GraphDispatcher dispatcher;
+    compCmd->Begin();
+    dispatcher.Dispatch( &state.computeGraph, compCmd, nullptr, 1.0f, 1.0f, 0 );
+    dispatcher.Dispatch( &state.computeGraph, compCmd, nullptr, 1.0f, 2.0f, 1 );
+    compCmd->End();
+
+    m_device->GetComputeQueue()->Submit( { compCmd } );
+    m_device->GetComputeQueue()->WaitIdle();
+
+    std::vector<float> gridData = ReadbackGrid( state, 0, m_streamingManager.get() );
+    uint32_t           centerIdx = 5 + 5 * 10 + 5 * 100;
+
+    EXPECT_GT( gridData[ centerIdx ], 0.0f ) << "PhalanxCell must inject O2 after Phase 4 perfusion fix";
+
+    state.Destroy( m_resourceManager.get() );
+}
+
+// Perfusion with RequiredCellType=PhalanxCell — StalkCell is rejected (fParam1 builder wiring).
+TEST_F( SimulationBuilderTest, Behaviour_Perfusion_RequiredCellType_RejectsStalkCell )
+{
+    if( !m_device )
+        GTEST_SKIP();
+
+    SimulationBlueprint blueprint;
+    blueprint.SetDomainSize( glm::vec3( 10.0f ), 1.0f );
+
+    blueprint.AddGridField( "Oxygen" )
+        .SetInitializer( DigitalTwin::GridInitializer::Constant( 0.0f ) )
+        .SetDiffusionCoefficient( 0.01f )
+        .SetComputeHz( 1.0f );
+
+    std::vector<glm::vec4> oneCell = { glm::vec4( 0.0f, 0.0f, 0.0f, 1.0f ) };
+
+    blueprint.AddAgentGroup( "Vessel" )
+        .SetCount( 1 )
+        .SetDistribution( oneCell )
+        .AddBehaviour( Behaviours::Perfusion{ "Oxygen", 10.0f } )
+        .SetHz( 1.0f )
+        .SetRequiredCellType( static_cast<int>( DigitalTwin::CellType::PhalanxCell ) );
+
+    SimulationBuilder builder( m_resourceManager.get(), m_streamingManager.get() );
+    SimulationState   state = builder.Build( blueprint );
+
+    ForceAllCellType( m_streamingManager.get(), state.phenotypeBuffer, 2u, 131072 ); // StalkCell
+
+    auto compCtxHandle = m_device->CreateThreadContext( QueueType::COMPUTE );
+    auto compCtx       = m_device->GetThreadContext( compCtxHandle );
+    auto compCmd       = compCtx->GetCommandBuffer( compCtx->CreateCommandBuffer() );
+
+    GraphDispatcher dispatcher;
+    compCmd->Begin();
+    dispatcher.Dispatch( &state.computeGraph, compCmd, nullptr, 1.0f, 1.0f, 0 );
+    dispatcher.Dispatch( &state.computeGraph, compCmd, nullptr, 1.0f, 2.0f, 1 );
+    compCmd->End();
+
+    m_device->GetComputeQueue()->Submit( { compCmd } );
+    m_device->GetComputeQueue()->WaitIdle();
+
+    uint32_t           centerIdx = 5 + 5 * 10 + 5 * 100;
+    std::vector<float> gridData  = ReadbackGrid( state, 0, m_streamingManager.get() );
+    EXPECT_EQ( gridData[ centerIdx ], 0.0f ) << "StalkCell must be rejected by PhalanxCell-only Perfusion filter";
+
+    state.Destroy( m_resourceManager.get() );
+}
+
+// Perfusion with RequiredCellType=PhalanxCell — PhalanxCell is accepted (fParam1 builder wiring).
+TEST_F( SimulationBuilderTest, Behaviour_Perfusion_RequiredCellType_AcceptsPhalanxCell )
+{
+    if( !m_device )
+        GTEST_SKIP();
+
+    SimulationBlueprint blueprint;
+    blueprint.SetDomainSize( glm::vec3( 10.0f ), 1.0f );
+
+    blueprint.AddGridField( "Oxygen" )
+        .SetInitializer( DigitalTwin::GridInitializer::Constant( 0.0f ) )
+        .SetDiffusionCoefficient( 0.01f )
+        .SetComputeHz( 1.0f );
+
+    std::vector<glm::vec4> oneCell = { glm::vec4( 0.0f, 0.0f, 0.0f, 1.0f ) };
+
+    blueprint.AddAgentGroup( "Vessel" )
+        .SetCount( 1 )
+        .SetDistribution( oneCell )
+        .AddBehaviour( Behaviours::Perfusion{ "Oxygen", 10.0f } )
+        .SetHz( 1.0f )
+        .SetRequiredCellType( static_cast<int>( DigitalTwin::CellType::PhalanxCell ) );
+
+    SimulationBuilder builder( m_resourceManager.get(), m_streamingManager.get() );
+    SimulationState   state = builder.Build( blueprint );
+
+    ForceAllCellType( m_streamingManager.get(), state.phenotypeBuffer, 3u, 131072 ); // PhalanxCell
+
+    auto compCtxHandle = m_device->CreateThreadContext( QueueType::COMPUTE );
+    auto compCtx       = m_device->GetThreadContext( compCtxHandle );
+    auto compCmd       = compCtx->GetCommandBuffer( compCtx->CreateCommandBuffer() );
+
+    GraphDispatcher dispatcher;
+    compCmd->Begin();
+    dispatcher.Dispatch( &state.computeGraph, compCmd, nullptr, 1.0f, 1.0f, 0 );
+    dispatcher.Dispatch( &state.computeGraph, compCmd, nullptr, 1.0f, 2.0f, 1 );
+    compCmd->End();
+
+    m_device->GetComputeQueue()->Submit( { compCmd } );
+    m_device->GetComputeQueue()->WaitIdle();
+
+    uint32_t           centerIdx = 5 + 5 * 10 + 5 * 100;
+    std::vector<float> gridData  = ReadbackGrid( state, 0, m_streamingManager.get() );
+    EXPECT_GT( gridData[ centerIdx ], 0.0f ) << "PhalanxCell must inject O2 when reqCellType=PhalanxCell";
+
+    state.Destroy( m_resourceManager.get() );
+}
+
+// Anastomosis + Perfusion: two TipCells anastomose → become StalkCells → perfusion raises O2.
+TEST_F( SimulationBuilderTest, Angiogenesis_PostAnastomosis_Perfusion_RaisesO2 )
+{
+    if( !m_device )
+        GTEST_SKIP();
+
+    SimulationBlueprint blueprint;
+    blueprint.SetDomainSize( glm::vec3( 100.0f ), 1.0f )
+        .ConfigureSpatialPartitioning()
+        .SetCellSize( 30.0f )
+        .SetComputeHz( 60.0f );
+
+    blueprint.AddGridField( "Oxygen" )
+        .SetInitializer( DigitalTwin::GridInitializer::Constant( 0.0f ) )
+        .SetDiffusionCoefficient( 0.01f )
+        .SetComputeHz( 1.0f );
+
+    // Two TipCells placed within contactDistance so anastomosis fires immediately
+    std::vector<glm::vec4> pos = {
+        glm::vec4( 0.0f, 0.0f, 0.0f, 1.0f ),
+        glm::vec4( 2.0f, 0.0f, 0.0f, 1.0f )
+    };
+
+    auto& vessel = blueprint.AddAgentGroup( "Vessel" )
+        .SetCount( 2 )
+        .SetDistribution( pos );
+    vessel.AddBehaviour( Behaviours::Anastomosis{ 5.0f, true } ).SetHz( 60.0f );
+    vessel.AddBehaviour( Behaviours::Perfusion{ "Oxygen", 10.0f } ).SetHz( 1.0f );
+
+    SimulationBuilder builder( m_resourceManager.get(), m_streamingManager.get() );
+    SimulationState   state = builder.Build( blueprint );
+
+    // Force both to TipCell so anastomosis fires on the first dispatch
+    ForceAllCellType( m_streamingManager.get(), state.phenotypeBuffer, 1u, 131072 );
+
+    auto compCtxHandle = m_device->CreateThreadContext( QueueType::COMPUTE );
+    auto compCtx       = m_device->GetThreadContext( compCtxHandle );
+
+    GraphDispatcher dispatcher;
+
+    // Frame 0: anastomosis fires → TipCells become StalkCells.
+    // Submit and wait so phenotype writes are visible before subsequent frames read them.
+    {
+        auto compCmd = compCtx->GetCommandBuffer( compCtx->CreateCommandBuffer() );
+        compCmd->Begin();
+        dispatcher.Dispatch( &state.computeGraph, compCmd, nullptr, 1.0f / 60.0f, 0.0f, 0 );
+        compCmd->End();
+        m_device->GetComputeQueue()->Submit( { compCmd } );
+        m_device->GetComputeQueue()->WaitIdle();
+    }
+
+    // Verify anastomosis converted the cells before testing perfusion
+    struct PhenotypeData { uint32_t lifecycleState; float biomass; float timer; uint32_t cellType; };
+    std::vector<PhenotypeData> pheno( 2 );
+    m_streamingManager->ReadbackBufferImmediate( state.phenotypeBuffer, pheno.data(), 2 * sizeof( PhenotypeData ) );
+    ASSERT_NE( pheno[ 0 ].cellType, 1u ) << "Anastomosis must have converted TipCell 0 before perfusion test";
+
+    // Frames 1..4: PDE and Perfusion alternate, ensuring delta is accumulated and applied.
+    {
+        auto compCmd = compCtx->GetCommandBuffer( compCtx->CreateCommandBuffer() );
+        compCmd->Begin();
+        for( int i = 1; i <= 4; ++i )
+            dispatcher.Dispatch( &state.computeGraph, compCmd, nullptr, 1.0f, static_cast<float>( i ), i % 2 );
+        compCmd->End();
+        m_device->GetComputeQueue()->Submit( { compCmd } );
+        m_device->GetComputeQueue()->WaitIdle();
+    }
+
+    // Both cells are near (0,0,0) in a 100-unit domain → center voxel index = 505050
+    std::vector<float> gridData = ReadbackGrid( state, 0, m_streamingManager.get() );
+    uint32_t           voxA     = 50 + 50 * 100 + 50 * 10000;
+    float              o2AtA    = gridData[ voxA ];
+
+    EXPECT_GT( o2AtA, 0.0f ) << "Post-anastomosis StalkCells must perfuse O2 into the field";
 
     state.Destroy( m_resourceManager.get() );
 }

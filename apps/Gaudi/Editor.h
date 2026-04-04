@@ -41,6 +41,7 @@ namespace Gaudi
         void SetupSimpleVesselDebugDemo();
         void SetupStaticVesselTreeDemo();
         void SetupVesselSproutingDemo();
+        void SetupAngiogenesisDemo();
         void SetupInitialBlueprint();   // legacy full angiogenesis, kept for internal use
 
     private:

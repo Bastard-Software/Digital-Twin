@@ -38,8 +38,8 @@ void main() {
     uint globalIdx = pc.offset + idx;
 
     if(inAgents.positions[globalIdx].w == 0.0) {
-        outHashes.data[globalIdx].hash = 0xFFFFFFFF;
-        outHashes.data[globalIdx].agentIndex = 0xFFFFFFFF;
+        outHashes.data[idx].hash = 0xFFFFFFFF;
+        outHashes.data[idx].agentIndex = 0xFFFFFFFF;
         return;
     }
 

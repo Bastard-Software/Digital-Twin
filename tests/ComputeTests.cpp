@@ -2065,20 +2065,20 @@ TEST_F( ComputeTest, Shader_PhalanxActivation_StalkAtLowVEGF_BecomesQuiescent )
     EXPECT_EQ( result, 3u ) << "StalkCell at VEGF=2 should re-quiesce to PhalanxCell (3)";
 }
 
-// TipCell at any VEGF → always skipped, stays TipCell (1)
-TEST_F( ComputeTest, Shader_PhalanxActivation_TipCell_AlwaysSkipped )
+TEST_F( ComputeTest, Shader_PhalanxActivation_TipCell_StaysTipCellWhenVEGFHigh )
 {
     if( !m_device )
         GTEST_SKIP();
 
+    // VEGF=30 > deactivationThreshold=5 → TipCell stays TipCell (migration signal still present)
     uint32_t result = RunPhalanxShader( m_device.get(), m_rm.get(), m_stream.get(),
         glm::vec4( 0.0f, 0.0f, 0.0f, 1.0f ),
         1u,   // TipCell
-        2.0f, // VEGF below any threshold — would trigger re-quiescence if not a TipCell
+        30.0f, // VEGF well above deactivation threshold
         20.0f, 5.0f
     );
 
-    EXPECT_EQ( result, 1u ) << "TipCell must not be re-quiesced — stays TipCell (1)";
+    EXPECT_EQ( result, 1u ) << "TipCell with VEGF > deactivationThreshold must stay TipCell (1)";
 }
 
 // =================================================================================================
@@ -2165,6 +2165,7 @@ TEST_F( ComputeTest, Shader_Anastomosis_TwoTipCells_WithinRange )
     ComputePushConstants pc{};
     pc.dt          = 1.0f / 60.0f;
     pc.fParam0     = 5.0f;  // contactDistance
+    pc.fParam2     = 16.0f; // edgeBufferCapacity — edge buffer holds 16 slots in this test
     pc.offset      = 0;
     pc.maxCapacity = 2;
     pc.uParam0     = offsetArraySize;
@@ -2194,12 +2195,13 @@ TEST_F( ComputeTest, Shader_Anastomosis_TwoTipCells_WithinRange )
     m_stream->ReadbackBufferImmediate( edgeCountBuf, &resultEdgeCount,   sizeof( uint32_t ) );
     m_stream->ReadbackBufferImmediate( edgeBuf,      &resultEdge,        sizeof( VesselEdge ) );
 
-    EXPECT_EQ(   resultPheno[ 0 ].cellType, 2u )   << "Agent 0 must be StalkCell (2) after anastomosis";
-    EXPECT_EQ(   resultPheno[ 1 ].cellType, 2u )   << "Agent 1 must be StalkCell (2) after anastomosis";
-    EXPECT_EQ(   resultEdgeCount,           1u )   << "Exactly 1 edge must be recorded";
-    EXPECT_EQ(   resultEdge.agentA,         0u )   << "Edge agentA must be 0 (lower-index invocation handles the pair)";
-    EXPECT_EQ(   resultEdge.agentB,         1u )   << "Edge agentB must be 1";
+    EXPECT_EQ(   resultPheno[ 0 ].cellType, 2u )    << "Agent 0 must be StalkCell (2) after anastomosis";
+    EXPECT_EQ(   resultPheno[ 1 ].cellType, 2u )    << "Agent 1 must be StalkCell (2) after anastomosis";
+    EXPECT_EQ(   resultEdgeCount,           1u )    << "Exactly 1 edge must be recorded";
+    EXPECT_EQ(   resultEdge.agentA,         0u )    << "Edge agentA must be 0 (lower-index invocation handles the pair)";
+    EXPECT_EQ(   resultEdge.agentB,         1u )    << "Edge agentB must be 1";
     EXPECT_NEAR( resultEdge.dist,           2.0f, 1e-4f ) << "Edge dist must equal agent separation";
+    EXPECT_EQ(   resultEdge.flags,          0x8u )  << "Edge must have SPROUT flag so vessel_components merges labels";
 
     m_rm->DestroyBuffer( agentBuf     );
     m_rm->DestroyBuffer( phenoBuf     );
@@ -2276,6 +2278,7 @@ TEST_F( ComputeTest, Shader_Anastomosis_DeadSlot_Skipped )
     ComputePushConstants pc{};
     pc.dt          = 1.0f / 60.0f;
     pc.fParam0     = 5.0f;
+    pc.fParam2     = 16.0f; // edgeBufferCapacity
     pc.offset      = 0;
     pc.maxCapacity = 1;
     pc.uParam0     = offsetArraySize;
@@ -2382,6 +2385,7 @@ TEST_F( ComputeTest, Shader_Anastomosis_NonTipCells_Skipped )
     ComputePushConstants pc{};
     pc.dt          = 1.0f / 60.0f;
     pc.fParam0     = 5.0f;
+    pc.fParam2     = 16.0f; // edgeBufferCapacity
     pc.offset      = 0;
     pc.maxCapacity = 2;
     pc.uParam0     = offsetArraySize;
@@ -2499,6 +2503,7 @@ TEST_F( ComputeTest, Shader_Anastomosis_TipToStalk_DifferentComponent )
     pc.dt            = 1.0f / 60.0f;
     pc.fParam0       = 5.0f;  // contactDistance
     pc.fParam1       = 1.0f;  // allowTipToStalk = true
+    pc.fParam2       = 16.0f; // edgeBufferCapacity
     pc.offset        = 0;
     pc.maxCapacity   = 2;
     pc.uParam0       = offsetArraySize;
@@ -2521,12 +2526,15 @@ TEST_F( ComputeTest, Shader_Anastomosis_TipToStalk_DifferentComponent )
 
     std::vector<PhenotypeData> resultPheno( 2 );
     uint32_t                   resultEdgeCount = 0;
+    VesselEdge                 resultEdge{};
     m_stream->ReadbackBufferImmediate( phenoBuf,     resultPheno.data(), phenotypesSize );
     m_stream->ReadbackBufferImmediate( edgeCountBuf, &resultEdgeCount,   sizeof( uint32_t ) );
+    m_stream->ReadbackBufferImmediate( edgeBuf,      &resultEdge,        sizeof( VesselEdge ) );
 
-    EXPECT_EQ( resultPheno[ 0 ].cellType, 2u ) << "TipCell must convert to StalkCell (2) after Tip-to-Stalk anastomosis";
-    EXPECT_EQ( resultPheno[ 1 ].cellType, 2u ) << "Existing StalkCell must remain StalkCell (2)";
-    EXPECT_EQ( resultEdgeCount,           1u ) << "Exactly 1 edge must be recorded for Tip-to-Stalk anastomosis";
+    EXPECT_EQ( resultPheno[ 0 ].cellType, 2u )   << "TipCell must convert to StalkCell (2) after Tip-to-Stalk anastomosis";
+    EXPECT_EQ( resultPheno[ 1 ].cellType, 2u )   << "Existing StalkCell must remain StalkCell (2)";
+    EXPECT_EQ( resultEdgeCount,           1u )   << "Exactly 1 edge must be recorded for Tip-to-Stalk anastomosis";
+    EXPECT_EQ( resultEdge.flags,          0x8u ) << "Edge must have SPROUT flag so vessel_components merges labels";
 
     m_rm->DestroyBuffer( agentBuf     );
     m_rm->DestroyBuffer( phenoBuf     );
@@ -2610,6 +2618,7 @@ TEST_F( ComputeTest, Shader_Anastomosis_TipToStalk_SameComponent_Skipped )
     pc.dt            = 1.0f / 60.0f;
     pc.fParam0       = 5.0f;  // contactDistance
     pc.fParam1       = 1.0f;  // allowTipToStalk = true
+    pc.fParam2       = 16.0f; // edgeBufferCapacity
     pc.offset        = 0;
     pc.maxCapacity   = 2;
     pc.uParam0       = offsetArraySize;
@@ -2661,8 +2670,8 @@ TEST_F( ComputeTest, Shader_VesselComponents_IsolatedPair )
 
     struct VesselEdge { uint32_t agentA; uint32_t agentB; float dist; uint32_t flags; };
 
-    // One edge: (0, 1)
-    std::vector<VesselEdge> edgeData  = { { 0u, 1u, 2.0f, 0u } };
+    // One SPROUT edge (flags=0x8): (0, 1).  vessel_components only processes SPROUT edges.
+    std::vector<VesselEdge> edgeData  = { { 0u, 1u, 2.0f, 0x8u } };
     uint32_t                edgeCount = 1;
 
     // Identity labels: labels[i] = i
@@ -2725,8 +2734,8 @@ TEST_F( ComputeTest, Shader_VesselComponents_Chain_ThreeAgents )
 
     struct VesselEdge { uint32_t agentA; uint32_t agentB; float dist; uint32_t flags; };
 
-    // Chain: 0─1─2
-    std::vector<VesselEdge> edgeData  = { { 0u, 1u, 2.0f, 0u }, { 1u, 2u, 2.0f, 0u } };
+    // Chain: 0─1─2 (both SPROUT edges, flags=0x8 — the only type processed by vessel_components)
+    std::vector<VesselEdge> edgeData  = { { 0u, 1u, 2.0f, 0x8u }, { 1u, 2u, 2.0f, 0x8u } };
     uint32_t                edgeCount = 2;
 
     // Identity labels
@@ -2793,7 +2802,8 @@ TEST_F( ComputeTest, Shader_VesselComponents_Chain_ThreeAgents )
 // Shared setup for perfusion.comp raw tests: one agent, one voxel, returns delta after dispatch.
 // cellType=2 → StalkCell (should fire), cellType=0 → Default (should skip).
 // rate is passed directly to fParam0 (positive=inject, negative=drain).
-#define PERFUSION_RAW_TEST_SETUP( TEST_CELLTYPE, TEST_RATE, LABEL )                                  \
+// REQ_CELLTYPE: -1.0f = default StalkCell+PhalanxCell guard; ≥0 = exact cell-type match.
+#define PERFUSION_RAW_TEST_SETUP( TEST_CELLTYPE, TEST_RATE, REQ_CELLTYPE, LABEL )                    \
     glm::vec4 agentPos( 0.0f, 0.0f, 0.0f, 1.0f );                                                   \
     struct PhenotypeData { uint32_t lifecycleState; float biomass; float timer; uint32_t cellType; }; \
     PhenotypeData pheno{ 0u, 0.5f, 0.0f, ( TEST_CELLTYPE ) };                                        \
@@ -2821,6 +2831,7 @@ TEST_F( ComputeTest, Shader_VesselComponents_Chain_ThreeAgents )
     ComputePushConstants pc{};                                                                        \
     pc.dt          = 1.0f;                                                                            \
     pc.fParam0     = ( TEST_RATE );                                                                   \
+    pc.fParam1     = ( REQ_CELLTYPE );                                                                \
     pc.offset      = 0;                                                                               \
     pc.maxCapacity = 1;                                                                               \
     pc.uParam1     = 0;                                                                               \
@@ -3062,28 +3073,44 @@ TEST_F( ComputeTest, Chemotaxis_CellTypeFilter_NonTipCellSkipped )
     m_rm->DestroyBuffer( dummyOffsetBuf );
 }
 
-// StalkCell (cellType=2) with positive rate → delta > 0 (injection).
+// StalkCell (cellType=2) with default filter (reqCellType=-1) → delta > 0 (injection).
 TEST_F( ComputeTest, Shader_Perfusion_StalkCell_InjectsDelta )
 {
     if( !m_device ) GTEST_SKIP();
-    PERFUSION_RAW_TEST_SETUP( 2u, +5.0f, "PFInject" )
-    EXPECT_GT( result, 0 ) << "StalkCell with positive rate must produce a positive delta (injection)";
+    PERFUSION_RAW_TEST_SETUP( 2u, +5.0f, -1.0f, "PFInject" )
+    EXPECT_GT( result, 0 ) << "StalkCell with default filter must produce a positive delta";
 }
 
-// StalkCell with negative rate → delta < 0 (drain).
+// StalkCell with negative rate and default filter → delta < 0 (drain).
 TEST_F( ComputeTest, Shader_Drain_StalkCell_RemovesDelta )
 {
     if( !m_device ) GTEST_SKIP();
-    PERFUSION_RAW_TEST_SETUP( 2u, -5.0f, "PFDrain" )
-    EXPECT_LT( result, 0 ) << "StalkCell with negative rate must produce a negative delta (drain)";
+    PERFUSION_RAW_TEST_SETUP( 2u, -5.0f, -1.0f, "PFDrain" )
+    EXPECT_LT( result, 0 ) << "StalkCell with default filter and negative rate must drain";
 }
 
-// Non-StalkCell (Default, cellType=0) → delta unchanged regardless of rate.
-TEST_F( ComputeTest, Shader_Perfusion_NonStalkCell_Skipped )
+// Non-vessel cell (Default, cellType=0) with default filter → skipped.
+TEST_F( ComputeTest, Shader_Perfusion_NonVesselCell_Skipped )
 {
     if( !m_device ) GTEST_SKIP();
-    PERFUSION_RAW_TEST_SETUP( 0u, +5.0f, "PFSkip" )
-    EXPECT_EQ( result, 0 ) << "Default cell must not modify the delta buffer";
+    PERFUSION_RAW_TEST_SETUP( 0u, +5.0f, -1.0f, "PFSkip" )
+    EXPECT_EQ( result, 0 ) << "Default cell type must not perfuse with the default filter";
+}
+
+// PhalanxCell (cellType=3) with explicit PhalanxCell filter → delta > 0.
+TEST_F( ComputeTest, Shader_Perfusion_PhalanxOnly_Passes )
+{
+    if( !m_device ) GTEST_SKIP();
+    PERFUSION_RAW_TEST_SETUP( 3u, +5.0f, 3.0f, "PFPhOnly" )
+    EXPECT_GT( result, 0 ) << "PhalanxCell must perfuse when reqCellType=3";
+}
+
+// StalkCell (cellType=2) with explicit PhalanxCell filter → skipped.
+TEST_F( ComputeTest, Shader_Perfusion_PhalanxOnly_RejectStalk )
+{
+    if( !m_device ) GTEST_SKIP();
+    PERFUSION_RAW_TEST_SETUP( 2u, +5.0f, 3.0f, "PFPhReject" )
+    EXPECT_EQ( result, 0 ) << "StalkCell must be rejected when reqCellType=3 (PhalanxCell-only)";
 }
 
 // build_indirect.comp: 2 agents with different cellTypes scattered into correct draw commands.

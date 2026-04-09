@@ -28,10 +28,22 @@ layout(std430, binding = 2) coherent buffer Components   { uint labels[];      }
 // One invocation handles one edge.
 // Propagates the smaller of the two endpoint labels to the other endpoint.
 // Running 8 sequential dispatches of this shader handles chains up to 8 edges long.
+//
+// Only SPROUT edges (flags & 0x8) define "same component" for anastomosis.
+// RING/AXIAL/JUNCTION edges connect the static vessel body into one structure, but that would
+// merge all body cells into one component and permanently block anastomosis between TipCells
+// that grew from different branch tips.  By using only SPROUT edges, each sprout chain
+// (TipCell + its StalkCell parents + the body parent that originated the sprout) forms its own
+// component, while non-sprouting body cells remain their own singleton components.
+// This allows two TipCells from different branches to anastomose (different components) while
+// still preventing a TipCell from fusing with its own sprout-chain parent (same component).
 void main() {
     uint idx = gl_GlobalInvocationID.x;
     if (idx >= edgeCount.count) return;
     if (idx >= pc.maxCapacity)  return;
+
+    // Skip non-SPROUT edges — only sprout chains define connectivity for anastomosis guard.
+    if ((edges.data[idx].flags & 0x8u) == 0u) return;
 
     uint a  = edges.data[idx].agentA;
     uint b  = edges.data[idx].agentB;

@@ -378,11 +378,14 @@ namespace DigitalTwin
         float       computeHz     = spatialConfig.computeHz;
         float       cellSize      = spatialConfig.cellSize;
 
-        // GPU Bitonic Sort requires the array size to be a power of two
-        // Use the global maximum capacity for all spatial data structures!
-        uint32_t maxCapacity     = 131072;
-        uint32_t paddedCount     = maxCapacity; // 131072 is already a perfect power of two
-        uint32_t offsetArraySize = 262144;      // 64x64x64 hash grid slots
+        // GPU Bitonic Sort requires the array size to be a power of two.
+        // Use the global total across ALL agent groups so every agent is hashed,
+        // regardless of which group they belong to or what offset they sit at.
+        // outState.totalPaddedAgents is computed in AllocateAgentBuffers (before this call).
+        uint32_t paddedCount     = 131072; // minimum — single-group lower bound
+        while( paddedCount < outState.totalPaddedAgents )
+            paddedCount <<= 1;
+        uint32_t offsetArraySize = 262144; // 64×64×64 hash grid slots (sufficient for ≤262144 agents)
 
         // 3. Allocate Spatial & Physics Buffers (if not already allocated)
         if( !outState.hashBuffer.IsValid() )
@@ -624,8 +627,15 @@ namespace DigitalTwin
             basePC.gridSize = glm::uvec4( outState.gridFields[ 0 ].width, outState.gridFields[ 0 ].height, outState.gridFields[ 0 ].depth, 0 );
         }
 
-        // Maintain the global capacity to match memory structures
-        uint32_t paddedCount     = 131072;
+        // Per-group dispatch capacity (each group has at least 131072 padded slots).
+        // groupPaddedCount drives dispatch sizes and per-agent maxCapacity for non-hash shaders.
+        // globalHashCapacity drives maxCapacity for hash-scanning shaders (JKR, Anastomosis,
+        // Chemotaxis) so their inner loop `for (i = startIdx; i < maxCapacity; i++)` covers
+        // the full sorted hash array, which now spans all agent groups.
+        uint32_t paddedCount        = 131072; // per-group minimum (overwritten per-group below)
+        uint32_t globalHashCapacity = 131072;
+        while( globalHashCapacity < outState.totalPaddedAgents )
+            globalHashCapacity <<= 1;
         uint32_t offsetArraySize = 262144;
 
         // Pre-pass: if any group specifies a non-zero initial cell type, create the phenotype buffer
@@ -760,8 +770,6 @@ namespace DigitalTwin
                 {
                     auto& biomechanics = std::get<Behaviours::Biomechanics>( record.behaviour );
 
-                    uint32_t offsetArraySize = 262144; // 64x64x64 hash grid slots (must match CompileSpatialGrid)
-
                     // 1. Load Shaders and Create Pipeline for Biomechanics
                     ComputePipelineDesc jkrDesc{};
                     jkrDesc.shader                      = m_resourceManager->CreateShader( "shaders/compute/jkr_forces.comp" );
@@ -800,7 +808,9 @@ namespace DigitalTwin
                     // 3. Configure Task specific parameters
                     ComputePushConstants jkrPC = basePC;
                     jkrPC.offset               = currentOffset;
-                    jkrPC.maxCapacity          = paddedCount;
+                    // globalHashCapacity: the inner hash-scan loop needs to be able to reach any
+                    // entry in the sorted hash array, which now spans all agent groups.
+                    jkrPC.maxCapacity          = globalHashCapacity;
                     jkrPC.fParam0              = biomechanics.repulsionStiffness;
                     jkrPC.fParam1              = biomechanics.adhesionStrength;
                     jkrPC.fParam2              = static_cast<float>( record.requiredLifecycleState );
@@ -1152,6 +1162,7 @@ namespace DigitalTwin
 
                         ComputePushConstants pc{};
                         pc.fParam0     = rate;
+                        pc.fParam1     = static_cast<float>( record.requiredCellType );
                         pc.offset      = currentOffset;
                         pc.maxCapacity = paddedCount;
                         pc.uParam1     = groupIndex;
@@ -1250,7 +1261,7 @@ namespace DigitalTwin
                         pc.fParam3     = static_cast<float>( record.requiredCellType );
                         pc.fParam4     = chemo.contactInhibitionDensity;
                         pc.offset      = currentOffset;
-                        pc.maxCapacity = paddedCount;
+                        pc.maxCapacity = globalHashCapacity; // hash scan bound spans all groups
                         pc.uParam0     = static_cast<uint32_t>( record.requiredLifecycleState ); // -1 → 0xFFFFFFFF
                         pc.uParam1     = groupIndex;
                         pc.domainSize  = glm::vec4( blueprint.GetDomainSize(), enableContactInhibition ? hashCellSize : 0.0f );
@@ -1647,8 +1658,9 @@ namespace DigitalTwin
                     ComputePushConstants anastomosisPC{};
                     anastomosisPC.fParam0     = anastomosis.contactDistance;
                     anastomosisPC.fParam1     = anastomosis.allowTipToStalk ? 1.0f : 0.0f;
+                    anastomosisPC.fParam2     = static_cast<float>( paddedCount ); // edge buffer capacity (separate from hash scan bound)
                     anastomosisPC.offset      = currentOffset;
-                    anastomosisPC.maxCapacity = paddedCount;
+                    anastomosisPC.maxCapacity = globalHashCapacity; // hash scan bound spans all groups
                     anastomosisPC.uParam0     = offsetArraySize;
                     anastomosisPC.uParam1     = groupIndex;
                     anastomosisPC.domainSize  = glm::vec4( blueprint.GetDomainSize(), hashCellSize );
@@ -1885,7 +1897,9 @@ namespace DigitalTwin
                         pc.fParam1                = bio.adhesionStrength;
                         pc.fParam2                = static_cast<float>( record.requiredLifecycleState );
                         pc.fParam3                = static_cast<float>( record.requiredCellType );
-                        pc.domainSize.w           = bio.maxRadius; // w holds maxRadius for JKR
+                        pc.fParam4                = bio.dampingCoefficient;
+                        pc.fParam5                = bio.maxRadius;
+                        // domainSize.w holds the spatial hash cell size — do NOT overwrite with maxRadius
                         task->UpdatePushConstants( pc );
                     }
                 }
@@ -2009,6 +2023,7 @@ namespace DigitalTwin
                                                  : -std::get<Behaviours::Drain>( record.behaviour ).rate;
                         ComputePushConstants pc = task->GetPushConstants();
                         pc.fParam0              = rate;
+                        pc.fParam1              = static_cast<float>( record.requiredCellType );
                         task->UpdatePushConstants( pc );
                     }
                 }

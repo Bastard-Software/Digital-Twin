@@ -289,12 +289,13 @@ namespace DigitalTwin
 
                         if constexpr( std::is_same_v<T, Behaviours::VesselSeed> )
                         {
-                            if( behaviour.segmentCounts.empty() )
+                            // explicitEdges mode bypasses segmentCounts entirely
+                            if( behaviour.segmentCounts.empty() && behaviour.explicitEdges.empty() )
                             {
                                 result.AddError( "AgentGroup '" + group.GetName() +
-                                                 "': VesselSeed segmentCounts must not be empty" );
+                                                 "': VesselSeed requires either segmentCounts or explicitEdges" );
                             }
-                            else
+                            else if( !behaviour.segmentCounts.empty() )
                             {
                                 uint32_t sum     = 0;
                                 bool     hasZero = false;

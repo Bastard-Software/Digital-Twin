@@ -6,8 +6,8 @@ layout(local_size_x = 256) in;
 layout(push_constant) uniform PushConstants {
     float dt;
     float totalTime;
-    float rate;     // fParam0 — +rate for Perfusion, -rate for Drain (negated by builder)
-    float _pad0;    // fParam1 unused
+    float rate;        // fParam0 — +rate for Perfusion, -rate for Drain (negated by builder)
+    float reqCellType; // fParam1 — required cell type: -1 = StalkCell+PhalanxCell (default), ≥0 = exact match
     float _pad1;    // fParam2 unused
     float _pad2;    // fParam3 unused
     float _pad3;    // fParam4 unused
@@ -40,8 +40,14 @@ void main() {
     uint globalIdx = pc.offset + idx;
     if (agents.positions[globalIdx].w == 0.0) return; // dead slot
 
-    // Only StalkCells (cellType == 2) are established vessel segments that perfuse/drain
-    if (phenotypes.data[globalIdx].cellType != 2u) return;
+    uint ct = phenotypes.data[globalIdx].cellType;
+    if (pc.reqCellType >= 0.0) {
+        // Explicit cell-type filter set by the behaviour (e.g. PhalanxCell-only = 3.0).
+        if (ct != uint(pc.reqCellType)) return;
+    } else {
+        // Default: StalkCells (2) and PhalanxCells (3) perfuse/drain.
+        if (ct != 2u && ct != 3u) return;
+    }
 
     vec3 pos = agents.positions[globalIdx].xyz;
     if (isnan(pos.x) || isnan(pos.y) || isnan(pos.z)) return;

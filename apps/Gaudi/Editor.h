@@ -7,6 +7,8 @@
 
 namespace Gaudi
 {
+    using DemoSetupFn = void ( * )( DigitalTwin::SimulationBlueprint& );
+
     class Editor
     {
     public:
@@ -27,22 +29,7 @@ namespace Gaudi
         void RenderDemoBrowser();
 
     private:
-        void LoadDemo( void ( Editor::*setupFn )() );
-
-        void SetupEmptyBlueprint();
-        void SetupDiffusionDecayDemo();
-        void SetupBrownianMotionDemo();
-        void SetupJKRPackingDemo();
-        void SetupLifecycleDemo();
-        void SetupSecreteDemo();
-        void SetupConsumeDemo();
-        void SetupChemotaxisDemo();
-        void SetupCellCycleDemo();
-        void SetupSimpleVesselDebugDemo();
-        void SetupStaticVesselTreeDemo();
-        void SetupVesselSproutingDemo();
-        void SetupAngiogenesisDemo();
-        void SetupInitialBlueprint();   // legacy full angiogenesis, kept for internal use
+        void LoadDemo( DemoSetupFn fn );
 
     private:
         DigitalTwin::DigitalTwin                  m_engine;

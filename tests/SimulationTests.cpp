@@ -3239,3 +3239,49 @@ TEST_F( SimulationBuilderTest, Builder_CadherinAdhesion_ProfileMovesTowardTarget
 
     state.Destroy( m_resourceManager.get() );
 }
+
+
+// 6. Biomechanics + CadherinAdhesion: JKR wiring includes cadherin buffers and dispatch runs cleanly.
+TEST_F( SimulationBuilderTest, Builder_JKR_Cadherin_Wiring )
+{
+    if( !m_device )
+        GTEST_SKIP();
+
+    SimulationBlueprint blueprint;
+    blueprint.SetDomainSize( glm::vec3( 100.0f ), 2.0f );
+    AgentGroup& g = blueprint.AddAgentGroup( "Tissue" );
+    g.SetCount( 2 );
+    g.SetDistribution( { glm::vec4( 0.0f, 0.0f, 0.0f, 1.0f ),
+                         glm::vec4( 1.0f, 0.0f, 0.0f, 1.0f ) } );
+    g.AddBehaviour( Behaviours::Biomechanics{ 15.0f, 2.0f, 1.5f, 0.0f } );
+    g.AddBehaviour( Behaviours::CadherinAdhesion{
+        glm::vec4( 1.0f, 0.0f, 0.0f, 0.0f ), 0.05f, 0.01f, 1.0f } );
+
+    SimulationBuilder builder( m_resourceManager.get(), m_streamingManager.get() );
+    SimulationState   state = builder.Build( blueprint );
+
+    ASSERT_TRUE( state.cadherinProfileBuffer.IsValid() );
+    ASSERT_TRUE( state.cadherinAffinityBuffer.IsValid() );
+
+    // Two dispatch passes (ping + pong) to ensure ChainFlip tasks have a complete cycle
+    auto compCtxHandle = m_device->CreateThreadContext( QueueType::COMPUTE );
+    auto compCtx       = m_device->GetThreadContext( compCtxHandle );
+    auto compCmd       = compCtx->GetCommandBuffer( compCtx->CreateCommandBuffer() );
+
+    GraphDispatcher dispatcher;
+    compCmd->Begin();
+    uint32_t finalIdx = dispatcher.Dispatch( &state.computeGraph, compCmd, nullptr, 1.0f, 1.0f, 0 );
+    compCmd->End();
+    m_device->GetComputeQueue()->Submit( { compCmd } );
+    m_device->GetComputeQueue()->WaitIdle();
+
+    // Overlapping agents should have moved under JKR repulsion
+    std::vector<glm::vec4> agents( 2 );
+    m_streamingManager->ReadbackBufferImmediate(
+        state.agentBuffers[ finalIdx ], agents.data(), 2 * sizeof( glm::vec4 ) );
+
+    EXPECT_NE( agents[ 0 ].x, 0.0f ) << "Agent 0 did not move -- JKR+cadherin dispatch may have failed";
+    EXPECT_NE( agents[ 1 ].x, 1.0f ) << "Agent 1 did not move -- JKR+cadherin dispatch may have failed";
+
+    state.Destroy( m_resourceManager.get() );
+}

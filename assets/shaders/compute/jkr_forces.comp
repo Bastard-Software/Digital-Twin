@@ -15,7 +15,8 @@ layout(push_constant) uniform PushConstants {
     uint  arrayOffset;
     uint  grpNdx;
     vec4  domainSize;
-    uvec4 gridSize;
+    uvec4 gridSize;          // x: cadherin active flag (0=off, 1=on)
+                             // y: couplingStrength encoded as uintBitsToFloat
 } pc;
 
 layout(std140, binding = 0) readonly buffer InputAgents { vec4 positions[]; } inAgents;
@@ -34,6 +35,10 @@ struct PhenotypeData {
     uint  cellType;
 };
 layout(std430, binding = 6) readonly buffer Phenotypes { PhenotypeData data[]; } phenotypes;
+
+// Cadherin differential adhesion (always bound; active only when pc.gridSize.x != 0)
+layout(std430, binding = 7) readonly buffer CadherinProfiles { vec4 profiles[]; } cadherinProfiles;
+layout(std430, binding = 8) readonly buffer CadherinAffinityBuf { mat4 M; } cadherinAffinity;
 
 uint hashPos(ivec3 cell) {
     const uint p1 = 73856093; const uint p2 = 19349663; const uint p3 = 83492791;
@@ -112,9 +117,16 @@ void main() {
                         
                         // Hertzian Repulsion
                         float repForce = repulsion * pow(overlap, 1.5);
-                        // JKR Adhesion
-                        float adhForce = adhesion * overlap; 
-                        
+                        // JKR Adhesion — optionally scaled by cadherin affinity A(i,j)
+                        float adhForce = adhesion * overlap;
+                        if (pc.gridSize.x != 0u) {
+                            float couplingStrength = uintBitsToFloat(pc.gridSize.y);
+                            vec4  profileI = cadherinProfiles.profiles[originalAgentIdx];
+                            vec4  profileJ = cadherinProfiles.profiles[neighborAgentIdx];
+                            float A = clamp(dot(profileI, cadherinAffinity.M * profileJ), 0.0, 1.0);
+                            adhForce *= A * couplingStrength;
+                        }
+
                         float netForce = repForce - adhForce;
                         force += dir * netForce;
                         totalPressure += repForce;

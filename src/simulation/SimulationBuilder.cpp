@@ -852,6 +852,8 @@ namespace DigitalTwin
                         bgJkr0->Bind( 6, m_resourceManager->GetBuffer( outState.phenotypeBuffer ) );
                     else
                         bgJkr0->Bind( 6, m_resourceManager->GetBuffer( outState.agentBuffers[ 0 ] ) );
+                    bgJkr0->Bind( 7, m_resourceManager->GetBuffer( outState.cadherinProfileBuffer ) );
+                    bgJkr0->Bind( 8, m_resourceManager->GetBuffer( outState.cadherinAffinityBuffer ) );
                     bgJkr0->Build();
 
                     BindingGroup* bgJkr1 = m_resourceManager->GetBindingGroup( m_resourceManager->CreateBindingGroup( jkrPipeHandle, 0 ) );
@@ -865,6 +867,8 @@ namespace DigitalTwin
                         bgJkr1->Bind( 6, m_resourceManager->GetBuffer( outState.phenotypeBuffer ) );
                     else
                         bgJkr1->Bind( 6, m_resourceManager->GetBuffer( outState.agentBuffers[ 1 ] ) );
+                    bgJkr1->Bind( 7, m_resourceManager->GetBuffer( outState.cadherinProfileBuffer ) );
+                    bgJkr1->Bind( 8, m_resourceManager->GetBuffer( outState.cadherinAffinityBuffer ) );
                     bgJkr1->Build();
 
                     // 3. Configure Task specific parameters
@@ -884,6 +888,16 @@ namespace DigitalTwin
                     // domainSize.w = hash grid cell size (must match hash build cell size)
                     // Same convention as Anastomosis and Chemotaxis shaders.
                     jkrPC.domainSize           = glm::vec4( blueprint.GetDomainSize(), blueprint.GetSpatialPartitioning().cellSize );
+
+                    // Cadherin-scaled adhesion: check if this group also has CadherinAdhesion
+                    {
+                        const Behaviours::CadherinAdhesion* cadherin = nullptr;
+                        for( const auto& r: group.GetBehaviours() )
+                            if( const auto* c = std::get_if<Behaviours::CadherinAdhesion>( &r.behaviour ) )
+                                { cadherin = c; break; }
+                        jkrPC.gridSize.x = cadherin ? 1u : 0u;
+                        jkrPC.gridSize.y = cadherin ? *reinterpret_cast<const uint32_t*>( &cadherin->couplingStrength ) : 0u;
+                    }
 
                     // 4. Append Task to Compute Graph
                     glm::uvec3 jkrDispatch( ( paddedCount + 255 ) / 256, 1, 1 );
@@ -1984,6 +1998,15 @@ namespace DigitalTwin
                         pc.fParam4                = bio.dampingCoefficient;
                         pc.fParam5                = bio.maxRadius;
                         // domainSize.w holds the spatial hash cell size — do NOT overwrite with maxRadius
+                        // Update cadherin coupling flag in case couplingStrength changed via HotReload
+                        {
+                            const Behaviours::CadherinAdhesion* cadherin = nullptr;
+                            for( const auto& r: group.GetBehaviours() )
+                                if( const auto* c = std::get_if<Behaviours::CadherinAdhesion>( &r.behaviour ) )
+                                    { cadherin = c; break; }
+                            pc.gridSize.x = cadherin ? 1u : 0u;
+                            pc.gridSize.y = cadherin ? *reinterpret_cast<const uint32_t*>( &cadherin->couplingStrength ) : 0u;
+                        }
                         task->UpdatePushConstants( pc );
                     }
                 }

@@ -743,6 +743,12 @@ TEST_F( ComputeTest, Shader_JKRForces_Logic )
 
     // Dummy phenotype buffer for binding 6 (state filtering disabled via push constants)
     BufferHandle phenotypeDummyBuf = m_rm->CreateBuffer( { sizeof( uint32_t ) * 4, BufferType::STORAGE, "TestPhenotypeDummy" } );
+    // Dummy cadherin buffers for bindings 7 and 8 (cadherin flag = 0 in push constants → inactive)
+    glm::vec4    zeroProfData[2]  = {};
+    BufferHandle cadProfileDummy  = m_rm->CreateBuffer( { sizeof( zeroProfData ),  BufferType::STORAGE, "JKRCadProfileDummy" } );
+    glm::mat4    identityMat      = glm::mat4( 1.0f );
+    BufferHandle cadAffinityDummy = m_rm->CreateBuffer( { sizeof( glm::mat4 ),     BufferType::STORAGE, "JKRCadAffinityDummy" } );
+    m_stream->UploadBufferImmediate( { { cadAffinityDummy, &identityMat, sizeof( glm::mat4 ) } } );
 
     BindingGroupHandle bgHandle = m_rm->CreateBindingGroup( pipeHandle, 0 );
     BindingGroup*      bg       = m_rm->GetBindingGroup( bgHandle );
@@ -753,6 +759,8 @@ TEST_F( ComputeTest, Shader_JKRForces_Logic )
     bg->Bind( 4, m_rm->GetBuffer( offsetsBuf ) );
     bg->Bind( 5, m_rm->GetBuffer( countBuf ) );
     bg->Bind( 6, m_rm->GetBuffer( phenotypeDummyBuf ) );
+    bg->Bind( 7, m_rm->GetBuffer( cadProfileDummy ) );
+    bg->Bind( 8, m_rm->GetBuffer( cadAffinityDummy ) );
     bg->Build();
 
     // 4. Setup Push Constants (Packed exactly as in SimulationBuilder)
@@ -812,6 +820,8 @@ TEST_F( ComputeTest, Shader_JKRForces_Logic )
     m_rm->DestroyBuffer( hashesBuf );
     m_rm->DestroyBuffer( offsetsBuf );
     m_rm->DestroyBuffer( countBuf );
+    m_rm->DestroyBuffer( cadProfileDummy );
+    m_rm->DestroyBuffer( cadAffinityDummy );
 }
 
 // 7. Compute fenotype update test
@@ -5480,6 +5490,197 @@ TEST_F( ComputeTest, Shader_BrownianMotion_DeadSlot_Skipped )
     m_rm->DestroyBuffer( outBuf );
     m_rm->DestroyBuffer( countBuf );
     m_rm->DestroyBuffer( phenoBuf );
+}
+
+// =============================================================================
+// jkr_forces.comp — cadherin adhesion scaling tests
+// =============================================================================
+
+// Helper: dispatch jkr_forces once for two overlapping agents, return their x positions.
+// Both agents are placed on the X axis, same Y/Z.  The hash places both in cell (0,0,0).
+// Returns {agent0_x, agent1_x}.
+static std::pair<float, float> RunJKRCadherin(
+    Device*           device,
+    ResourceManager*  rm,
+    StreamingManager* stream,
+    float             agent0x,        // x-position of agent 0
+    float             agent1x,        // x-position of agent 1
+    float             repulsion,
+    float             adhesion,
+    float             maxRadius,
+    glm::vec4         profile0,       // cadherin profile for agent 0
+    glm::vec4         profile1,       // cadherin profile for agent 1
+    glm::mat4         affinityMatrix,
+    uint32_t          cadherinFlag,   // 0 = off, 1 = on
+    float             couplingStrength )
+{
+    uint32_t agentCount = 2;
+
+    std::vector<glm::vec4> inAgents = {
+        glm::vec4( agent0x, 0.0f, 0.0f, 1.0f ),
+        glm::vec4( agent1x, 0.0f, 0.0f, 1.0f )
+    };
+
+    struct AgentHash { uint32_t hash; uint32_t agentIndex; };
+    // Both agents map to cell (0,0,0) with cellSize large enough to span them
+    std::vector<AgentHash> sortedHashes = { { 0, 0 }, { 0, 1 } };
+
+    uint32_t              offsetArraySize = 256;
+    std::vector<uint32_t> cellOffsets( offsetArraySize, 0xFFFFFFFF );
+    cellOffsets[ 0 ] = 0;
+
+    std::vector<glm::vec4> outAgentsData( agentCount, glm::vec4( 0.0f ) );
+    std::vector<float>     outPressures( agentCount, 0.0f );
+
+    BufferHandle inBuf      = rm->CreateBuffer( { agentCount * sizeof( glm::vec4 ),          BufferType::STORAGE,  "JKRCadInBuf" } );
+    BufferHandle outBuf     = rm->CreateBuffer( { agentCount * sizeof( glm::vec4 ),          BufferType::STORAGE,  "JKRCadOutBuf" } );
+    BufferHandle pressBuf   = rm->CreateBuffer( { agentCount * sizeof( float ),              BufferType::STORAGE,  "JKRCadPressBuf" } );
+    BufferHandle hashBuf    = rm->CreateBuffer( { agentCount * sizeof( AgentHash ),          BufferType::STORAGE,  "JKRCadHashBuf" } );
+    BufferHandle offsetBuf  = rm->CreateBuffer( { offsetArraySize * sizeof( uint32_t ),      BufferType::STORAGE,  "JKRCadOffsetBuf" } );
+    BufferHandle countBuf   = rm->CreateBuffer( { agentCount * sizeof( uint32_t ),           BufferType::INDIRECT, "JKRCadCountBuf" } );
+    BufferHandle phenoBuf   = rm->CreateBuffer( { agentCount * sizeof( PhenotypeData ),      BufferType::STORAGE,  "JKRCadPhenoBuf" } );
+    BufferHandle profBuf    = rm->CreateBuffer( { agentCount * sizeof( glm::vec4 ),          BufferType::STORAGE,  "JKRCadProfBuf" } );
+    BufferHandle affBuf     = rm->CreateBuffer( { sizeof( glm::mat4 ),                       BufferType::STORAGE,  "JKRCadAffBuf" } );
+
+    std::vector<glm::vec4>     profiles  = { profile0, profile1 };
+    std::vector<PhenotypeData> phenotypes( agentCount, { 0u, 0.5f, 0.0f, 0u } );
+
+    stream->UploadBufferImmediate( { { inBuf,     inAgents.data(),     agentCount * sizeof( glm::vec4 ) } } );
+    stream->UploadBufferImmediate( { { hashBuf,   sortedHashes.data(), agentCount * sizeof( AgentHash ) } } );
+    stream->UploadBufferImmediate( { { offsetBuf, cellOffsets.data(),  offsetArraySize * sizeof( uint32_t ) } } );
+    stream->UploadBufferImmediate( { { countBuf,  &agentCount,         sizeof( uint32_t ) } } );
+    stream->UploadBufferImmediate( { { phenoBuf,  phenotypes.data(),   agentCount * sizeof( PhenotypeData ) } } );
+    stream->UploadBufferImmediate( { { profBuf,   profiles.data(),     agentCount * sizeof( glm::vec4 ) } } );
+    stream->UploadBufferImmediate( { { affBuf,    &affinityMatrix,     sizeof( glm::mat4 ) } } );
+
+    ComputePipelineDesc   pipeDesc{};
+    pipeDesc.shader                  = rm->CreateShader( "shaders/compute/jkr_forces.comp" );
+    ComputePipelineHandle pipeHandle = rm->CreatePipeline( pipeDesc );
+    ComputePipeline*      pipeline   = rm->GetPipeline( pipeHandle );
+
+    BindingGroup* bg = rm->GetBindingGroup( rm->CreateBindingGroup( pipeHandle, 0 ) );
+    bg->Bind( 0, rm->GetBuffer( inBuf ) );
+    bg->Bind( 1, rm->GetBuffer( outBuf ) );
+    bg->Bind( 2, rm->GetBuffer( pressBuf ) );
+    bg->Bind( 3, rm->GetBuffer( hashBuf ) );
+    bg->Bind( 4, rm->GetBuffer( offsetBuf ) );
+    bg->Bind( 5, rm->GetBuffer( countBuf ) );
+    bg->Bind( 6, rm->GetBuffer( phenoBuf ) );
+    bg->Bind( 7, rm->GetBuffer( profBuf ) );
+    bg->Bind( 8, rm->GetBuffer( affBuf ) );
+    bg->Build();
+
+    uint32_t couplingBits = 0u;
+    std::memcpy( &couplingBits, &couplingStrength, sizeof( float ) );
+
+    ComputePushConstants pc{};
+    pc.dt          = 1.0f;
+    pc.maxCapacity = agentCount;
+    pc.offset      = 0;
+    pc.fParam0     = repulsion;
+    pc.fParam1     = adhesion;
+    pc.fParam2     = -1.0f; // reqLC = any
+    pc.fParam3     = -1.0f; // reqCT = any
+    pc.fParam4     = 0.0f;  // no damping
+    pc.fParam5     = maxRadius;
+    pc.uParam0     = offsetArraySize;
+    pc.uParam1     = 0;
+    pc.domainSize  = glm::vec4( 100.0f, 100.0f, 100.0f, maxRadius * 2.0f + 1.0f ); // cellSize spans both agents
+    pc.gridSize    = glm::uvec4( cadherinFlag, couplingBits, 0u, 0u );
+
+    auto ctx = device->GetThreadContext( device->CreateThreadContext( QueueType::COMPUTE ) );
+    auto cmd = ctx->GetCommandBuffer( ctx->CreateCommandBuffer() );
+    cmd->Begin();
+    cmd->SetPipeline( pipeline );
+    cmd->SetBindingGroup( bg, pipeline->GetLayout(), VK_PIPELINE_BIND_POINT_COMPUTE );
+    cmd->PushConstants( pipeline->GetLayout(), VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof( pc ), &pc );
+    cmd->Dispatch( 1, 1, 1 );
+    cmd->End();
+    device->GetComputeQueue()->Submit( { cmd } );
+    device->GetComputeQueue()->WaitIdle();
+
+    std::vector<glm::vec4> result( agentCount );
+    stream->ReadbackBufferImmediate( outBuf, result.data(), agentCount * sizeof( glm::vec4 ) );
+
+    rm->DestroyBuffer( inBuf );  rm->DestroyBuffer( outBuf );  rm->DestroyBuffer( pressBuf );
+    rm->DestroyBuffer( hashBuf ); rm->DestroyBuffer( offsetBuf ); rm->DestroyBuffer( countBuf );
+    rm->DestroyBuffer( phenoBuf ); rm->DestroyBuffer( profBuf ); rm->DestroyBuffer( affBuf );
+
+    return { result[ 0 ].x, result[ 1 ].x };
+}
+
+// 1. Matching profiles + coupling > 1 → higher adhesion → agents move less apart than without cadherin
+TEST_F( ComputeTest, Shader_JKRForces_Cadherin_SameProfile_IncreasedAdhesion )
+{
+    if( !m_device )
+        GTEST_SKIP();
+
+    // Agents slightly overlapping: dist = 2.9, interactDist = 3.0, overlap = 0.1
+    // With couplingStrength=2 and identical E-cad profiles: adhForce doubles → less repulsion
+    float repulsion = 50.0f, adhesion = 5.0f, maxRadius = 1.5f;
+
+    auto [x0_cad, x1_cad] = RunJKRCadherin(
+        m_device.get(), m_rm.get(), m_stream.get(),
+        0.0f, 2.9f,
+        repulsion, adhesion, maxRadius,
+        glm::vec4( 1.0f, 0.0f, 0.0f, 0.0f ),  // E-cad = 1
+        glm::vec4( 1.0f, 0.0f, 0.0f, 0.0f ),  // E-cad = 1
+        glm::mat4( 1.0f ),                      // identity affinity
+        1u,                                      // cadherin ON
+        2.0f );                                  // couplingStrength = 2 → 2× adhesion
+
+    auto [x0_base, x1_base] = RunJKRCadherin(
+        m_device.get(), m_rm.get(), m_stream.get(),
+        0.0f, 2.9f,
+        repulsion, adhesion, maxRadius,
+        glm::vec4( 0.0f ),
+        glm::vec4( 0.0f ),
+        glm::mat4( 1.0f ),
+        0u,   // cadherin OFF (flag = 0)
+        1.0f );
+
+    // With doubled adhesion, agents should be pushed apart less
+    float disp_cad  = x1_cad  - x0_cad;   // separation after cadherin
+    float disp_base = x1_base - x0_base;   // separation after normal JKR
+    EXPECT_LT( disp_cad, disp_base )
+        << "Cadherin coupling=2 should reduce net repulsion (less separation)";
+}
+
+// 2. Orthogonal profiles (E-cad vs N-cad) → A = 0 → no cadherin adhesion → pure repulsion
+TEST_F( ComputeTest, Shader_JKRForces_Cadherin_OrthogonalProfiles_ZeroAdhesion )
+{
+    if( !m_device )
+        GTEST_SKIP();
+
+    float repulsion = 50.0f, adhesion = 5.0f, maxRadius = 1.5f;
+
+    // Orthogonal profiles: A = dot((1,0,0,0), I*(0,1,0,0)) = 0 → adhForce = 0
+    auto [x0_ortho, x1_ortho] = RunJKRCadherin(
+        m_device.get(), m_rm.get(), m_stream.get(),
+        0.0f, 2.9f,
+        repulsion, adhesion, maxRadius,
+        glm::vec4( 1.0f, 0.0f, 0.0f, 0.0f ),  // E-cad
+        glm::vec4( 0.0f, 1.0f, 0.0f, 0.0f ),  // N-cad
+        glm::mat4( 1.0f ),
+        1u,     // cadherin ON
+        1.0f ); // coupling = 1 (irrelevant when A=0)
+
+    // Without cadherin (flag=0): base adhesion reduces repulsion → smaller separation
+    auto [x0_base, x1_base] = RunJKRCadherin(
+        m_device.get(), m_rm.get(), m_stream.get(),
+        0.0f, 2.9f,
+        repulsion, adhesion, maxRadius,
+        glm::vec4( 0.0f ),
+        glm::vec4( 0.0f ),
+        glm::mat4( 1.0f ),
+        0u,     // cadherin OFF
+        1.0f );
+
+    // Orthogonal profiles → no adhesion → more repulsion → larger separation
+    float disp_ortho = x1_ortho - x0_ortho;
+    float disp_base  = x1_base  - x0_base;
+    EXPECT_GT( disp_ortho, disp_base )
+        << "Orthogonal profiles (A=0) should produce more repulsion than normal JKR";
 }
 
 // =============================================================================

@@ -3452,9 +3452,10 @@ TEST_F( ComputeTest, Shader_NotchDll4_Hysteresis_KeepsTypeInDeadZone )
     m_rm->DestroyTexture( vTex );
 }
 
-// Hysteresis lower boundary: TipCell whose Dll4 decays below stalkThreshold converts to StalkCell.
+// Hysteresis lower boundary: a live cell whose Dll4 decays below stalkThreshold converts to StalkCell.
+// TipCells are protected from demotion (see notch_dll4.comp — TipCell commitment guard).
 //
-// Setup: 1 agent, cellType=1 (TipCell), dll4=0.1, VEGF=0 → no production.
+// Setup: 1 agent, cellType=0 (Live), dll4=0.1, VEGF=0 → no production.
 // vegfGating = 0/(0+1) = 0 → vegfr2 = 0
 // new_dll4 = 0.1 + 1.0*(0 - 0.1*0.1) = 0.09 < stalkThreshold(0.3) → StalkCell
 TEST_F( ComputeTest, Shader_NotchDll4_Hysteresis_StalkBelowThreshold )
@@ -3468,7 +3469,7 @@ TEST_F( ComputeTest, Shader_NotchDll4_Hysteresis_StalkBelowThreshold )
 
     std::vector<glm::vec4>    agents     = { glm::vec4( 0.0f, 0.0f, 0.0f, 1.0f ) };
     std::vector<SignalingData> signaling  = { { 0.1f, 0.0f, 0.0f, 0.0f } };
-    std::vector<PhenotypeData> phenotypes = { { 0u, 0.5f, 0.0f, 1u } }; // starts TipCell
+    std::vector<PhenotypeData> phenotypes = { { 0u, 0.5f, 0.0f, 0u } }; // starts Live (not TipCell)
     struct VesselEdge { uint32_t agentA; uint32_t agentB; float dist; uint32_t flags; };
     VesselEdge dummyEdge  = { 0u, 0u, 0.0f, 0u };
     uint32_t   edgeCount  = 0;
@@ -3534,7 +3535,7 @@ TEST_F( ComputeTest, Shader_NotchDll4_Hysteresis_StalkBelowThreshold )
     m_stream->ReadbackBufferImmediate( sigBuf, resultSig.data(),   sigSz );
 
     EXPECT_LT( resultSig[ 0 ].dll4,    0.3f ) << "Dll4 should have decayed below stalkThreshold";
-    EXPECT_EQ( resultPheno[ 0 ].cellType, 2u ) << "TipCell with Dll4 below stalkThreshold must convert to StalkCell";
+    EXPECT_EQ( resultPheno[ 0 ].cellType, 2u ) << "Live cell with Dll4 below stalkThreshold must convert to StalkCell";
 
     m_rm->DestroyBuffer( agBuf ); m_rm->DestroyBuffer( sigBuf ); m_rm->DestroyBuffer( phBuf );
     m_rm->DestroyBuffer( eBuf  ); m_rm->DestroyBuffer( ecBuf  ); m_rm->DestroyBuffer( cBuf  );

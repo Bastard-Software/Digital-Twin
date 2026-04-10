@@ -61,17 +61,35 @@ namespace Gaudi
                 {
                     ImGui::LabelText( "Field", "%s", b.fieldName.c_str() );
                     changed |= ImGui::SliderFloat( "Rate", &b.rate, 0.0f, 200.0f );
-                    changed |= ImGui::InputInt( "Required Lifecycle State", &b.requiredLifecycleState );
-                    if( b.requiredLifecycleState < -1 )
-                        b.requiredLifecycleState = -1;
+                    {
+                        int ls = ( b.requiredLifecycleState == DigitalTwin::LifecycleState::Any )
+                                     ? -1
+                                     : static_cast<int>( static_cast<uint32_t>( b.requiredLifecycleState ) );
+                        if( ImGui::InputInt( "Required Lifecycle State", &ls ) )
+                        {
+                            b.requiredLifecycleState = ( ls < 0 )
+                                                           ? DigitalTwin::LifecycleState::Any
+                                                           : static_cast<DigitalTwin::LifecycleState>( static_cast<uint32_t>( ls ) );
+                            changed = true;
+                        }
+                    }
                 }
                 else if constexpr( std::is_same_v<T, DigitalTwin::Behaviours::SecreteField> )
                 {
                     ImGui::LabelText( "Field", "%s", b.fieldName.c_str() );
                     changed |= ImGui::SliderFloat( "Rate", &b.rate, 0.0f, 200.0f );
-                    changed |= ImGui::InputInt( "Required Lifecycle State", &b.requiredLifecycleState );
-                    if( b.requiredLifecycleState < -1 )
-                        b.requiredLifecycleState = -1;
+                    {
+                        int ls = ( b.requiredLifecycleState == DigitalTwin::LifecycleState::Any )
+                                     ? -1
+                                     : static_cast<int>( static_cast<uint32_t>( b.requiredLifecycleState ) );
+                        if( ImGui::InputInt( "Required Lifecycle State", &ls ) )
+                        {
+                            b.requiredLifecycleState = ( ls < 0 )
+                                                           ? DigitalTwin::LifecycleState::Any
+                                                           : static_cast<DigitalTwin::LifecycleState>( static_cast<uint32_t>( ls ) );
+                            changed = true;
+                        }
+                    }
                 }
                 else if constexpr( std::is_same_v<T, DigitalTwin::Behaviours::Biomechanics> )
                 {
@@ -164,10 +182,28 @@ namespace Gaudi
 
         ImGui::Spacing();
         ImGui::SeparatorText( "State Filtering" );
-        changed |= ImGui::InputInt( "Required Lifecycle State", &record.requiredLifecycleState );
-        if( record.requiredLifecycleState < -1 ) record.requiredLifecycleState = -1;
-        changed |= ImGui::InputInt( "Required Cell Type", &record.requiredCellType );
-        if( record.requiredCellType < -1 ) record.requiredCellType = -1;
+        {
+            int ls = ( record.requiredLifecycleState == DigitalTwin::LifecycleState::Any )
+                         ? -1
+                         : static_cast<int>( static_cast<uint32_t>( record.requiredLifecycleState ) );
+            if( ImGui::InputInt( "Required Lifecycle State", &ls ) )
+            {
+                record.requiredLifecycleState = ( ls < 0 )
+                                                    ? DigitalTwin::LifecycleState::Any
+                                                    : static_cast<DigitalTwin::LifecycleState>( static_cast<uint32_t>( ls ) );
+                changed = true;
+            }
+            int ct = ( record.requiredCellType == DigitalTwin::CellType::Any )
+                         ? -1
+                         : static_cast<int>( static_cast<uint32_t>( record.requiredCellType ) );
+            if( ImGui::InputInt( "Required Cell Type", &ct ) )
+            {
+                record.requiredCellType = ( ct < 0 )
+                                              ? DigitalTwin::CellType::Any
+                                              : static_cast<DigitalTwin::CellType>( static_cast<uint32_t>( ct ) );
+                changed = true;
+            }
+        }
 
         if( live )
         {

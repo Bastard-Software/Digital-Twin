@@ -1,4 +1,5 @@
 #pragma once
+#include "simulation/Phenotype.h"
 #include <string>
 #include <variant>
 #include <vector>
@@ -16,16 +17,16 @@ namespace DigitalTwin::Behaviours
 
     struct ConsumeField
     {
-        std::string fieldName;
-        float       rate                  = 1.0f;
-        int         requiredLifecycleState = -1; // -1 no requirements
+        std::string  fieldName;
+        float        rate                  = 1.0f;
+        LifecycleState requiredLifecycleState = LifecycleState::Any;
     };
 
     struct SecreteField
     {
-        std::string fieldName;
-        float       rate                  = 1.0f;
-        int         requiredLifecycleState = -1; // -1 no requirements
+        std::string  fieldName;
+        float        rate                  = 1.0f;
+        LifecycleState requiredLifecycleState = LifecycleState::Any;
     };
 
     /**
@@ -152,9 +153,9 @@ namespace DigitalTwin
     struct BehaviourRecord
     {
         BehaviourVariant behaviour;
-        float            targetHz              = 60.0f; // Default to 60 executions per second
-        int              requiredLifecycleState = -1;   // -1 = any lifecycle state
-        int              requiredCellType       = -1;   // -1 = any cell type
+        float            targetHz              = 60.0f;
+        LifecycleState   requiredLifecycleState = LifecycleState::Any;
+        CellType         requiredCellType       = CellType::Any;
 
         // Fluent API for frequency
         BehaviourRecord& SetHz( float hz )
@@ -163,13 +164,13 @@ namespace DigitalTwin
             return *this;
         }
 
-        BehaviourRecord& SetRequiredLifecycleState( int s )
+        BehaviourRecord& SetRequiredLifecycleState( LifecycleState s )
         {
             requiredLifecycleState = s;
             return *this;
         }
 
-        BehaviourRecord& SetRequiredCellType( int t )
+        BehaviourRecord& SetRequiredCellType( CellType t )
         {
             requiredCellType = t;
             return *this;

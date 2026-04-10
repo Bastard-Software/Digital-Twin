@@ -62,7 +62,7 @@ namespace Gaudi::Demos
         // Secrete VEGF only while Hypoxic — starts automatically once lifecycle flips.
         source.AddBehaviour( DigitalTwin::Behaviours::SecreteField{
                                  "VEGF", 200.0f,
-                                 static_cast<int>( DigitalTwin::LifecycleState::Hypoxic ) } )
+                                 DigitalTwin::LifecycleState::Hypoxic } )
             .SetHz( 60.0f );
 
         // ── Responder cell (blue) ─────────────────────────────────────────────

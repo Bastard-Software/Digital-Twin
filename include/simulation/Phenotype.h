@@ -16,7 +16,9 @@ namespace DigitalTwin
         Necrotic  = 4, // Ruptured death due to starvation/hypoxia (spills toxins)
 
         // Internal state used by the GPU during Stream Compaction to mark cells for deletion
-        Dead_PendingRemoval = 5
+        Dead_PendingRemoval = 5,
+
+        Any = 0xFFFFFFFFu // No lifecycle filter (shaders interpret 0xFFFFFFFF as "match all")
     };
 
     /**
@@ -28,11 +30,25 @@ namespace DigitalTwin
         Default     = 0, // Generic cell (tumor cell, etc.)
         TipCell     = 1, // Endothelial tip cell — migrates toward VEGF
         StalkCell   = 2, // Endothelial stalk cell — proliferates to extend vessel
-        PhalanxCell = 3  // Quiescent endothelial cell in mature vessel
+        PhalanxCell = 3, // Quiescent endothelial cell in mature vessel
+
+        Any = 0xFFFFFFFFu // No cell-type filter (shaders interpret 0xFFFFFFFF as "match all")
     };
 
     static_assert( static_cast<uint32_t>( LifecycleState::Live )              == 0 );
     static_assert( static_cast<uint32_t>( LifecycleState::Dead_PendingRemoval ) == 5 );
     static_assert( static_cast<uint32_t>( CellType::Default ) == 0 );
+
+    // CPU-side mirror of the std430 SSBO layout used by phenotypeBuffer.
+    // Size stays at 16 bytes — cadherin profile lives in a separate buffer (Stage 3).
+    // This struct is defined locally in 14 GLSL shaders (no GLSL include mechanism);
+    // this header is the single source of truth for C++ code.
+    struct PhenotypeData
+    {
+        uint32_t lifecycleState = 0;
+        float    biomass        = 0.5f;
+        float    timer          = 0.0f;
+        uint32_t cellType       = 0;
+    };
 
 } // namespace DigitalTwin

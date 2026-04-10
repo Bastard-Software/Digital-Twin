@@ -11,6 +11,7 @@
 #include "rhi/ThreadContext.h"
 #include "simulation/SimulationBlueprint.h"
 #include "simulation/SimulationBuilder.h"
+#include "simulation/Phenotype.h"
 #include <filesystem>
 #include <fstream>
 #include <gtest/gtest.h>
@@ -832,13 +833,6 @@ TEST_F( ComputeTest, Shader_Biology_UpdatePhenotype )
     std::vector<float> pressures     = { 5.0f, 0.0f, 0.0f }; // Agent 0 has 5.0 MPa pressure
     size_t             pressuresSize = agentCount * sizeof( float );
 
-    struct PhenotypeData
-    {
-        uint32_t lifecycleState;
-        float    biomass;
-        float    timer;
-        uint32_t cellType;
-    };
     std::vector<PhenotypeData> phenotypes     = { { 0, 0.5f, 0.0f, 0 }, { 0, 0.5f, 0.0f, 0 }, { 0, 0.5f, 0.0f, 0 } };
     size_t                     phenotypesSize = agentCount * sizeof( PhenotypeData );
 
@@ -964,13 +958,6 @@ TEST_F( ComputeTest, Shader_Biology_MitosisAppend )
     std::vector<glm::vec4> agents( maxCapacity, glm::vec4( 0.0f ) );
     agents[ 0 ] = glm::vec4( 10.0f, 10.0f, 10.0f, 1.0f ); // Mother (w=1.0)
 
-    struct PhenotypeData
-    {
-        uint32_t lifecycleState;
-        float    biomass;
-        float    timer;
-        uint32_t cellType;
-    };
     size_t                     phenotypesSize = maxCapacity * sizeof( PhenotypeData );
     std::vector<PhenotypeData> phenotypes( maxCapacity, { 0, 0.0f, 0.0f, 0 } );
     phenotypes[ 0 ] = { 0, 1.1f, 0.0f, 0 }; // Mother is Live and ready to divide (biomass > 1.0)
@@ -1446,7 +1433,6 @@ TEST_F( ComputeTest, Shader_NotchDll4_IsolatedAgent_ODE )
     std::vector<SignalingData> signaling     = { { 0.5f, 0.0f, 1.0f, 0.0f } }; // initial dll4 = 0.5
     size_t                     signalingSize = sizeof( SignalingData );
 
-    struct PhenotypeData { uint32_t lifecycleState; float biomass; float timer; uint32_t cellType; };
     std::vector<PhenotypeData> phenotypes     = { { 0u, 0.5f, 0.0f, 0u } }; // Live, Default
     size_t                     phenotypesSize = sizeof( PhenotypeData );
 
@@ -1562,7 +1548,6 @@ TEST_F( ComputeTest, Shader_NotchDll4_DeadSlot_Skipped )
     std::vector<SignalingData> signaling     = { { 0.5f, 0.0f, 1.0f, 0.0f } };
     size_t                     signalingSize = sizeof( SignalingData );
 
-    struct PhenotypeData { uint32_t lifecycleState; float biomass; float timer; uint32_t cellType; };
     std::vector<PhenotypeData> phenotypes     = { { 0u, 0.5f, 0.0f, 0u } };
     size_t                     phenotypesSize = sizeof( PhenotypeData );
 
@@ -1679,7 +1664,6 @@ TEST_F( ComputeTest, Shader_NotchDll4_LateralInhibition_Asymmetric )
     std::vector<SignalingData> signaling     = { { 0.9f, 0.0f, 1.0f, 0.0f }, { 0.1f, 0.0f, 1.0f, 0.0f } };
     size_t                     signalingSize = 2 * sizeof( SignalingData );
 
-    struct PhenotypeData { uint32_t lifecycleState; float biomass; float timer; uint32_t cellType; };
     std::vector<PhenotypeData> phenotypes     = { { 0u, 0.5f, 0.0f, 0u }, { 0u, 0.5f, 0.0f, 0u } };
     size_t                     phenotypesSize = 2 * sizeof( PhenotypeData );
 
@@ -1825,7 +1809,6 @@ TEST_F( ComputeTest, Shader_NotchDll4_VEGFGating_HighVEGF_PromotesTipCell )
     std::vector<SignalingData> signaling     = { { 0.5f, 0.0f, 1.0f, 0.0f }, { 0.5f, 0.0f, 1.0f, 0.0f } };
     size_t                     signalingSize = 2 * sizeof( SignalingData );
 
-    struct PhenotypeData { uint32_t lifecycleState; float biomass; float timer; uint32_t cellType; };
     // Agent 0 initialised as StalkCell (2): Dll4 will land in the dead zone (0.45),
     // so hysteresis keeps it as StalkCell — matching the assertion below.
     std::vector<PhenotypeData> phenotypes     = { { 0u, 0.5f, 0.0f, 2u }, { 0u, 0.5f, 0.0f, 2u } };
@@ -1944,7 +1927,6 @@ static uint32_t RunPhalanxShader(
     float             activationThreshold,
     float             deactivationThreshold )
 {
-    struct PhenotypeData { uint32_t lifecycleState; float biomass; float timer; uint32_t cellType; };
 
     // 1×1×1 VEGF texture — agent at origin in 10-unit domain always hits voxel (0,0,0)
     TextureHandle vegfTex = rm->CreateTexture(
@@ -2101,7 +2083,6 @@ TEST_F( ComputeTest, Shader_Anastomosis_TwoTipCells_WithinRange )
     std::vector<glm::vec4> agents     = { glm::vec4( 0.0f, 0.0f, 0.0f, 1.0f ), glm::vec4( 2.0f, 0.0f, 0.0f, 1.0f ) };
     size_t                 agentsSize = 2 * sizeof( glm::vec4 );
 
-    struct PhenotypeData { uint32_t lifecycleState; float biomass; float timer; uint32_t cellType; };
     std::vector<PhenotypeData> phenotypes     = { { 0u, 0.5f, 0.0f, 1u }, { 0u, 0.5f, 0.0f, 1u } }; // both TipCell
     size_t                     phenotypesSize = 2 * sizeof( PhenotypeData );
 
@@ -2222,7 +2203,6 @@ TEST_F( ComputeTest, Shader_Anastomosis_DeadSlot_Skipped )
     std::vector<glm::vec4> agents     = { glm::vec4( 0.0f, 0.0f, 0.0f, 0.0f ) }; // w=0 → dead
     size_t                 agentsSize = sizeof( glm::vec4 );
 
-    struct PhenotypeData { uint32_t lifecycleState; float biomass; float timer; uint32_t cellType; };
     std::vector<PhenotypeData> phenotypes     = { { 0u, 0.5f, 0.0f, 1u } }; // TipCell but dead
     size_t                     phenotypesSize = sizeof( PhenotypeData );
 
@@ -2327,7 +2307,6 @@ TEST_F( ComputeTest, Shader_Anastomosis_NonTipCells_Skipped )
     std::vector<glm::vec4> agents     = { glm::vec4( 0.0f, 0.0f, 0.0f, 1.0f ), glm::vec4( 1.0f, 0.0f, 0.0f, 1.0f ) };
     size_t                 agentsSize = 2 * sizeof( glm::vec4 );
 
-    struct PhenotypeData { uint32_t lifecycleState; float biomass; float timer; uint32_t cellType; };
     std::vector<PhenotypeData> phenotypes     = { { 0u, 0.5f, 0.0f, 0u }, { 0u, 0.5f, 0.0f, 2u } };
     size_t                     phenotypesSize = 2 * sizeof( PhenotypeData );
 
@@ -2443,7 +2422,6 @@ TEST_F( ComputeTest, Shader_Anastomosis_TipToStalk_DifferentComponent )
     std::vector<glm::vec4> agents     = { glm::vec4( 0.0f, 0.0f, 0.0f, 1.0f ), glm::vec4( 2.0f, 0.0f, 0.0f, 1.0f ) };
     size_t                 agentsSize = 2 * sizeof( glm::vec4 );
 
-    struct PhenotypeData { uint32_t lifecycleState; float biomass; float timer; uint32_t cellType; };
     std::vector<PhenotypeData> phenotypes = { { 0u, 0.5f, 0.0f, 1u }, { 0u, 0.5f, 0.0f, 2u } }; // TipCell, StalkCell
     size_t                     phenotypesSize = 2 * sizeof( PhenotypeData );
 
@@ -2558,7 +2536,6 @@ TEST_F( ComputeTest, Shader_Anastomosis_TipToStalk_SameComponent_Skipped )
     std::vector<glm::vec4> agents     = { glm::vec4( 0.0f, 0.0f, 0.0f, 1.0f ), glm::vec4( 2.0f, 0.0f, 0.0f, 1.0f ) };
     size_t                 agentsSize = 2 * sizeof( glm::vec4 );
 
-    struct PhenotypeData { uint32_t lifecycleState; float biomass; float timer; uint32_t cellType; };
     std::vector<PhenotypeData> phenotypes = { { 0u, 0.5f, 0.0f, 1u }, { 0u, 0.5f, 0.0f, 2u } }; // TipCell, StalkCell
     size_t                     phenotypesSize = 2 * sizeof( PhenotypeData );
 
@@ -2805,7 +2782,6 @@ TEST_F( ComputeTest, Shader_VesselComponents_Chain_ThreeAgents )
 // REQ_CELLTYPE: -1.0f = default StalkCell+PhalanxCell guard; ≥0 = exact cell-type match.
 #define PERFUSION_RAW_TEST_SETUP( TEST_CELLTYPE, TEST_RATE, REQ_CELLTYPE, LABEL )                    \
     glm::vec4 agentPos( 0.0f, 0.0f, 0.0f, 1.0f );                                                   \
-    struct PhenotypeData { uint32_t lifecycleState; float biomass; float timer; uint32_t cellType; }; \
     PhenotypeData pheno{ 0u, 0.5f, 0.0f, ( TEST_CELLTYPE ) };                                        \
     uint32_t agentCount = 1;                                                                          \
     int      deltaInit  = 0;                                                                          \
@@ -2900,7 +2876,6 @@ TEST_F( ComputeTest, Chemotaxis_CellTypeFilter_TipCellMoves )
     m_stream->UploadBufferImmediate( { { countBuf, &count, sizeof( uint32_t ) } } );
 
     // Phenotype buffer: cellType = 1 (TipCell) — matches reqCT
-    struct PhenotypeData { uint32_t lifecycleState; float biomass; float timer; uint32_t cellType; };
     PhenotypeData pheno = { 0u, 0.5f, 0.0f, 1u }; // TipCell
     BufferHandle  phenoBuf = m_rm->CreateBuffer( { sizeof( PhenotypeData ), BufferType::STORAGE, "ChemoCTPheno" } );
     m_stream->UploadBufferImmediate( { { phenoBuf, &pheno, sizeof( PhenotypeData ) } } );
@@ -3006,7 +2981,6 @@ TEST_F( ComputeTest, Chemotaxis_CellTypeFilter_NonTipCellSkipped )
     m_stream->UploadBufferImmediate( { { countBuf, &count, sizeof( uint32_t ) } } );
 
     // Phenotype: cellType = 0 (Default) — does NOT match reqCT=1 (TipCell)
-    struct PhenotypeData { uint32_t lifecycleState; float biomass; float timer; uint32_t cellType; };
     PhenotypeData pheno = { 0u, 0.5f, 0.0f, 0u }; // Default
     BufferHandle  phenoBuf = m_rm->CreateBuffer( { sizeof( PhenotypeData ), BufferType::STORAGE, "ChemoCTSkipPheno" } );
     m_stream->UploadBufferImmediate( { { phenoBuf, &pheno, sizeof( PhenotypeData ) } } );
@@ -3158,7 +3132,6 @@ TEST_F( ComputeTest, Shader_BuildIndirect_ClassifyCellTypes )
     positions[ 1 ] = glm::vec4( 1, 0, 0, 1 );
 
     // Phenotype data: agent 0 = TipCell, agent 1 = StalkCell
-    struct PhenotypeData { uint32_t lifecycleState; float biomass; float timer; uint32_t cellType; };
     std::vector<PhenotypeData> phenotypes( groupCapacity, { 0, 0.5f, 0.0f, 0 } );
     phenotypes[ 0 ].cellType = 1; // TipCell
     phenotypes[ 1 ].cellType = 2; // StalkCell
@@ -3285,7 +3258,6 @@ TEST_F( ComputeTest, Shader_VesselMechanics_SpringReducesStretch )
     uint32_t   edgeCount = 1;
     uint32_t   agentCount = 2;
 
-    struct PhenotypeData { uint32_t lifecycleState; float biomass; float timer; uint32_t cellType; };
     std::vector<PhenotypeData> phenotypes( 2, { 0u, 0.5f, 0.0f, 0u } );
     size_t phenoBytes = 2 * sizeof( PhenotypeData );
 
@@ -3377,7 +3349,6 @@ TEST_F( ComputeTest, Shader_NotchDll4_Hysteresis_KeepsTypeInDeadZone )
         GTEST_SKIP();
 
     struct SignalingData { float dll4; float nicd; float vegfr2; float pad; };
-    struct PhenotypeData { uint32_t lifecycleState; float biomass; float timer; uint32_t cellType; };
     struct AgentHash     { uint32_t hash; uint32_t agentIndex; };
 
     std::vector<glm::vec4>    agents     = { glm::vec4( 0.0f, 0.0f, 0.0f, 1.0f ) };
@@ -3464,7 +3435,6 @@ TEST_F( ComputeTest, Shader_NotchDll4_Hysteresis_StalkBelowThreshold )
         GTEST_SKIP();
 
     struct SignalingData { float dll4; float nicd; float vegfr2; float pad; };
-    struct PhenotypeData { uint32_t lifecycleState; float biomass; float timer; uint32_t cellType; };
     struct AgentHash     { uint32_t hash; uint32_t agentIndex; };
 
     std::vector<glm::vec4>    agents     = { glm::vec4( 0.0f, 0.0f, 0.0f, 1.0f ) };
@@ -3560,7 +3530,6 @@ TEST_F( ComputeTest, Shader_VesselMechanics_DampingReducesDisplacement )
         std::vector<glm::vec4> agentsOut( 2, glm::vec4( 0.0f ) );
         size_t agBz = 2 * sizeof( glm::vec4 );
 
-        struct PhenotypeData { uint32_t lifecycleState; float biomass; float timer; uint32_t cellType; };
         std::vector<PhenotypeData> phenos( 2, { 0u, 0.5f, 0.0f, 0u } );
         size_t phBz = 2 * sizeof( PhenotypeData );
 
@@ -3635,7 +3604,6 @@ TEST_F( ComputeTest, Shader_VesselMechanics_CellTypeFilter_NonTipCellSkipped )
         GTEST_SKIP();
 
     struct VesselEdge    { uint32_t agentA; uint32_t agentB; float dist; uint32_t flags; };
-    struct PhenotypeData { uint32_t lifecycleState; float biomass; float timer; uint32_t cellType; };
 
     std::vector<glm::vec4> agentsIn = {
         glm::vec4( -2.0f, 0.0f, 0.0f, 1.0f ),  // agent 0: PhalanxCell
@@ -3727,7 +3695,6 @@ TEST_F( ComputeTest, Shader_VesselMechanics_PhalanxCellAnchored )
         GTEST_SKIP();
 
     struct VesselEdge    { uint32_t agentA; uint32_t agentB; float dist; uint32_t flags; };
-    struct PhenotypeData { uint32_t lifecycleState; float biomass; float timer; uint32_t cellType; };
 
     // PhalanxCell placed at restLen distance (stretch=0, no force from that edge).
     // Default placed at 4 units from StalkCell (stretch=2). Both PhalanxCell and StalkCell
@@ -3830,7 +3797,6 @@ TEST_F( ComputeTest, Shader_VesselSpring_StalkCellWithRingEdge_IsAnchored )
         GTEST_SKIP();
 
     struct VesselEdge    { uint32_t agentA; uint32_t agentB; float dist; uint32_t flags; };
-    struct PhenotypeData { uint32_t lifecycleState; float biomass; float timer; uint32_t cellType; };
 
     // Two StalkCells separated by 6 units with restLen=2 — strong spring pull.
     // The edge is RING (flags=0x1), so both cells must be anchored and stay put.
@@ -3917,7 +3883,6 @@ TEST_F( ComputeTest, Shader_VesselSpring_StalkCellWithSproutEdge_Moves )
         GTEST_SKIP();
 
     struct VesselEdge    { uint32_t agentA; uint32_t agentB; float dist; uint32_t flags; };
-    struct PhenotypeData { uint32_t lifecycleState; float biomass; float timer; uint32_t cellType; };
 
     // Same layout as ring test but edge is SPROUT (flags=0x8) — neither cell is anchored.
     std::vector<glm::vec4> agentsIn = {
@@ -4006,7 +3971,6 @@ TEST_F( ComputeTest, Shader_VesselMitosis_StalkNoTipNeighbor_MaturesToPhalanx )
     if( !m_device )
         GTEST_SKIP();
 
-    struct PhenotypeData { uint32_t lifecycleState; float biomass; float timer; uint32_t cellType; };
     struct VesselEdge    { uint32_t agentA; uint32_t agentB; float dist; uint32_t flags; };
 
     uint32_t maxCap = 4;
@@ -4095,7 +4059,6 @@ TEST_F( ComputeTest, Shader_VesselMitosis_GracePeriod_StalkNotConvertedBeforeGra
     if( !m_device )
         GTEST_SKIP();
 
-    struct PhenotypeData { uint32_t lifecycleState; float biomass; float timer; uint32_t cellType; };
     struct VesselEdge    { uint32_t agentA; uint32_t agentB; float dist; uint32_t flags; };
 
     uint32_t maxCap = 4;
@@ -4183,7 +4146,6 @@ TEST_F( ComputeTest, Shader_VesselMitosis_EdgeChainSplit_DaughterBecomesAdjacent
     if( !m_device )
         GTEST_SKIP();
 
-    struct PhenotypeData { uint32_t lifecycleState; float biomass; float timer; uint32_t cellType; };
     struct VesselEdge    { uint32_t agentA; uint32_t agentB; float dist; uint32_t flags; };
 
     // 3 input cells + 1 slot for daughter (index 3)
@@ -4302,7 +4264,6 @@ TEST_F( ComputeTest, Shader_VesselMitosis_TipNeighbor_Divides )
     if( !m_device )
         GTEST_SKIP();
 
-    struct PhenotypeData { uint32_t lifecycleState; float biomass; float timer; uint32_t cellType; };
     struct VesselEdge    { uint32_t agentA; uint32_t agentB; float dist; uint32_t flags; };
 
     uint32_t maxCap = 4;
@@ -4396,7 +4357,6 @@ TEST_F( ComputeTest, Shader_VesselMitosis_TipCellDoesNotDivide )
     if( !m_device )
         GTEST_SKIP();
 
-    struct PhenotypeData { uint32_t lifecycleState; float biomass; float timer; uint32_t cellType; };
     struct VesselEdge    { uint32_t agentA; uint32_t agentB; float dist; uint32_t flags; };
 
     uint32_t maxCap = 2;
@@ -4493,7 +4453,6 @@ TEST_F( ComputeTest, Shader_NotchDll4_PhalanxCellsParticipate )
         GTEST_SKIP();
 
     struct SignalingData { float dll4; float nicd; float vegfr2; float pad; };
-    struct PhenotypeData { uint32_t lifecycleState; float biomass; float timer; uint32_t cellType; };
     struct VesselEdge    { uint32_t agentA; uint32_t agentB; float dist; uint32_t flags; };
 
     const uint32_t N = 3;
@@ -4602,7 +4561,6 @@ TEST_F( ComputeTest, Shader_NotchDll4_PhalanxCellNoStalkConversion )
         GTEST_SKIP();
 
     struct SignalingData { float dll4; float nicd; float vegfr2; float pad; };
-    struct PhenotypeData { uint32_t lifecycleState; float biomass; float timer; uint32_t cellType; };
     struct VesselEdge    { uint32_t agentA; uint32_t agentB; float dist; uint32_t flags; };
 
     std::vector<glm::vec4>    agents     = { glm::vec4(0,0,0,1) };
@@ -4685,7 +4643,6 @@ TEST_F( ComputeTest, Shader_NotchDll4_Recruitment_AdjacentToTip )
         GTEST_SKIP();
 
     struct SignalingData { float dll4; float nicd; float vegfr2; float pad; };
-    struct PhenotypeData { uint32_t lifecycleState; float biomass; float timer; uint32_t cellType; };
     struct VesselEdge    { uint32_t agentA; uint32_t agentB; float dist; uint32_t flags; };
 
     std::vector<glm::vec4>    agents     = { glm::vec4(0,0,0,1), glm::vec4(1,0,0,1) };
@@ -4769,7 +4726,6 @@ TEST_F( ComputeTest, Shader_NotchDll4_Recruitment_NoTipNeighbor_StaysPhalanx )
         GTEST_SKIP();
 
     struct SignalingData { float dll4; float nicd; float vegfr2; float pad; };
-    struct PhenotypeData { uint32_t lifecycleState; float biomass; float timer; uint32_t cellType; };
     struct VesselEdge    { uint32_t agentA; uint32_t agentB; float dist; uint32_t flags; };
 
     std::vector<glm::vec4>    agents     = { glm::vec4(0,0,0,1), glm::vec4(1,0,0,1) };
@@ -4856,7 +4812,6 @@ TEST_F( ComputeTest, Shader_NotchDll4_PhalanxRecruitment_IgnoresRingEdges )
         GTEST_SKIP();
 
     struct SignalingData { float dll4; float nicd; float vegfr2; float pad; };
-    struct PhenotypeData { uint32_t lifecycleState; float biomass; float timer; uint32_t cellType; };
     struct VesselEdge    { uint32_t agentA; uint32_t agentB; float dist; uint32_t flags; };
 
     std::vector<glm::vec4>    agents     = { glm::vec4(0,0,0,1), glm::vec4(1,0,0,1) };
@@ -4944,7 +4899,6 @@ TEST_F( ComputeTest, Shader_VesselMitosis_Recruitment_PhalanxAdjacentToTip_Becom
     if( !m_device )
         GTEST_SKIP();
 
-    struct PhenotypeData { uint32_t lifecycleState; float biomass; float timer; uint32_t cellType; };
     struct VesselEdge    { uint32_t agentA; uint32_t agentB; float dist; uint32_t flags; };
 
     const uint32_t maxCap = 4;
@@ -5034,7 +4988,6 @@ TEST_F( ComputeTest, Shader_VesselMitosis_Recruitment_PhalanxNoTip_StaysPhalanx 
     if( !m_device )
         GTEST_SKIP();
 
-    struct PhenotypeData { uint32_t lifecycleState; float biomass; float timer; uint32_t cellType; };
     struct VesselEdge    { uint32_t agentA; uint32_t agentB; float dist; uint32_t flags; };
 
     const uint32_t maxCap = 4;
@@ -5126,7 +5079,6 @@ TEST_F( ComputeTest, Shader_VesselMitosis_RingTopology_OnlyAxialNeighborDivides 
     if( !m_device )
         GTEST_SKIP();
 
-    struct PhenotypeData { uint32_t lifecycleState; float biomass; float timer; uint32_t cellType; };
     struct VesselEdge    { uint32_t agentA; uint32_t agentB; float dist; uint32_t flags; };
 
     uint32_t maxCap = 8;
@@ -5218,7 +5170,6 @@ TEST_F( ComputeTest, Shader_VesselMitosis_RingTopology_VesselAxisPointsTowardTip
     if( !m_device )
         GTEST_SKIP();
 
-    struct PhenotypeData { uint32_t lifecycleState; float biomass; float timer; uint32_t cellType; };
     struct VesselEdge    { uint32_t agentA; uint32_t agentB; float dist; uint32_t flags; };
 
     uint32_t maxCap = 8;
@@ -5315,7 +5266,6 @@ TEST_F( ComputeTest, Shader_VesselMitosis_RingTopology_StalkMaturation_IgnoresRi
     if( !m_device )
         GTEST_SKIP();
 
-    struct PhenotypeData { uint32_t lifecycleState; float biomass; float timer; uint32_t cellType; };
     struct VesselEdge    { uint32_t agentA; uint32_t agentB; float dist; uint32_t flags; };
 
     uint32_t maxCap = 4;
@@ -5412,7 +5362,6 @@ TEST_F( ComputeTest, Shader_BrownianMotion_AgentMoves )
     uint32_t count = 1;
     m_stream->UploadBufferImmediate( { { countBuf, &count, sizeof( uint32_t ) } } );
 
-    struct PhenotypeData { uint32_t lifecycleState; float biomass; float timer; uint32_t cellType; };
     PhenotypeData phenotype = { 0u, 0.5f, 0.0f, 0u }; // alive (Normoxic)
     BufferHandle  phenoBuf  = m_rm->CreateBuffer( { sizeof( PhenotypeData ), BufferType::STORAGE, "BrownPhenoBuf" } );
     m_stream->UploadBufferImmediate( { { phenoBuf, &phenotype, sizeof( PhenotypeData ) } } );
@@ -5482,7 +5431,6 @@ TEST_F( ComputeTest, Shader_BrownianMotion_DeadSlot_Skipped )
     uint32_t count = 1;
     m_stream->UploadBufferImmediate( { { countBuf, &count, sizeof( uint32_t ) } } );
 
-    struct PhenotypeData { uint32_t lifecycleState; float biomass; float timer; uint32_t cellType; };
     PhenotypeData phenotype = { 3u, 0.5f, 0.0f, 0u }; // lifecycleState=3 (Necrotic)
     BufferHandle  phenoBuf  = m_rm->CreateBuffer( { sizeof( PhenotypeData ), BufferType::STORAGE, "BrownDeadPhenoBuf" } );
     m_stream->UploadBufferImmediate( { { phenoBuf, &phenotype, sizeof( PhenotypeData ) } } );

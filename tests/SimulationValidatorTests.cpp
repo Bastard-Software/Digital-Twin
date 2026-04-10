@@ -21,7 +21,7 @@ static SimulationBlueprint MakeValidBlueprint()
 
     AgentGroup& cells = bp.AddAgentGroup( "TumorCells" );
     cells.SetCount( 10 );
-    cells.AddBehaviour( Behaviours::ConsumeField{ "Oxygen", 1.0f, -1 } );
+    cells.AddBehaviour( Behaviours::ConsumeField{ "Oxygen", 1.0f } );
     cells.AddBehaviour( Behaviours::CellCycle{ 0.001f, 0.8f, 10.0f, 0.1f, 0.3f, 0.0001f } );
 
     return bp;
@@ -172,7 +172,7 @@ TEST( SimulationValidatorTest, ConsumeField_MissingField_ReturnsError )
     SimulationBlueprint bp;
     bp.SetDomainSize( { 100.0f, 100.0f, 100.0f }, 2.0f );
     bp.AddAgentGroup( "Cells" ).SetCount( 10 )
-      .AddBehaviour( Behaviours::ConsumeField{ "Glucose", 1.0f, -1 } ); // "Glucose" never declared
+      .AddBehaviour( Behaviours::ConsumeField{ "Glucose", 1.0f } ); // "Glucose" never declared
 
     ValidationResult result = SimulationValidator::Validate( bp );
 
@@ -185,7 +185,7 @@ TEST( SimulationValidatorTest, SecreteField_MissingField_ReturnsError )
     SimulationBlueprint bp;
     bp.SetDomainSize( { 100.0f, 100.0f, 100.0f }, 2.0f );
     bp.AddAgentGroup( "Cells" ).SetCount( 10 )
-      .AddBehaviour( Behaviours::SecreteField{ "VEGF", 1.0f, -1 } ); // "VEGF" never declared
+      .AddBehaviour( Behaviours::SecreteField{ "VEGF", 1.0f } ); // "VEGF" never declared
 
     ValidationResult result = SimulationValidator::Validate( bp );
 
@@ -207,7 +207,7 @@ TEST( SimulationValidatorTest, ConsumeField_EmptyFieldName_ReturnsError )
     bp.SetDomainSize( { 100.0f, 100.0f, 100.0f }, 2.0f );
     bp.AddGridField( "Oxygen" ).SetDiffusionCoefficient( 0.1f ).SetDecayRate( 0.01f );
     bp.AddAgentGroup( "Cells" ).SetCount( 10 )
-      .AddBehaviour( Behaviours::ConsumeField{ "", 1.0f, -1 } );
+      .AddBehaviour( Behaviours::ConsumeField{ "", 1.0f } );
 
     ValidationResult result = SimulationValidator::Validate( bp );
 
@@ -223,7 +223,7 @@ TEST( SimulationValidatorTest, BehaviourHz_Zero_ReturnsError )
     bp2.SetDomainSize( { 100.0f, 100.0f, 100.0f }, 2.0f );
     bp2.AddGridField( "Oxygen" ).SetDiffusionCoefficient( 0.1f ).SetDecayRate( 0.01f );
     bp2.AddAgentGroup( "Cells" ).SetCount( 10 )
-       .AddBehaviour( Behaviours::ConsumeField{ "Oxygen", 1.0f, -1 } ).SetHz( 0.0f );
+       .AddBehaviour( Behaviours::ConsumeField{ "Oxygen", 1.0f } ).SetHz( 0.0f );
 
     ValidationResult result = SimulationValidator::Validate( bp2 );
 
@@ -237,7 +237,7 @@ TEST( SimulationValidatorTest, BehaviourHz_Negative_ReturnsError )
     bp.SetDomainSize( { 100.0f, 100.0f, 100.0f }, 2.0f );
     bp.AddGridField( "Oxygen" ).SetDiffusionCoefficient( 0.1f ).SetDecayRate( 0.01f );
     bp.AddAgentGroup( "Cells" ).SetCount( 10 )
-      .AddBehaviour( Behaviours::ConsumeField{ "Oxygen", 1.0f, -1 } ).SetHz( -10.0f );
+      .AddBehaviour( Behaviours::ConsumeField{ "Oxygen", 1.0f } ).SetHz( -10.0f );
 
     ValidationResult result = SimulationValidator::Validate( bp );
 
@@ -277,29 +277,29 @@ TEST( SimulationValidatorTest, ConsumeField_RequiredState_OutOfRange_ReturnsErro
     bp.SetDomainSize( { 100.0f, 100.0f, 100.0f }, 2.0f );
     bp.AddGridField( "Oxygen" ).SetDiffusionCoefficient( 0.1f ).SetDecayRate( 0.01f );
     bp.AddAgentGroup( "Cells" ).SetCount( 10 )
-      .AddBehaviour( Behaviours::ConsumeField{ "Oxygen", 1.0f, 99 } );
+      .AddBehaviour( Behaviours::ConsumeField{ "Oxygen", 1.0f, static_cast<LifecycleState>( 99u ) } );
 
     ValidationResult result = SimulationValidator::Validate( bp );
 
     EXPECT_FALSE( result.IsValid() );
 }
 
-// 21. ConsumeField with requiredState == -1 produces no error
-TEST( SimulationValidatorTest, ConsumeField_RequiredState_MinusOne_NoError )
+// 21. ConsumeField with requiredState == Any (no filter) produces no error
+TEST( SimulationValidatorTest, ConsumeField_RequiredState_Any_NoError )
 {
     ValidationResult result = SimulationValidator::Validate( MakeValidBlueprint() );
 
     EXPECT_TRUE( result.IsValid() );
 }
 
-// 22. ConsumeField with requiredState == 4 (Necrotic) produces no error
+// 22. ConsumeField with requiredState == Necrotic (4) produces no error
 TEST( SimulationValidatorTest, ConsumeField_RequiredState_Four_NoError )
 {
     SimulationBlueprint bp;
     bp.SetDomainSize( { 100.0f, 100.0f, 100.0f }, 2.0f );
     bp.AddGridField( "Oxygen" ).SetDiffusionCoefficient( 0.1f ).SetDecayRate( 0.01f );
     bp.AddAgentGroup( "Cells" ).SetCount( 10 )
-      .AddBehaviour( Behaviours::ConsumeField{ "Oxygen", 1.0f, 4 } );
+      .AddBehaviour( Behaviours::ConsumeField{ "Oxygen", 1.0f, LifecycleState::Necrotic } );
 
     ValidationResult result = SimulationValidator::Validate( bp );
 
@@ -314,7 +314,7 @@ TEST( SimulationValidatorTest, CellCycle_NecrosisAboveHypoxia_ReturnsError )
     bp.AddGridField( "Oxygen" ).SetDiffusionCoefficient( 0.1f ).SetDecayRate( 0.01f );
     AgentGroup& g = bp.AddAgentGroup( "Cells" );
     g.SetCount( 10 );
-    g.AddBehaviour( Behaviours::ConsumeField{ "Oxygen", 1.0f, -1 } );
+    g.AddBehaviour( Behaviours::ConsumeField{ "Oxygen", 1.0f } );
     g.AddBehaviour( Behaviours::CellCycle{ 0.001f, 0.8f, 10.0f, 0.5f, 0.3f, 0.0001f } ); // necrosisO2=0.5 > hypoxiaO2=0.3
 
     ValidationResult result = SimulationValidator::Validate( bp );
@@ -330,7 +330,7 @@ TEST( SimulationValidatorTest, CellCycle_HypoxiaAboveTarget_ReturnsError )
     bp.AddGridField( "Oxygen" ).SetDiffusionCoefficient( 0.1f ).SetDecayRate( 0.01f );
     AgentGroup& g = bp.AddAgentGroup( "Cells" );
     g.SetCount( 10 );
-    g.AddBehaviour( Behaviours::ConsumeField{ "Oxygen", 1.0f, -1 } );
+    g.AddBehaviour( Behaviours::ConsumeField{ "Oxygen", 1.0f } );
     g.AddBehaviour( Behaviours::CellCycle{ 0.001f, 0.3f, 10.0f, 0.1f, 0.5f, 0.0001f } ); // hypoxiaO2=0.5 > targetO2=0.3
 
     ValidationResult result = SimulationValidator::Validate( bp );
@@ -346,7 +346,7 @@ TEST( SimulationValidatorTest, CellCycle_NecrosisEqualsHypoxia_ReturnsError )
     bp.AddGridField( "Oxygen" ).SetDiffusionCoefficient( 0.1f ).SetDecayRate( 0.01f );
     AgentGroup& g = bp.AddAgentGroup( "Cells" );
     g.SetCount( 10 );
-    g.AddBehaviour( Behaviours::ConsumeField{ "Oxygen", 1.0f, -1 } );
+    g.AddBehaviour( Behaviours::ConsumeField{ "Oxygen", 1.0f } );
     g.AddBehaviour( Behaviours::CellCycle{ 0.001f, 0.8f, 10.0f, 0.3f, 0.3f, 0.0001f } ); // necrosisO2 == hypoxiaO2
 
     ValidationResult result = SimulationValidator::Validate( bp );

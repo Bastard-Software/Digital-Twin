@@ -72,7 +72,7 @@ namespace Gaudi::Demos
             .SetHz( 10.0f );
         source.AddBehaviour( DigitalTwin::Behaviours::SecreteField{
                                  "VEGF", 300.0f,
-                                 static_cast<int>( DigitalTwin::LifecycleState::Hypoxic ) } )
+                                 DigitalTwin::LifecycleState::Hypoxic } )
             .SetHz( 60.0f );
 
         // --- Vessel: 15 cells at y=+10 ---
@@ -109,7 +109,7 @@ namespace Gaudi::Demos
         // 3. ConsumeField: VEGFR1 (stalk-enriched decoy receptor) — VEGF sink shapes the gradient.
         //    Rate=2.0 (strong sink) prevents lateral VEGF creep → stops multi-TipCell activation.
         vessel.AddBehaviour( DigitalTwin::Behaviours::ConsumeField{ "VEGF", 2.0f } )
-            .SetRequiredCellType( 2 )  // StalkCell only
+            .SetRequiredCellType( DigitalTwin::CellType::StalkCell )
             .SetHz( 60.0f );
 
         // 4. NotchDll4: lateral inhibition among activated StalkCells → 1 TipCell.
@@ -140,7 +140,7 @@ namespace Gaudi::Demos
         // 6. Chemotaxis: TipCell follows VEGF gradient toward source.
         vessel.AddBehaviour( DigitalTwin::Behaviours::Chemotaxis{ "VEGF", 6.0f, 0.002f, 4.0f, 3.0f } )
             .SetHz( 60.0f )
-            .SetRequiredCellType( static_cast<int>( DigitalTwin::CellType::TipCell ) );
+            .SetRequiredCellType( DigitalTwin::CellType::TipCell );
 
         // 7. VesselSpring: all non-Phalanx cells get spring forces — chain spacing maintained.
         //    StalkCell daughters from directed mitosis need springs to prevent blobbing.

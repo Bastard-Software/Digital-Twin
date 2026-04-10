@@ -784,13 +784,6 @@ TEST_F( SimulationBuilderTest, Behaviour_CellCycle_Integration )
     m_streamingManager->ReadbackBufferImmediate( state.agentCountBuffer, &resultAgentCount, sizeof( uint32_t ) );
 
     // Readback Phenotypes
-    struct PhenotypeData
-    {
-        uint32_t lifecycleState;
-        float    biomass;
-        float    timer;
-        uint32_t cellType;
-    };
     std::vector<PhenotypeData> resultPhenotypes( 2 ); // Check up to 2 cells
     m_streamingManager->ReadbackBufferImmediate( state.phenotypeBuffer, resultPhenotypes.data(), 2 * sizeof( PhenotypeData ) );
 
@@ -838,7 +831,7 @@ TEST_F( SimulationBuilderTest, Behaviour_Hypoxia_Secretion_Integration )
         .SetHz( 60.0f );
     agentGrp
         .AddBehaviour(
-            DigitalTwin::Behaviours::SecreteField{ "VEGF", 10.0f, static_cast<int>( DigitalTwin::LifecycleState::Hypoxic ) } )
+            DigitalTwin::Behaviours::SecreteField{ "VEGF", 10.0f, DigitalTwin::LifecycleState::Hypoxic } )
         .SetHz( 60.0f );
 
     DigitalTwin::SimulationBuilder builder( m_resourceManager.get(), m_streamingManager.get() );
@@ -958,13 +951,12 @@ TEST_F( SimulationBuilderTest, Behaviour_Chemotaxis_TipCellFilter_OnlyTipCellMov
         .SetDistribution( startPos )
         .AddBehaviour( DigitalTwin::Behaviours::Chemotaxis{ "VEGF", 10.0f, 0.0f, 100.0f } )
         .SetHz( 1.0f )
-        .SetRequiredCellType( static_cast<int>( DigitalTwin::CellType::TipCell ) );
+        .SetRequiredCellType( DigitalTwin::CellType::TipCell );
 
     SimulationBuilder builder( m_resourceManager.get(), m_streamingManager.get() );
     SimulationState   state = builder.Build( blueprint );
 
     // Force agent 0 = TipCell (1), agent 1 = StalkCell (2) in the phenotype buffer
-    struct PhenotypeData { uint32_t lifecycleState; float biomass; float timer; uint32_t cellType; };
     std::vector<PhenotypeData> phenotypes( 2, { 0u, 0.5f, 0.0f, 0u } );
     phenotypes[ 0 ].cellType = 1u; // TipCell
     phenotypes[ 1 ].cellType = 2u; // StalkCell
@@ -1044,7 +1036,6 @@ TEST_F( SimulationBuilderTest, Behaviour_NotchDll4_IsolatedAgentBecomesTipCell )
     m_device->GetComputeQueue()->Submit( { compCmd } );
     m_device->GetComputeQueue()->WaitIdle();
 
-    struct PhenotypeData { uint32_t lifecycleState; float biomass; float timer; uint32_t cellType; };
     PhenotypeData result{};
     m_streamingManager->ReadbackBufferImmediate( state.phenotypeBuffer, &result, sizeof( PhenotypeData ) );
 
@@ -1104,7 +1095,6 @@ TEST_F( SimulationBuilderTest, Behaviour_NotchDll4_LateralInhibition )
     m_device->GetComputeQueue()->Submit( { compCmd } );
     m_device->GetComputeQueue()->WaitIdle();
 
-    struct PhenotypeData { uint32_t lifecycleState; float biomass; float timer; uint32_t cellType; };
     std::vector<PhenotypeData> results( 2 );
     m_streamingManager->ReadbackBufferImmediate( state.phenotypeBuffer, results.data(), 2 * sizeof( PhenotypeData ) );
 
@@ -1127,7 +1117,6 @@ TEST_F( SimulationBuilderTest, Behaviour_NotchDll4_LateralInhibition )
 static void ForceAllCellType( DigitalTwin::StreamingManager* stream, const DigitalTwin::BufferHandle& phenotypeBuffer,
                                uint32_t cellType, uint32_t capacity )
 {
-    struct PhenotypeData { uint32_t lifecycleState; float biomass; float timer; uint32_t cellType; };
     std::vector<PhenotypeData> phenotypes( capacity, { 0u, 0.5f, 0.0f, cellType } );
     stream->UploadBufferImmediate( { { phenotypeBuffer, phenotypes.data(), capacity * sizeof( PhenotypeData ) } } );
 }
@@ -1174,7 +1163,6 @@ TEST_F( SimulationBuilderTest, Behaviour_Anastomosis_TwoTipCells_WithinRange )
     m_device->GetComputeQueue()->Submit( { compCmd } );
     m_device->GetComputeQueue()->WaitIdle();
 
-    struct PhenotypeData { uint32_t lifecycleState; float biomass; float timer; uint32_t cellType; };
     std::vector<PhenotypeData> results( 2 );
     m_streamingManager->ReadbackBufferImmediate( state.phenotypeBuffer, results.data(), 2 * sizeof( PhenotypeData ) );
 
@@ -1229,7 +1217,6 @@ TEST_F( SimulationBuilderTest, Behaviour_Anastomosis_TwoTipCells_OutOfRange )
     m_device->GetComputeQueue()->Submit( { compCmd } );
     m_device->GetComputeQueue()->WaitIdle();
 
-    struct PhenotypeData { uint32_t lifecycleState; float biomass; float timer; uint32_t cellType; };
     std::vector<PhenotypeData> results( 2 );
     m_streamingManager->ReadbackBufferImmediate( state.phenotypeBuffer, results.data(), 2 * sizeof( PhenotypeData ) );
 
@@ -1276,7 +1263,6 @@ TEST_F( SimulationBuilderTest, Behaviour_Anastomosis_TipToStalk )
     SimulationState   state = builder.Build( blueprint );
 
     // Agent 0 = TipCell (1), Agent 1 = StalkCell (2); rest of buffer default (0)
-    struct PhenotypeData { uint32_t lifecycleState; float biomass; float timer; uint32_t cellType; };
     std::vector<PhenotypeData> phenotypes( 131072, { 0u, 0.5f, 0.0f, 0u } );
     phenotypes[ 0 ].cellType = 1u; // TipCell
     phenotypes[ 1 ].cellType = 2u; // StalkCell
@@ -1420,7 +1406,6 @@ TEST_F( SimulationBuilderTest, SpatialHash_MultiGroup_AnastomosisFindsGroupOneAg
     m_device->GetComputeQueue()->WaitIdle();
 
     // Read back phenotype of the two vessel agents (at absolute indices 131072 and 131073)
-    struct PhenotypeData { uint32_t lifecycleState; float biomass; float timer; uint32_t cellType; };
     std::vector<PhenotypeData> allPheno( 262144 );
     m_streamingManager->ReadbackBufferImmediate( state.phenotypeBuffer, allPheno.data(),
                                                  262144 * sizeof( PhenotypeData ) );
@@ -1558,7 +1543,7 @@ TEST_F( SimulationBuilderTest, Behaviour_Perfusion_RequiredCellType_RejectsStalk
         .SetDistribution( oneCell )
         .AddBehaviour( Behaviours::Perfusion{ "Oxygen", 10.0f } )
         .SetHz( 1.0f )
-        .SetRequiredCellType( static_cast<int>( DigitalTwin::CellType::PhalanxCell ) );
+        .SetRequiredCellType( DigitalTwin::CellType::PhalanxCell );
 
     SimulationBuilder builder( m_resourceManager.get(), m_streamingManager.get() );
     SimulationState   state = builder.Build( blueprint );
@@ -1606,7 +1591,7 @@ TEST_F( SimulationBuilderTest, Behaviour_Perfusion_RequiredCellType_AcceptsPhala
         .SetDistribution( oneCell )
         .AddBehaviour( Behaviours::Perfusion{ "Oxygen", 10.0f } )
         .SetHz( 1.0f )
-        .SetRequiredCellType( static_cast<int>( DigitalTwin::CellType::PhalanxCell ) );
+        .SetRequiredCellType( DigitalTwin::CellType::PhalanxCell );
 
     SimulationBuilder builder( m_resourceManager.get(), m_streamingManager.get() );
     SimulationState   state = builder.Build( blueprint );
@@ -1685,7 +1670,6 @@ TEST_F( SimulationBuilderTest, Angiogenesis_PostAnastomosis_Perfusion_RaisesO2 )
     }
 
     // Verify anastomosis converted the cells before testing perfusion
-    struct PhenotypeData { uint32_t lifecycleState; float biomass; float timer; uint32_t cellType; };
     std::vector<PhenotypeData> pheno( 2 );
     m_streamingManager->ReadbackBufferImmediate( state.phenotypeBuffer, pheno.data(), 2 * sizeof( PhenotypeData ) );
     ASSERT_NE( pheno[ 0 ].cellType, 1u ) << "Anastomosis must have converted TipCell 0 before perfusion test";
@@ -1807,7 +1791,7 @@ TEST_F( SimulationBuilderTest, Angiogenesis_EndToEnd_Integration )
 
     // VEGF secretion — only when hypoxic
     tumorCells
-        .AddBehaviour( Behaviours::SecreteField{ "VEGF", 120.0f, static_cast<int>( LifecycleState::Hypoxic ) } )
+        .AddBehaviour( Behaviours::SecreteField{ "VEGF", 120.0f, LifecycleState::Hypoxic } )
         .SetHz( 60.0f );
 
     // Cell cycle: hypoxia at 25, necrosis at 12
@@ -1861,7 +1845,7 @@ TEST_F( SimulationBuilderTest, Angiogenesis_EndToEnd_Integration )
     // Chemotaxis — TipCells only
     endo.AddBehaviour( Behaviours::Chemotaxis{ "VEGF", 5.0f, 0.002f, 12.0f } )
         .SetHz( 60.0f )
-        .SetRequiredCellType( static_cast<int>( CellType::TipCell ) );
+        .SetRequiredCellType( CellType::TipCell );
 
     // JKR biomechanics
     endo.AddBehaviour( BiomechanicsGenerator::JKR()
@@ -1898,13 +1882,6 @@ TEST_F( SimulationBuilderTest, Angiogenesis_EndToEnd_Integration )
 
     // ── Assertions ──────────────────────────────────────────────────────────────
 
-    struct PhenotypeData
-    {
-        uint32_t lifecycleState;
-        float    biomass;
-        float    timer;
-        uint32_t cellType;
-    };
 
     // 1. O2 field should have depleted in the center (consumption working)
     std::vector<float> o2Data = ReadbackGrid( state, 0, m_streamingManager.get() );
@@ -2110,7 +2087,7 @@ TEST_F( SimulationBuilderTest, Behaviour_CellCycle_DirectedMitosis_LinearChainEx
     vessel.AddBehaviour( Behaviours::VesselSeed{ std::vector<uint32_t>{ 2u } } );
     vessel.AddBehaviour( stalkCycle )
         .SetHz( 10.0f )
-        .SetRequiredCellType( static_cast<int>( CellType::StalkCell ) );
+        .SetRequiredCellType( CellType::StalkCell );
 
     SimulationBuilder builder( m_resourceManager.get(), m_streamingManager.get() );
     SimulationState   state = builder.Build( blueprint );
@@ -2218,7 +2195,7 @@ TEST_F( SimulationBuilderTest, Behaviour_CellCycle_StalkCellOnlyDivides )
                            .SetApoptosisRate( 0.0f )
                            .Build() )
         .SetHz( 60.0f )
-        .SetRequiredCellType( static_cast<int>( DigitalTwin::CellType::StalkCell ) );
+        .SetRequiredCellType( DigitalTwin::CellType::StalkCell );
 
     DigitalTwin::SimulationBuilder builder( m_resourceManager.get(), m_streamingManager.get() );
     DigitalTwin::SimulationState   state = builder.Build( blueprint );
@@ -2374,7 +2351,6 @@ TEST_F( SimulationBuilderTest, Behaviour_PhalanxActivation_HighVEGF_ActivatesAll
     SimulationState   state = builder.Build( blueprint );
 
     // Verify builder initialised phenotypes as PhalanxCell (3) before any dispatch
-    struct PhenotypeData { uint32_t lifecycleState; float biomass; float timer; uint32_t cellType; };
     std::vector<PhenotypeData> initPheno( 2 );
     m_streamingManager->ReadbackBufferImmediate( state.phenotypeBuffer, initPheno.data(), 2 * sizeof( PhenotypeData ) );
     EXPECT_EQ( initPheno[ 0 ].cellType, 3u ) << "Builder should initialise cell 0 as PhalanxCell (3)";
@@ -2537,7 +2513,7 @@ TEST_F( SimulationBuilderTest, Behaviour_VesselSpring_CellTypeFilter )
     vessel.AddBehaviour( Behaviours::VesselSeed{ std::vector<uint32_t>{ 2u } } );
     vessel.AddBehaviour( Behaviours::VesselSpring{ 20.0f, 2.0f } )
         .SetHz( 60.0f )
-        .SetRequiredCellType( static_cast<int>( CellType::TipCell ) ); // 1 — no agent matches
+        .SetRequiredCellType( CellType::TipCell ); // 1 — no agent matches
 
     SimulationBuilder builder( m_resourceManager.get(), m_streamingManager.get() );
     SimulationState   state = builder.Build( blueprint );
@@ -2598,7 +2574,6 @@ TEST_F( SimulationBuilderTest, Behaviour_VesselSpring_PhalanxCellAnchored )
     SimulationState   state = builder.Build( blueprint );
 
     // Set cell types: PhalanxCell(0), StalkCell(1), Default(2)
-    struct PhenotypeData { uint32_t lifecycleState; float biomass; float timer; uint32_t cellType; };
     std::vector<PhenotypeData> phenotypes( 3, { 0u, 0.5f, 0.0f, 0u } );
     phenotypes[ 0 ].cellType = 3u; // PhalanxCell
     phenotypes[ 1 ].cellType = 2u; // StalkCell
@@ -2664,7 +2639,6 @@ TEST_F( SimulationBuilderTest, Behaviour_VesselSpring_PhalanxCellUnanchored )
     SimulationBuilder builder( m_resourceManager.get(), m_streamingManager.get() );
     SimulationState   state = builder.Build( blueprint );
 
-    struct PhenotypeData { uint32_t lifecycleState; float biomass; float timer; uint32_t cellType; };
     std::vector<PhenotypeData> phenotypes( 3, { 0u, 0.5f, 0.0f, 0u } );
     phenotypes[ 0 ].cellType = 3u; // PhalanxCell
     phenotypes[ 1 ].cellType = 2u; // StalkCell
@@ -2756,7 +2730,6 @@ TEST_F( SimulationBuilderTest, Behaviour_NotchDll4_Hysteresis )
     m_device->GetComputeQueue()->Submit( { compCmd } );
     m_device->GetComputeQueue()->WaitIdle();
 
-    struct PhenotypeData { uint32_t lifecycleState; float biomass; float timer; uint32_t cellType; };
     std::vector<PhenotypeData> result( 2 );
     m_streamingManager->ReadbackBufferImmediate( state.phenotypeBuffer, result.data(), 2 * sizeof( PhenotypeData ) );
 
@@ -2804,7 +2777,7 @@ TEST_F( SimulationBuilderTest, Behaviour_CellCycle_DirectedMitosis_NoTipNeighbor
     vessel.AddBehaviour( Behaviours::VesselSeed{ std::vector<uint32_t>{ 2u } } );
     vessel.AddBehaviour( stalkCycle )
         .SetHz( 10.0f )
-        .SetRequiredCellType( static_cast<int>( CellType::StalkCell ) );
+        .SetRequiredCellType( CellType::StalkCell );
 
     SimulationBuilder builder( m_resourceManager.get(), m_streamingManager.get() );
     SimulationState   state = builder.Build( blueprint );
@@ -2926,7 +2899,6 @@ TEST_F( SimulationBuilderTest, Behaviour_NotchDll4_VesselActivation_ExactlyOneTi
     m_device->GetComputeQueue()->Submit( { compCmd } );
     m_device->GetComputeQueue()->WaitIdle();
 
-    struct PhenotypeData { uint32_t lifecycleState; float biomass; float timer; uint32_t cellType; };
     std::vector<PhenotypeData> result( 5 );
     m_streamingManager->ReadbackBufferImmediate( state.phenotypeBuffer, result.data(), 5 * sizeof( PhenotypeData ) );
 

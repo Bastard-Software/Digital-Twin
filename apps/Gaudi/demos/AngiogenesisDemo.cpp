@@ -78,7 +78,7 @@ namespace Gaudi::Demos
             .SetHz( 10.0f );
         tumour.AddBehaviour( DigitalTwin::Behaviours::SecreteField{
                                  "VEGF", 800.0f,
-                                 static_cast<int>( DigitalTwin::LifecycleState::Hypoxic ) } )
+                                 DigitalTwin::LifecycleState::Hypoxic } )
             .SetHz( 60.0f );
 
         // --- Bifurcated vessel tree ---
@@ -147,13 +147,13 @@ namespace Gaudi::Demos
             .SetHz( 60.0f );
 
         vessel.AddBehaviour( DigitalTwin::Behaviours::ConsumeField{ "VEGF", 120.0f } )
-            .SetRequiredCellType( static_cast<int>( DigitalTwin::CellType::StalkCell ) )
+            .SetRequiredCellType( DigitalTwin::CellType::StalkCell )
             .SetHz( 60.0f );
         vessel.AddBehaviour( DigitalTwin::Behaviours::ConsumeField{ "VEGF", 4.0f } )
-            .SetRequiredCellType( static_cast<int>( DigitalTwin::CellType::PhalanxCell ) )
+            .SetRequiredCellType( DigitalTwin::CellType::PhalanxCell )
             .SetHz( 60.0f );
         vessel.AddBehaviour( DigitalTwin::Behaviours::ConsumeField{ "VEGF", 60.0f } )
-            .SetRequiredCellType( static_cast<int>( DigitalTwin::CellType::TipCell ) )
+            .SetRequiredCellType( DigitalTwin::CellType::TipCell )
             .SetHz( 60.0f );
 
         vessel.AddBehaviour( DigitalTwin::Behaviours::NotchDll4{
@@ -177,14 +177,14 @@ namespace Gaudi::Demos
         // intentionally; running the lifecycle on them turns them blue (state=Hypoxic) when O2 < 5.
         vessel.AddBehaviour( stalkCycle )
             .SetHz( 10.0f )
-            .SetRequiredCellType( static_cast<int>( DigitalTwin::CellType::StalkCell ) );
+            .SetRequiredCellType( DigitalTwin::CellType::StalkCell );
 
         // Matched to sprouting demo: sensitivity=2.0, gain=0.8.
         // contactInhibitionDensity=0: disabled (same reason as sprouting demo — vessel ring
         // neighbors saturate any threshold once the hash covers all groups).
         vessel.AddBehaviour( DigitalTwin::Behaviours::Chemotaxis{ "VEGF", 2.0f, 0.002f, 0.8f, 0.0f } )
             .SetHz( 60.0f )
-            .SetRequiredCellType( static_cast<int>( DigitalTwin::CellType::TipCell ) );
+            .SetRequiredCellType( DigitalTwin::CellType::TipCell );
 
         DigitalTwin::Behaviours::VesselSpring spring{};
         spring.springStiffness    = 15.0f;
@@ -199,7 +199,7 @@ namespace Gaudi::Demos
         // (VEGF drops once the vessel loop delivers O2), and they then begin perfusing.
         vessel.AddBehaviour( DigitalTwin::Behaviours::Perfusion{ "Oxygen", 4.0f } )
             .SetHz( 60.0f )
-            .SetRequiredCellType( static_cast<int>( DigitalTwin::CellType::PhalanxCell ) );
+            .SetRequiredCellType( DigitalTwin::CellType::PhalanxCell );
 
         // JKR intentionally omitted for the vessel group — see sprouting demo for rationale.
         // Phase 5 VE-Cadherin adhesion will provide proper vessel cell-cell contact mechanics.

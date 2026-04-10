@@ -152,6 +152,17 @@ namespace Gaudi
               "Demonstrates: dual-sprout angiogenesis, anastomosis,\n"
               "post-anastomosis PhalanxCell perfusion.",
               &Demos::SetupAngiogenesisDemo },
+
+            { "Tissue Sorting",
+              "Two cell types (red=Epithelial, blue=Mesenchymal)\n"
+              "with orthogonal cadherin profiles start randomly\n"
+              "mixed in a sphere.\n\n"
+              "Homophilic adhesion drives spontaneous sorting:\n"
+              "same-type cells cluster together, cross-type\n"
+              "adhesion is zero.\n\n"
+              "Demonstrates: CadherinAdhesion, differential\n"
+              "adhesion hypothesis (Steinberg 1963).",
+              &Demos::SetupTissueSortingDemo },
         };
 
         ImGuiIO& io = ImGui::GetIO();

@@ -38,6 +38,16 @@ namespace DigitalTwin
          * @return std::vector<glm::vec4> (xyz = position, w = 1.0f status flag)
          */
         static std::vector<glm::vec4> VesselLine( uint32_t count, const glm::vec3& start, const glm::vec3& end, float spacing = 0.0f );
+
+        /**
+         * @brief Fills a sphere with agents placed on a regular cubic lattice.
+         * @param spacing Distance between adjacent lattice points (should be >= cell diameter).
+         * @param radius  Radius of the bounding sphere.
+         * @param center  Center of the sphere.
+         * @return All lattice points that fall inside the sphere. Count is determined by
+         *         geometry — no RNG, fully deterministic.
+         */
+        static std::vector<glm::vec4> LatticeInSphere( float spacing, float radius, const glm::vec3& center = glm::vec3( 0.0f ) );
     };
 
 } // namespace DigitalTwin

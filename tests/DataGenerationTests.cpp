@@ -72,6 +72,78 @@ TEST( SpatialDistribution_VesselLine, FixedSpacing )
 }
 
 // =================================================================================================
+// SpatialDistribution::LatticeInSphere — CPU-only
+// =================================================================================================
+
+TEST( SpatialDistribution_LatticeInSphere, AllInsideSphere )
+{
+    const float radius = 5.0f;
+    auto positions = SpatialDistribution::LatticeInSphere( 1.0f, radius );
+
+    ASSERT_FALSE( positions.empty() );
+    for( const auto& p : positions )
+    {
+        float dist = glm::length( glm::vec3( p ) );
+        EXPECT_LE( dist, radius + 1e-4f ) << "Point outside sphere radius";
+    }
+}
+
+TEST( SpatialDistribution_LatticeInSphere, CorrectSpacing )
+{
+    const float spacing = 1.5f;
+    auto positions = SpatialDistribution::LatticeInSphere( spacing, 4.0f );
+
+    ASSERT_FALSE( positions.empty() );
+    // Every point must have at least one neighbor at exactly `spacing` distance.
+    for( uint32_t i = 0; i < positions.size(); ++i )
+    {
+        float minDist = std::numeric_limits<float>::max();
+        for( uint32_t j = 0; j < positions.size(); ++j )
+        {
+            if( i == j ) continue;
+            float d = glm::length( glm::vec3( positions[ i ] ) - glm::vec3( positions[ j ] ) );
+            minDist = std::min( minDist, d );
+        }
+        EXPECT_NEAR( minDist, spacing, 1e-4f ) << "Point " << i << " has no neighbor at expected spacing";
+    }
+}
+
+TEST( SpatialDistribution_LatticeInSphere, StatusFlagAlive )
+{
+    auto positions = SpatialDistribution::LatticeInSphere( 1.0f, 3.0f );
+    for( const auto& p : positions )
+        EXPECT_FLOAT_EQ( p.w, 1.0f );
+}
+
+TEST( SpatialDistribution_LatticeInSphere, CenterOffset )
+{
+    const glm::vec3 center( 10.0f, -5.0f, 3.0f );
+    const float     radius = 3.0f;
+    auto positions = SpatialDistribution::LatticeInSphere( 1.0f, radius, center );
+
+    ASSERT_FALSE( positions.empty() );
+    for( const auto& p : positions )
+    {
+        float dist = glm::length( glm::vec3( p ) - center );
+        EXPECT_LE( dist, radius + 1e-4f ) << "Offset point outside sphere";
+    }
+}
+
+TEST( SpatialDistribution_LatticeInSphere, Deterministic )
+{
+    auto a = SpatialDistribution::LatticeInSphere( 1.2f, 4.0f );
+    auto b = SpatialDistribution::LatticeInSphere( 1.2f, 4.0f );
+
+    ASSERT_EQ( a.size(), b.size() );
+    for( uint32_t i = 0; i < a.size(); ++i )
+    {
+        EXPECT_FLOAT_EQ( a[ i ].x, b[ i ].x );
+        EXPECT_FLOAT_EQ( a[ i ].y, b[ i ].y );
+        EXPECT_FLOAT_EQ( a[ i ].z, b[ i ].z );
+    }
+}
+
+// =================================================================================================
 // MorphologyGenerator — CPU-only
 // =================================================================================================
 

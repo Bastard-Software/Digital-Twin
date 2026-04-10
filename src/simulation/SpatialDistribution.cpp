@@ -103,4 +103,17 @@ namespace DigitalTwin
         return positions;
     }
 
+    std::vector<glm::vec4> SpatialDistribution::LatticeInSphere( float spacing, float radius, const glm::vec3& center )
+    {
+        std::vector<glm::vec4> positions;
+
+        for( float x = -radius; x <= radius; x += spacing )
+            for( float y = -radius; y <= radius; y += spacing )
+                for( float z = -radius; z <= radius; z += spacing )
+                    if( x * x + y * y + z * z <= radius * radius )
+                        positions.push_back( { center.x + x, center.y + y, center.z + z, 1.0f } );
+
+        return positions;
+    }
+
 } // namespace DigitalTwin

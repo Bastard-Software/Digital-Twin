@@ -16,4 +16,5 @@ namespace Gaudi::Demos
     void SetupStaticVesselTreeDemo ( DigitalTwin::SimulationBlueprint& blueprint );
     void SetupVesselSproutingDemo  ( DigitalTwin::SimulationBlueprint& blueprint );
     void SetupAngiogenesisDemo     ( DigitalTwin::SimulationBlueprint& blueprint );
+    void SetupTissueSortingDemo    ( DigitalTwin::SimulationBlueprint& blueprint );
 } // namespace Gaudi::Demos

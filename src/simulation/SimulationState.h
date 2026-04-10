@@ -42,6 +42,16 @@ namespace DigitalTwin
 
         BufferHandle agentCountBuffer;
         BufferHandle phenotypeBuffer;
+
+        // Per-agent cadherin expression profile (vec4 per slot, same global capacity as phenotypeBuffer).
+        // Full-size when any group has CadherinAdhesion; 16-byte dummy otherwise.
+        // x=E-cad  y=N-cad  z=VE-cad  w=Cad-11
+        BufferHandle cadherinProfileBuffer;
+
+        // 64-byte UBO holding the blueprint's 4x4 affinity matrix.
+        // Always allocated — identity dummy when no group uses cadherin.
+        BufferHandle cadherinAffinityBuffer;
+
         // Per-agent orientation normals (xyz=outward normal, w=0). Static — written once at init.
         // Groups without orientations get default (0,1,0,0). Read by geometry.vert to orient meshes.
         BufferHandle orientationBuffer;

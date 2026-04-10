@@ -47,6 +47,10 @@ namespace DigitalTwin
             resourceManager->DestroyBuffer( agentCountBuffer );
         if( phenotypeBuffer.IsValid() )
             resourceManager->DestroyBuffer( phenotypeBuffer );
+        if( cadherinProfileBuffer.IsValid() )
+            resourceManager->DestroyBuffer( cadherinProfileBuffer );
+        if( cadherinAffinityBuffer.IsValid() )
+            resourceManager->DestroyBuffer( cadherinAffinityBuffer );
         if( orientationBuffer.IsValid() )
             resourceManager->DestroyBuffer( orientationBuffer );
         if( signalingBuffer.IsValid() )
@@ -83,8 +87,10 @@ namespace DigitalTwin
         agentBuffers[ 0 ] = {};
         agentBuffers[ 1 ] = {};
         agentCountBuffer  = {};
-        phenotypeBuffer       = {};
-        signalingBuffer       = {};
+        phenotypeBuffer        = {};
+        cadherinProfileBuffer  = {};
+        cadherinAffinityBuffer = {};
+        signalingBuffer        = {};
         vesselEdgeBuffer       = {};
         vesselEdgeCountBuffer  = {};
         vesselComponentBuffer  = {};
@@ -680,6 +686,69 @@ namespace DigitalTwin
 
                 m_streamingManager->UploadBufferImmediate( { { outState.phenotypeBuffer, initPhenotypes.data(), phenotypeSize, 0 } } );
             }
+        }
+
+        // Pre-pass: allocate cadherin profile buffer and affinity UBO.
+        // Both are always allocated so Stage 5's unified JKR shader always has valid bindings.
+        {
+            bool hasCadherin = false;
+            for( const auto& g: blueprint.GetGroups() )
+                for( const auto& record: g.GetBehaviours() )
+                    if( std::holds_alternative<Behaviours::CadherinAdhesion>( record.behaviour ) )
+                        { hasCadherin = true; break; }
+
+            if( hasCadherin )
+            {
+                uint32_t globalCapacity = 0;
+                for( const auto& g: blueprint.GetGroups() )
+                {
+                    if( g.GetCount() == 0 ) continue;
+                    uint32_t cap = 131072;
+                    while( cap < g.GetCount() ) cap <<= 1;
+                    globalCapacity += cap;
+                }
+
+                size_t profileSize             = globalCapacity * sizeof( glm::vec4 );
+                outState.cadherinProfileBuffer = m_resourceManager->CreateBuffer(
+                    { profileSize, BufferType::STORAGE, "CadherinProfileBuffer" } );
+
+                std::vector<glm::vec4> profiles( globalCapacity, glm::vec4( 0.0f ) );
+                uint32_t off = 0;
+                for( const auto& g: blueprint.GetGroups() )
+                {
+                    if( g.GetCount() == 0 ) continue;
+                    uint32_t cap = 131072;
+                    while( cap < g.GetCount() ) cap <<= 1;
+                    glm::vec4 target = glm::vec4( 0.0f );
+                    for( const auto& record: g.GetBehaviours() )
+                        if( std::holds_alternative<Behaviours::CadherinAdhesion>( record.behaviour ) )
+                        {
+                            target = std::get<Behaviours::CadherinAdhesion>( record.behaviour ).targetExpression;
+                            break;
+                        }
+                    for( uint32_t i = 0; i < cap; i++ )
+                        profiles[ off + i ] = target;
+                    off += cap;
+                }
+                m_streamingManager->UploadBufferImmediate(
+                    { { outState.cadherinProfileBuffer, profiles.data(), profileSize, 0 } } );
+            }
+            else
+            {
+                // Dummy: one vec4 (16 bytes) — binding always valid, shader branch skips it
+                glm::vec4 dummy( 0.0f );
+                outState.cadherinProfileBuffer = m_resourceManager->CreateBuffer(
+                    { sizeof( glm::vec4 ), BufferType::STORAGE, "CadherinProfileBuffer_Dummy" } );
+                m_streamingManager->UploadBufferImmediate(
+                    { { outState.cadherinProfileBuffer, &dummy, sizeof( glm::vec4 ), 0 } } );
+            }
+
+            // Affinity UBO — always the blueprint matrix (identity when cadherin unused)
+            glm::mat4 affinity                  = blueprint.GetCadherinAffinityMatrix();
+            outState.cadherinAffinityBuffer     = m_resourceManager->CreateBuffer(
+                { sizeof( glm::mat4 ), BufferType::STORAGE, "CadherinAffinityBuffer" } );
+            m_streamingManager->UploadBufferImmediate(
+                { { outState.cadherinAffinityBuffer, &affinity, sizeof( glm::mat4 ), 0 } } );
         }
 
         uint32_t behaviourIndex = 0;

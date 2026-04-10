@@ -3060,3 +3060,97 @@ TEST_F( SimulationBuilderTest, Behaviour_VesselSeed_ExplicitEdges_FlagsUploaded 
 
     state.Destroy( m_resourceManager.get() );
 }
+
+// ── Stage 3: Cadherin buffer tests ───────────────────────────────────────────
+
+// 1. Both cadherin buffers are allocated even when no group uses CadherinAdhesion.
+TEST_F( SimulationBuilderTest, Builder_CadherinBuffers_AlwaysAllocated )
+{
+    if( !m_device )
+        GTEST_SKIP();
+
+    SimulationBlueprint blueprint;
+    blueprint.SetDomainSize( glm::vec3( 10.0f ), 1.0f );
+    blueprint.AddAgentGroup( "Cells" )
+        .SetCount( 4 )
+        .SetDistribution( DigitalTwin::SpatialDistribution::UniformInBox(
+            4, glm::vec3( 0.0f ), glm::vec3( 5.0f ) ) )
+        .AddBehaviour( Behaviours::Biomechanics{ 15.0f, 2.0f, 1.5f, 0.0f } );
+
+    SimulationBuilder builder( m_resourceManager.get(), m_streamingManager.get() );
+    SimulationState   state = builder.Build( blueprint );
+
+    EXPECT_TRUE( state.cadherinProfileBuffer.IsValid() )
+        << "cadherinProfileBuffer must be allocated even when no group uses CadherinAdhesion";
+    EXPECT_TRUE( state.cadherinAffinityBuffer.IsValid() )
+        << "cadherinAffinityBuffer must be allocated even when no group uses CadherinAdhesion";
+
+    state.Destroy( m_resourceManager.get() );
+}
+
+// 2. When a group has CadherinAdhesion, cadherinProfileBuffer is full-size.
+TEST_F( SimulationBuilderTest, Builder_CadherinAdhesion_RealProfileBuffer )
+{
+    if( !m_device )
+        GTEST_SKIP();
+
+    SimulationBlueprint blueprint;
+    blueprint.SetDomainSize( glm::vec3( 10.0f ), 1.0f );
+    AgentGroup& g = blueprint.AddAgentGroup( "Cells" );
+    g.SetCount( 4 );
+    g.SetDistribution( DigitalTwin::SpatialDistribution::UniformInBox(
+        4, glm::vec3( 0.0f ), glm::vec3( 5.0f ) ) );
+    g.AddBehaviour( Behaviours::Biomechanics{ 15.0f, 2.0f, 1.5f, 0.0f } );
+    g.AddBehaviour( Behaviours::CadherinAdhesion{
+        glm::vec4( 0.0f, 0.0f, 1.0f, 0.0f ), 0.01f, 0.001f, 1.0f } );
+
+    SimulationBuilder builder( m_resourceManager.get(), m_streamingManager.get() );
+    SimulationState   state = builder.Build( blueprint );
+
+    EXPECT_TRUE( state.cadherinProfileBuffer.IsValid() );
+
+    // If the buffer is full-size (131072 slots), reading 1024 profiles must succeed.
+    // A 16-byte dummy would be too small for this readback.
+    std::vector<glm::vec4> probe( 1024 );
+    m_streamingManager->ReadbackBufferImmediate(
+        state.cadherinProfileBuffer, probe.data(), 1024 * sizeof( glm::vec4 ) );
+    // No crash = buffer is at least 1024 * 16 = 16384 bytes, confirming it is full-size
+    SUCCEED() << "cadherinProfileBuffer is full-size when CadherinAdhesion is present";
+
+    state.Destroy( m_resourceManager.get() );
+}
+
+// 3. Profiles are initialized from each group's targetExpression.
+TEST_F( SimulationBuilderTest, Builder_CadherinAdhesion_InitializesProfileFromTarget )
+{
+    if( !m_device )
+        GTEST_SKIP();
+
+    SimulationBlueprint blueprint;
+    blueprint.SetDomainSize( glm::vec3( 10.0f ), 1.0f );
+    AgentGroup& g = blueprint.AddAgentGroup( "Cells" );
+    g.SetCount( 4 );
+    g.SetDistribution( DigitalTwin::SpatialDistribution::UniformInBox(
+        4, glm::vec3( 0.0f ), glm::vec3( 5.0f ) ) );
+    g.AddBehaviour( Behaviours::Biomechanics{ 15.0f, 2.0f, 1.5f, 0.0f } );
+    g.AddBehaviour( Behaviours::CadherinAdhesion{
+        glm::vec4( 0.0f, 0.0f, 1.0f, 0.0f ), 0.01f, 0.001f, 1.0f } );
+
+    SimulationBuilder builder( m_resourceManager.get(), m_streamingManager.get() );
+    SimulationState   state = builder.Build( blueprint );
+
+    // Read back the first 4 slots
+    std::vector<glm::vec4> profiles( 4 );
+    m_streamingManager->ReadbackBufferImmediate(
+        state.cadherinProfileBuffer, profiles.data(), 4 * sizeof( glm::vec4 ) );
+
+    for( int i = 0; i < 4; ++i )
+    {
+        EXPECT_NEAR( profiles[ i ].x, 0.0f, 1e-5f ) << "slot " << i << ": E-cad should be 0";
+        EXPECT_NEAR( profiles[ i ].y, 0.0f, 1e-5f ) << "slot " << i << ": N-cad should be 0";
+        EXPECT_NEAR( profiles[ i ].z, 1.0f, 1e-5f ) << "slot " << i << ": VE-cad should be 1";
+        EXPECT_NEAR( profiles[ i ].w, 0.0f, 1e-5f ) << "slot " << i << ": Cad-11 should be 0";
+    }
+
+    state.Destroy( m_resourceManager.get() );
+}

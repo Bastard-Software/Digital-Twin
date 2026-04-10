@@ -1,5 +1,6 @@
 #pragma once
 #include "simulation/Phenotype.h"
+#include <glm/glm.hpp>
 #include <string>
 #include <variant>
 #include <vector>
@@ -27,6 +28,28 @@ namespace DigitalTwin::Behaviours
         std::string  fieldName;
         float        rate                  = 1.0f;
         LifecycleState requiredLifecycleState = LifecycleState::Any;
+    };
+
+    /**
+     * @brief Differential adhesion through cadherin expression profiles.
+     * Works in combination with Biomechanics: when both are present on a group,
+     * the JKR adhesion term is scaled by the per-pair affinity
+     *   A(i,j) = dot(profile_i, M * profile_j)
+     * where M is the blueprint-level 4x4 affinity matrix.
+     *
+     * Expression channels (cadherinProfile vec4):
+     *   x = E-cadherin  (epithelial, liver)
+     *   y = N-cadherin  (mesenchymal, neural, invasive tumour)
+     *   z = VE-cadherin (vascular endothelial)
+     *   w = Cadherin-11 (osteoblast, bone metastasis)
+     */
+    struct CadherinAdhesion
+    {
+        glm::vec4 targetExpression = glm::vec4( 0.0f ); // Genetic target per channel (0-1)
+        float     expressionRate   = 0.01f;              // Up-regulation speed (1/s)
+        float     degradationRate  = 0.001f;             // Down-regulation speed (1/s)
+        float     couplingStrength = 1.0f;               // Global force scale
+        float     _pad             = 0.0f;               // Pad to 32 bytes
     };
 
     /**
@@ -138,6 +161,7 @@ namespace DigitalTwin
         Behaviours::BrownianMotion,
         Behaviours::ConsumeField,
         Behaviours::SecreteField,
+        Behaviours::CadherinAdhesion,
         Behaviours::Biomechanics,
         Behaviours::CellCycle,
         Behaviours::Chemotaxis,

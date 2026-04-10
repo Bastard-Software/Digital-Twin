@@ -628,3 +628,72 @@ TEST( SimulationValidatorTests, VesselSeed_ValidConfig_NoError )
     bp.AddAgentGroup( "Vessel" ).SetCount( 10 ).AddBehaviour( seed );
     EXPECT_TRUE( SimulationValidator::Validate( bp ).IsValid() );
 }
+
+// ── CadherinAdhesion validator tests ────────────────────────────────────────
+
+static SimulationBlueprint MakeCadherinBlueprint()
+{
+    SimulationBlueprint bp;
+    bp.SetDomainSize( { 100.0f, 100.0f, 100.0f }, 2.0f );
+    AgentGroup& g = bp.AddAgentGroup( "Cells" );
+    g.SetCount( 10 );
+    g.AddBehaviour( Behaviours::Biomechanics{ 15.0f, 2.0f, 1.5f, 0.0f } );
+    g.AddBehaviour( Behaviours::CadherinAdhesion{
+        glm::vec4( 0.0f, 0.0f, 1.0f, 0.0f ), 0.01f, 0.001f, 1.0f } );
+    return bp;
+}
+
+TEST( SimulationValidatorTest, Cadherin_ValidSetup_Passes )
+{
+    EXPECT_TRUE( SimulationValidator::Validate( MakeCadherinBlueprint() ).IsValid() );
+}
+
+TEST( SimulationValidatorTest, Cadherin_RequiresBiomechanics )
+{
+    SimulationBlueprint bp;
+    bp.SetDomainSize( { 100.0f, 100.0f, 100.0f }, 2.0f );
+    bp.AddAgentGroup( "Cells" ).SetCount( 10 )
+        .AddBehaviour( Behaviours::CadherinAdhesion{} ); // no Biomechanics
+
+    EXPECT_FALSE( SimulationValidator::Validate( bp ).IsValid() );
+}
+
+TEST( SimulationValidatorTest, Cadherin_NegativeExpressionRate_Fails )
+{
+    SimulationBlueprint bp = MakeCadherinBlueprint();
+    auto& cadherin = std::get<Behaviours::CadherinAdhesion>(
+        bp.GetGroupsMutable()[ 0 ].GetBehavioursMutable()[ 1 ].behaviour );
+    cadherin.expressionRate = -0.01f;
+
+    EXPECT_FALSE( SimulationValidator::Validate( bp ).IsValid() );
+}
+
+TEST( SimulationValidatorTest, Cadherin_NegativeDegradationRate_Fails )
+{
+    SimulationBlueprint bp = MakeCadherinBlueprint();
+    auto& cadherin = std::get<Behaviours::CadherinAdhesion>(
+        bp.GetGroupsMutable()[ 0 ].GetBehavioursMutable()[ 1 ].behaviour );
+    cadherin.degradationRate = -0.001f;
+
+    EXPECT_FALSE( SimulationValidator::Validate( bp ).IsValid() );
+}
+
+TEST( SimulationValidatorTest, Cadherin_ZeroCouplingStrength_Fails )
+{
+    SimulationBlueprint bp = MakeCadherinBlueprint();
+    auto& cadherin = std::get<Behaviours::CadherinAdhesion>(
+        bp.GetGroupsMutable()[ 0 ].GetBehavioursMutable()[ 1 ].behaviour );
+    cadherin.couplingStrength = 0.0f;
+
+    EXPECT_FALSE( SimulationValidator::Validate( bp ).IsValid() );
+}
+
+TEST( SimulationValidatorTest, Cadherin_ExpressionOutOfRange_Fails )
+{
+    SimulationBlueprint bp = MakeCadherinBlueprint();
+    auto& cadherin = std::get<Behaviours::CadherinAdhesion>(
+        bp.GetGroupsMutable()[ 0 ].GetBehavioursMutable()[ 1 ].behaviour );
+    cadherin.targetExpression = glm::vec4( 0.0f, 1.5f, 0.0f, 0.0f ); // y > 1
+
+    EXPECT_FALSE( SimulationValidator::Validate( bp ).IsValid() );
+}

@@ -3154,3 +3154,88 @@ TEST_F( SimulationBuilderTest, Builder_CadherinAdhesion_InitializesProfileFromTa
 
     state.Destroy( m_resourceManager.get() );
 }
+
+// 4. CadherinAdhesion: expression-update task is registered in the compute graph.
+TEST_F( SimulationBuilderTest, Builder_CadherinAdhesion_ExpressionUpdateTask_Exists )
+{
+    if( !m_device )
+        GTEST_SKIP();
+
+    SimulationBlueprint blueprint;
+    blueprint.SetDomainSize( glm::vec3( 10.0f ), 1.0f );
+    AgentGroup& g = blueprint.AddAgentGroup( "Cells" );
+    g.SetCount( 4 );
+    g.SetDistribution( DigitalTwin::SpatialDistribution::UniformInBox(
+        4, glm::vec3( 0.0f ), glm::vec3( 5.0f ) ) );
+    g.AddBehaviour( Behaviours::Biomechanics{ 15.0f, 2.0f, 1.5f, 0.0f } );
+    g.AddBehaviour( Behaviours::CadherinAdhesion{
+        glm::vec4( 0.0f ), 0.05f, 0.01f, 1.0f } );
+
+    SimulationBuilder builder( m_resourceManager.get(), m_streamingManager.get() );
+    SimulationState   state = builder.Build( blueprint );
+
+    // Biomechanics is behaviour 0, CadherinAdhesion is behaviour 1 → tag suffix "_0_1"
+    ComputeTask* task = state.computeGraph.FindTask( "cadherin_expr_0_1" );
+    ASSERT_NE( task, nullptr ) << "cadherin_expr task was not added to the compute graph";
+
+    state.Destroy( m_resourceManager.get() );
+}
+
+// 5. CadherinAdhesion: one dispatch frame moves profiles toward targetExpression.
+TEST_F( SimulationBuilderTest, Builder_CadherinAdhesion_ProfileMovesTowardTarget )
+{
+    if( !m_device )
+        GTEST_SKIP();
+
+    SimulationBlueprint blueprint;
+    blueprint.SetDomainSize( glm::vec3( 10.0f ), 1.0f );
+    AgentGroup& g = blueprint.AddAgentGroup( "Cells" );
+    g.SetCount( 4 );
+    g.SetDistribution( DigitalTwin::SpatialDistribution::UniformInBox(
+        4, glm::vec3( 0.0f ), glm::vec3( 5.0f ) ) );
+    g.AddBehaviour( Behaviours::Biomechanics{ 15.0f, 2.0f, 1.5f, 0.0f } );
+    // target = (1,0,0,0): E-cadherin only
+    g.AddBehaviour( Behaviours::CadherinAdhesion{
+        glm::vec4( 1.0f, 0.0f, 0.0f, 0.0f ),
+        0.05f, 0.01f, 1.0f } );
+
+    SimulationBuilder builder( m_resourceManager.get(), m_streamingManager.get() );
+    SimulationState   state = builder.Build( blueprint );
+
+    // Zero-out profiles (Stage 3 pre-fills with targetExpression; we want to start at 0)
+    std::vector<glm::vec4> zeros( 131072, glm::vec4( 0.0f ) );
+    m_streamingManager->UploadBufferImmediate(
+        { { state.cadherinProfileBuffer, zeros.data(), 131072 * sizeof( glm::vec4 ), 0 } } );
+
+    // Run one frame
+    auto compCtxHandle = m_device->CreateThreadContext( QueueType::COMPUTE );
+    auto compCtx       = m_device->GetThreadContext( compCtxHandle );
+    auto compCmd       = compCtx->GetCommandBuffer( compCtx->CreateCommandBuffer() );
+
+    GraphDispatcher dispatcher;
+    compCmd->Begin();
+    dispatcher.Dispatch( &state.computeGraph, compCmd, nullptr, 1.0f / 60.0f, 0.0f, 0 );
+    compCmd->End();
+    m_device->GetComputeQueue()->Submit( { compCmd } );
+    m_device->GetComputeQueue()->WaitIdle();
+
+    // Read back first 4 agent slots
+    std::vector<glm::vec4> profiles( 4 );
+    m_streamingManager->ReadbackBufferImmediate(
+        state.cadherinProfileBuffer, profiles.data(), 4 * sizeof( glm::vec4 ) );
+
+    // E-cadherin (x) should have increased from 0 toward target 1
+    for( int i = 0; i < 4; ++i )
+        EXPECT_GT( profiles[ i ].x, 0.0f )
+            << "slot " << i << ": E-cad did not increase after one dispatch";
+
+    // N/VE/Cad-11 targets are 0 — started at 0, must remain 0
+    for( int i = 0; i < 4; ++i )
+    {
+        EXPECT_NEAR( profiles[ i ].y, 0.0f, 1e-5f ) << "slot " << i << ": N-cad should be 0";
+        EXPECT_NEAR( profiles[ i ].z, 0.0f, 1e-5f ) << "slot " << i << ": VE-cad should be 0";
+        EXPECT_NEAR( profiles[ i ].w, 0.0f, 1e-5f ) << "slot " << i << ": Cad-11 should be 0";
+    }
+
+    state.Destroy( m_resourceManager.get() );
+}

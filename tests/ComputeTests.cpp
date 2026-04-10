@@ -5481,3 +5481,165 @@ TEST_F( ComputeTest, Shader_BrownianMotion_DeadSlot_Skipped )
     m_rm->DestroyBuffer( countBuf );
     m_rm->DestroyBuffer( phenoBuf );
 }
+
+// =============================================================================
+// cadherin_expression_update.comp tests
+// =============================================================================
+
+// Helper: dispatch cadherin_expression_update once, return readback profile
+static glm::vec4 RunCadherinExpressionUpdate(
+    Device*           device,
+    ResourceManager*  rm,
+    StreamingManager* stream,
+    glm::vec4         initialProfile,
+    glm::vec4         agentPos,      // w=1 → live, w=0 → dead slot
+    float             expressionRate,
+    float             degradationRate,
+    glm::vec4         targetExpression,
+    uint32_t          lifecycleState = 0u,
+    uint32_t          reqLC          = 0xFFFFFFFFu )
+{
+
+    BufferHandle agentBuf   = rm->CreateBuffer( { sizeof( glm::vec4 ),    BufferType::STORAGE,  "CadAgentBuf" } );
+    BufferHandle profileBuf = rm->CreateBuffer( { sizeof( glm::vec4 ),    BufferType::STORAGE,  "CadProfileBuf" } );
+    BufferHandle countBuf   = rm->CreateBuffer( { sizeof( uint32_t ),     BufferType::INDIRECT, "CadCountBuf" } );
+    BufferHandle phenoBuf   = rm->CreateBuffer( { sizeof( PhenotypeData ),BufferType::STORAGE,  "CadPhenoBuf" } );
+
+    stream->UploadBufferImmediate( { { agentBuf,   &agentPos,       sizeof( glm::vec4 ) } } );
+    stream->UploadBufferImmediate( { { profileBuf, &initialProfile, sizeof( glm::vec4 ) } } );
+    uint32_t count = 1;
+    stream->UploadBufferImmediate( { { countBuf, &count, sizeof( uint32_t ) } } );
+    PhenotypeData pheno = { lifecycleState, 0.5f, 0.0f, 0u };
+    stream->UploadBufferImmediate( { { phenoBuf, &pheno, sizeof( PhenotypeData ) } } );
+
+    ComputePipelineDesc   pipeDesc{};
+    pipeDesc.shader                  = rm->CreateShader( "shaders/compute/cadherin_expression_update.comp" );
+    ComputePipelineHandle pipeHandle = rm->CreatePipeline( pipeDesc );
+    ComputePipeline*      pipeline   = rm->GetPipeline( pipeHandle );
+
+    BindingGroup* bg = rm->GetBindingGroup( rm->CreateBindingGroup( pipeHandle, 0 ) );
+    bg->Bind( 0, rm->GetBuffer( agentBuf ) );
+    bg->Bind( 1, rm->GetBuffer( profileBuf ) );
+    bg->Bind( 2, rm->GetBuffer( countBuf ) );
+    bg->Bind( 3, rm->GetBuffer( phenoBuf ) );
+    bg->Build();
+
+    ComputePushConstants pc{};
+    pc.dt          = 1.0f;
+    pc.totalTime   = 0.0f;
+    pc.fParam0     = expressionRate;
+    pc.fParam1     = degradationRate;
+    pc.fParam2     = targetExpression.x;
+    pc.fParam3     = targetExpression.y;
+    pc.fParam4     = targetExpression.z;
+    pc.fParam5     = targetExpression.w;
+    pc.offset      = 0;
+    pc.maxCapacity = 1;
+    pc.uParam0     = reqLC;
+    pc.uParam1     = 0;
+
+    auto ctx = device->GetThreadContext( device->CreateThreadContext( QueueType::COMPUTE ) );
+    auto cmd = ctx->GetCommandBuffer( ctx->CreateCommandBuffer() );
+    cmd->Begin();
+    cmd->SetPipeline( pipeline );
+    cmd->SetBindingGroup( bg, pipeline->GetLayout(), VK_PIPELINE_BIND_POINT_COMPUTE );
+    cmd->PushConstants( pipeline->GetLayout(), VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof( pc ), &pc );
+    cmd->Dispatch( 1, 1, 1 );
+    cmd->End();
+    device->GetComputeQueue()->Submit( { cmd } );
+    device->GetComputeQueue()->WaitIdle();
+
+    glm::vec4 result;
+    stream->ReadbackBufferImmediate( profileBuf, &result, sizeof( glm::vec4 ) );
+
+    rm->DestroyBuffer( agentBuf );
+    rm->DestroyBuffer( profileBuf );
+    rm->DestroyBuffer( countBuf );
+    rm->DestroyBuffer( phenoBuf );
+
+    return result;
+}
+
+// 1. Upregulation: profile starts at 0, target = 1 → each channel increases by expressionRate * dt
+TEST_F( ComputeTest, Shader_CadherinExpressionUpdate_Upregulation )
+{
+    if( !m_device )
+        GTEST_SKIP();
+
+    float     rate   = 0.05f;
+    glm::vec4 result = RunCadherinExpressionUpdate(
+        m_device.get(), m_rm.get(), m_stream.get(),
+        glm::vec4( 0.0f ),                    // initial profile: all zeros
+        glm::vec4( 0.0f, 0.0f, 0.0f, 1.0f ), // live agent (w=1)
+        rate,                                  // expressionRate
+        0.01f,                                 // degradationRate (should not fire)
+        glm::vec4( 1.0f ) );                  // target: all ones
+
+    EXPECT_NEAR( result.x, rate, 1e-5f ) << "E-cadherin upregulation incorrect";
+    EXPECT_NEAR( result.y, rate, 1e-5f ) << "N-cadherin upregulation incorrect";
+    EXPECT_NEAR( result.z, rate, 1e-5f ) << "VE-cadherin upregulation incorrect";
+    EXPECT_NEAR( result.w, rate, 1e-5f ) << "Cadherin-11 upregulation incorrect";
+}
+
+// 2. Downregulation: profile starts at 1, target = 0 → each channel decreases by degradationRate * dt
+TEST_F( ComputeTest, Shader_CadherinExpressionUpdate_Downregulation )
+{
+    if( !m_device )
+        GTEST_SKIP();
+
+    float     rate   = 0.02f;
+    glm::vec4 result = RunCadherinExpressionUpdate(
+        m_device.get(), m_rm.get(), m_stream.get(),
+        glm::vec4( 1.0f ),                    // initial profile: all ones
+        glm::vec4( 0.0f, 0.0f, 0.0f, 1.0f ), // live agent
+        0.05f,                                 // expressionRate (should not fire)
+        rate,                                  // degradationRate
+        glm::vec4( 0.0f ) );                  // target: all zeros
+
+    EXPECT_NEAR( result.x, 1.0f - rate, 1e-5f ) << "E-cadherin downregulation incorrect";
+    EXPECT_NEAR( result.y, 1.0f - rate, 1e-5f ) << "N-cadherin downregulation incorrect";
+    EXPECT_NEAR( result.z, 1.0f - rate, 1e-5f ) << "VE-cadherin downregulation incorrect";
+    EXPECT_NEAR( result.w, 1.0f - rate, 1e-5f ) << "Cadherin-11 downregulation incorrect";
+}
+
+// 3. Dead-slot guard: agent.w == 0 → profile must not change
+TEST_F( ComputeTest, Shader_CadherinExpressionUpdate_DeadSlot_Skipped )
+{
+    if( !m_device )
+        GTEST_SKIP();
+
+    glm::vec4 initial = glm::vec4( 0.3f, 0.5f, 0.0f, 0.1f );
+    glm::vec4 result  = RunCadherinExpressionUpdate(
+        m_device.get(), m_rm.get(), m_stream.get(),
+        initial,
+        glm::vec4( 0.0f ),  // dead slot (w=0)
+        1.0f,               // high rate — would move far if not skipped
+        1.0f,
+        glm::vec4( 1.0f ) );
+
+    EXPECT_NEAR( result.x, initial.x, 1e-5f ) << "Dead slot E-cad was modified";
+    EXPECT_NEAR( result.y, initial.y, 1e-5f ) << "Dead slot N-cad was modified";
+    EXPECT_NEAR( result.z, initial.z, 1e-5f ) << "Dead slot VE-cad was modified";
+    EXPECT_NEAR( result.w, initial.w, 1e-5f ) << "Dead slot Cad-11 was modified";
+}
+
+// 4. No overshoot: large dt * rate must clamp at target, not past it
+TEST_F( ComputeTest, Shader_CadherinExpressionUpdate_NoOvershoot )
+{
+    if( !m_device )
+        GTEST_SKIP();
+
+    // target=0.5, current=0.4, rate=1.0, dt=1.0 → raw step=1.0; must clamp to 0.5
+    glm::vec4 result = RunCadherinExpressionUpdate(
+        m_device.get(), m_rm.get(), m_stream.get(),
+        glm::vec4( 0.4f ),                    // initial: 0.4
+        glm::vec4( 0.0f, 0.0f, 0.0f, 1.0f ), // live agent
+        1.0f,                                  // expressionRate (huge)
+        1.0f,                                  // degradationRate
+        glm::vec4( 0.5f ) );                  // target: 0.5
+
+    EXPECT_NEAR( result.x, 0.5f, 1e-5f ) << "E-cad overshot target";
+    EXPECT_NEAR( result.y, 0.5f, 1e-5f ) << "N-cad overshot target";
+    EXPECT_NEAR( result.z, 0.5f, 1e-5f ) << "VE-cad overshot target";
+    EXPECT_NEAR( result.w, 0.5f, 1e-5f ) << "Cad-11 overshot target";
+}

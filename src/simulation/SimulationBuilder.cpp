@@ -895,6 +895,72 @@ namespace DigitalTwin
 
                     DT_INFO( "[SimulationBuilder] Compiled Biomechanics (JKR) for '{}' at {}Hz", group.GetName(), record.targetHz );
                 }
+                if( std::holds_alternative<Behaviours::CadherinAdhesion>( record.behaviour ) )
+                {
+                    const auto& cadherin = std::get<Behaviours::CadherinAdhesion>( record.behaviour );
+
+                    // Ensure phenotype buffer exists (needed for lifecycle-state filter)
+                    if( !outState.phenotypeBuffer.IsValid() )
+                    {
+                        uint32_t globalCapacity = 0;
+                        for( const auto& g: blueprint.GetGroups() )
+                        {
+                            if( g.GetCount() == 0 )
+                                continue;
+                            uint32_t cap = 131072;
+                            while( cap < g.GetCount() )
+                                cap <<= 1;
+                            globalCapacity += cap;
+                        }
+                        size_t phenotypeSize     = globalCapacity * sizeof( uint32_t ) * 4;
+                        outState.phenotypeBuffer = m_resourceManager->CreateBuffer( { phenotypeSize, BufferType::STORAGE, "PhenotypeBuffer" } );
+                        std::vector<PhenotypeData> initPhenotypes( globalCapacity, { 0, 0.5f, 0.0f, 0 } );
+                        m_streamingManager->UploadBufferImmediate( { { outState.phenotypeBuffer, initPhenotypes.data(), phenotypeSize, 0 } } );
+                    }
+
+                    ShaderHandle shaderHandle = m_resourceManager->CreateShader(
+                        "shaders/compute/cadherin_expression_update.comp" );
+                    ComputePipelineDesc   pipeDesc{ shaderHandle, "CadherinExpressionUpdate" };
+                    ComputePipelineHandle pipeHandle = m_resourceManager->CreatePipeline( pipeDesc );
+                    ComputePipeline*      pipe       = m_resourceManager->GetPipeline( pipeHandle );
+
+                    // Two binding groups tracking the active agent buffer index (dead-cell guard only).
+                    // cadherinProfileBuffer is in-place readwrite — same handle in both groups.
+                    BindingGroup* bg0 = m_resourceManager->GetBindingGroup( m_resourceManager->CreateBindingGroup( pipeHandle, 0 ) );
+                    bg0->Bind( 0, m_resourceManager->GetBuffer( outState.agentBuffers[ 0 ] ) );
+                    bg0->Bind( 1, m_resourceManager->GetBuffer( outState.cadherinProfileBuffer ) );
+                    bg0->Bind( 2, m_resourceManager->GetBuffer( outState.agentCountBuffer ) );
+                    bg0->Bind( 3, m_resourceManager->GetBuffer( outState.phenotypeBuffer ) );
+                    bg0->Build();
+
+                    BindingGroup* bg1 = m_resourceManager->GetBindingGroup( m_resourceManager->CreateBindingGroup( pipeHandle, 0 ) );
+                    bg1->Bind( 0, m_resourceManager->GetBuffer( outState.agentBuffers[ 1 ] ) );
+                    bg1->Bind( 1, m_resourceManager->GetBuffer( outState.cadherinProfileBuffer ) );
+                    bg1->Bind( 2, m_resourceManager->GetBuffer( outState.agentCountBuffer ) );
+                    bg1->Bind( 3, m_resourceManager->GetBuffer( outState.phenotypeBuffer ) );
+                    bg1->Build();
+
+                    ComputePushConstants cadPC{};
+                    cadPC.fParam0     = cadherin.expressionRate;
+                    cadPC.fParam1     = cadherin.degradationRate;
+                    cadPC.fParam2     = cadherin.targetExpression.x;
+                    cadPC.fParam3     = cadherin.targetExpression.y;
+                    cadPC.fParam4     = cadherin.targetExpression.z;
+                    cadPC.fParam5     = cadherin.targetExpression.w;
+                    cadPC.offset      = currentOffset;
+                    cadPC.maxCapacity = paddedCount;
+                    cadPC.uParam0     = static_cast<uint32_t>( record.requiredLifecycleState );
+                    cadPC.uParam1     = groupIndex;
+
+                    glm::uvec3 dispatch( ( paddedCount + 255 ) / 256, 1, 1 );
+                    ComputeTask cadTask( pipe, bg0, bg1, record.targetHz, cadPC, dispatch );
+                    cadTask.SetTag( "cadherin_expr" + tagBase );
+                    // No ChainFlip: this shader writes to cadherinProfileBuffer, not agent positions.
+                    outState.computeGraph.AddTask( cadTask );
+
+                    DT_INFO( "[SimulationBuilder] Compiled CadherinAdhesion (expression) for '{}' at {}Hz",
+                             group.GetName(), record.targetHz );
+                }
                 if( std::holds_alternative<Behaviours::CellCycle>( record.behaviour ) )
                 {
                     const auto& cellCycle = std::get<Behaviours::CellCycle>( record.behaviour );
@@ -1918,6 +1984,23 @@ namespace DigitalTwin
                         pc.fParam4                = bio.dampingCoefficient;
                         pc.fParam5                = bio.maxRadius;
                         // domainSize.w holds the spatial hash cell size — do NOT overwrite with maxRadius
+                        task->UpdatePushConstants( pc );
+                    }
+                }
+                else if( std::holds_alternative<Behaviours::CadherinAdhesion>( record.behaviour ) )
+                {
+                    ComputeTask* task = state.computeGraph.FindTask( "cadherin_expr" + tagBase );
+                    if( task )
+                    {
+                        const auto&          cad = std::get<Behaviours::CadherinAdhesion>( record.behaviour );
+                        ComputePushConstants pc   = task->GetPushConstants();
+                        pc.fParam0               = cad.expressionRate;
+                        pc.fParam1               = cad.degradationRate;
+                        pc.fParam2               = cad.targetExpression.x;
+                        pc.fParam3               = cad.targetExpression.y;
+                        pc.fParam4               = cad.targetExpression.z;
+                        pc.fParam5               = cad.targetExpression.w;
+                        pc.uParam0               = static_cast<uint32_t>( record.requiredLifecycleState );
                         task->UpdatePushConstants( pc );
                     }
                 }

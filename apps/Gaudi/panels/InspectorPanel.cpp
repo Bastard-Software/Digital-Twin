@@ -91,6 +91,19 @@ namespace Gaudi
                         }
                     }
                 }
+                else if constexpr( std::is_same_v<T, DigitalTwin::Behaviours::CadherinAdhesion> )
+                {
+                    ImGui::SeparatorText( "Target Expression" );
+                    changed |= ImGui::SliderFloat( "E-Cadherin",  &b.targetExpression.x, 0.0f, 1.0f );
+                    changed |= ImGui::SliderFloat( "N-Cadherin",  &b.targetExpression.y, 0.0f, 1.0f );
+                    changed |= ImGui::SliderFloat( "VE-Cadherin", &b.targetExpression.z, 0.0f, 1.0f );
+                    changed |= ImGui::SliderFloat( "Cadherin-11", &b.targetExpression.w, 0.0f, 1.0f );
+                    ImGui::Spacing();
+                    changed |= ImGui::SliderFloat( "Expression Rate",   &b.expressionRate,   0.0f, 0.1f,  "%.4f" );
+                    changed |= ImGui::SliderFloat( "Degradation Rate",  &b.degradationRate,  0.0f, 0.01f, "%.5f" );
+                    changed |= ImGui::SliderFloat( "Coupling Strength", &b.couplingStrength, 0.0f, 5.0f );
+                    ImGui::TextDisabled( "Affinity matrix set via blueprint API" );
+                }
                 else if constexpr( std::is_same_v<T, DigitalTwin::Behaviours::Biomechanics> )
                 {
                     changed |= ImGui::SliderFloat( "Repulsion Stiffness", &b.repulsionStiffness, 0.0f, 100.0f );

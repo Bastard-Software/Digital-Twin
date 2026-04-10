@@ -66,6 +66,8 @@ namespace Gaudi
                     return "Vessel Spring";
                 else if constexpr( std::is_same_v<T, DigitalTwin::Behaviours::PhalanxActivation> )
                     return "Phalanx Activation";
+                else if constexpr( std::is_same_v<T, DigitalTwin::Behaviours::CadherinAdhesion> )
+                    return "Cadherin Adhesion";
                 else
                     return "Unknown";
             },
@@ -218,6 +220,11 @@ namespace Gaudi
                             if( ImGui::MenuItem( "Anastomosis" ) )
                             {
                                 group.AddBehaviour( DigitalTwin::Behaviours::Anastomosis{} ).SetHz( 60 );
+                                m_engine.SetBlueprint( m_blueprint );
+                            }
+                            if( ImGui::MenuItem( "Cadherin Adhesion" ) )
+                            {
+                                group.AddBehaviour( DigitalTwin::Behaviours::CadherinAdhesion{} ).SetHz( 60 );
                                 m_engine.SetBlueprint( m_blueprint );
                             }
                             if( ImGui::BeginMenu( "Perfusion" ) )

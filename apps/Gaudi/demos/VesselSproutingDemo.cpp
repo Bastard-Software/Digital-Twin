@@ -71,7 +71,7 @@ namespace Gaudi::Demos
             .SetHz( 10.0f );
         source.AddBehaviour( DigitalTwin::Behaviours::SecreteField{
                                  "VEGF", 800.0f,
-                                 static_cast<int>( DigitalTwin::LifecycleState::Hypoxic ) } )
+                                 DigitalTwin::LifecycleState::Hypoxic } )
             .SetHz( 60.0f );
 
         // --- Vessel tube: straight trunk, no branches ---
@@ -122,18 +122,18 @@ namespace Gaudi::Demos
         //     High rate means the few rings that activate eat up VEGF before it can spread axially.
         //     Also depletes VEGF below PhalanxActivation threshold so ring cells can mature properly.
         vessel.AddBehaviour( DigitalTwin::Behaviours::ConsumeField{ "VEGF", 120.0f } )
-            .SetRequiredCellType( static_cast<int>( DigitalTwin::CellType::StalkCell ) )
+            .SetRequiredCellType( DigitalTwin::CellType::StalkCell )
             .SetHz( 60.0f );
 
         // 3b. VEGFR1 passive sink: PhalanxCells express VEGFR1 (decoy receptor) at low levels.
         //     This attenuates VEGF along the whole tube length, preventing far rings from activating.
         vessel.AddBehaviour( DigitalTwin::Behaviours::ConsumeField{ "VEGF", 4.0f } )
-            .SetRequiredCellType( static_cast<int>( DigitalTwin::CellType::PhalanxCell ) )
+            .SetRequiredCellType( DigitalTwin::CellType::PhalanxCell )
             .SetHz( 60.0f );
 
         // 3c. VEGFR2 sink: TipCell consumes VEGF (high VEGFR2 expression in vivo).
         vessel.AddBehaviour( DigitalTwin::Behaviours::ConsumeField{ "VEGF", 60.0f } )
-            .SetRequiredCellType( static_cast<int>( DigitalTwin::CellType::TipCell ) )
+            .SetRequiredCellType( DigitalTwin::CellType::TipCell )
             .SetHz( 60.0f );
 
         // 4. NotchDll4: lateral inhibition selects exactly 1 TipCell from activated StalkCells.
@@ -166,7 +166,7 @@ namespace Gaudi::Demos
         //    provide proper tip-tube separation mechanics.
         vessel.AddBehaviour( DigitalTwin::Behaviours::Chemotaxis{ "VEGF", 2.0f, 0.002f, 0.8f, 0.0f } )
             .SetHz( 60.0f )
-            .SetRequiredCellType( static_cast<int>( DigitalTwin::CellType::TipCell ) );
+            .SetRequiredCellType( DigitalTwin::CellType::TipCell );
 
         // 7. VesselSpring: maintains ring shape and sprout chain spacing.
         //    Per-edge rest lengths from geometry handle mixed ring/sprout lengths.

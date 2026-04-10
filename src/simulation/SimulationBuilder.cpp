@@ -6,6 +6,7 @@
 #include "rhi/BindingGroup.h"
 #include "simulation/SimulationBlueprint.h"
 #include "simulation/SimulationValidator.h"
+#include "simulation/Phenotype.h"
 #include <numeric>
 #include <random>
 #include <tuple>
@@ -648,7 +649,6 @@ namespace DigitalTwin
 
             if( anyNonDefault && !outState.phenotypeBuffer.IsValid() )
             {
-                struct PhenotypeData { uint32_t lifecycleState; float biomass; float timer; uint32_t cellType; };
 
                 uint32_t globalCapacity = 0;
                 for( const auto& g: blueprint.GetGroups() )
@@ -713,13 +713,6 @@ namespace DigitalTwin
                         }
                         size_t phenotypeSize     = globalCapacity * sizeof( uint32_t ) * 4;
                         outState.phenotypeBuffer = m_resourceManager->CreateBuffer( { phenotypeSize, BufferType::STORAGE, "PhenotypeBuffer" } );
-                        struct PhenotypeData
-                        {
-                            uint32_t lifecycleState;
-                            float    biomass;
-                            float    timer;
-                            uint32_t cellType;
-                        };
                         std::vector<PhenotypeData> initPhenotypes( globalCapacity, { 0, 0.5f, 0.0f, 0 } );
                         m_streamingManager->UploadBufferImmediate( { { outState.phenotypeBuffer, initPhenotypes.data(), phenotypeSize, 0 } } );
                     }
@@ -753,10 +746,10 @@ namespace DigitalTwin
 
                     ComputePushConstants pc{};
                     pc.fParam0     = brownian.speed;
-                    pc.fParam1     = static_cast<float>( record.requiredCellType );
+                    pc.fParam1     = static_cast<float>( static_cast<int32_t>( static_cast<uint32_t>( record.requiredCellType ) ) );
                     pc.offset      = currentOffset;
                     pc.maxCapacity = paddedCount;
-                    pc.uParam0     = static_cast<uint32_t>( record.requiredLifecycleState ); // -1 → 0xFFFFFFFF
+                    pc.uParam0     = static_cast<uint32_t>( record.requiredLifecycleState );
                     pc.uParam1     = groupIndex;
 
                     glm::uvec3 agentDispatch( ( paddedCount + 255 ) / 256, 1, 1 );
@@ -813,8 +806,8 @@ namespace DigitalTwin
                     jkrPC.maxCapacity          = globalHashCapacity;
                     jkrPC.fParam0              = biomechanics.repulsionStiffness;
                     jkrPC.fParam1              = biomechanics.adhesionStrength;
-                    jkrPC.fParam2              = static_cast<float>( record.requiredLifecycleState );
-                    jkrPC.fParam3              = static_cast<float>( record.requiredCellType );
+                    jkrPC.fParam2              = static_cast<float>( static_cast<int32_t>( static_cast<uint32_t>( record.requiredLifecycleState ) ) );
+                    jkrPC.fParam3              = static_cast<float>( static_cast<int32_t>( static_cast<uint32_t>( record.requiredCellType ) ) );
                     jkrPC.fParam4              = biomechanics.dampingCoefficient;
                     jkrPC.fParam5              = biomechanics.maxRadius;
                     jkrPC.uParam0              = offsetArraySize;
@@ -854,13 +847,6 @@ namespace DigitalTwin
                         size_t phenotypeSize     = globalCapacity * sizeof( uint32_t ) * 4;
                         outState.phenotypeBuffer = m_resourceManager->CreateBuffer( { phenotypeSize, BufferType::STORAGE, "PhenotypeBuffer" } );
 
-                        struct PhenotypeData
-                        {
-                            uint32_t lifecycleState;
-                            float    biomass;
-                            float    timer;
-                            uint32_t cellType;
-                        };
                         std::vector<PhenotypeData> initialPhenotypes( globalCapacity, { 0, 0.5f, 0.0f, 0 } );
 
                         m_streamingManager->UploadBufferImmediate( { { outState.phenotypeBuffer, initialPhenotypes.data(), phenotypeSize, 0 } } );
@@ -968,7 +954,7 @@ namespace DigitalTwin
                     phenoPC.fParam3              = cellCycle.necrosisO2;
                     phenoPC.fParam4              = cellCycle.hypoxiaO2;
                     phenoPC.fParam5              = cellCycle.apoptosisProbPerSec;
-                    phenoPC.uParam0              = ( record.requiredCellType < 0 ) ? 0xFFFFFFFFu : static_cast<uint32_t>( record.requiredCellType );
+                    phenoPC.uParam0              = static_cast<uint32_t>( record.requiredCellType );
                     phenoPC.uParam1              = groupIndex;
 
                     ComputePushConstants mitosisPC = basePC;
@@ -1002,7 +988,7 @@ namespace DigitalTwin
                                            : std::get<Behaviours::SecreteField>( record.behaviour ).rate;
 
                     // Require lifecycle state
-                    int requiredLifecycleState = isConsume
+                    LifecycleState requiredLifecycleState = isConsume
                                                      ? std::get<Behaviours::ConsumeField>( record.behaviour ).requiredLifecycleState
                                                      : std::get<Behaviours::SecreteField>( record.behaviour ).requiredLifecycleState;
 
@@ -1019,7 +1005,7 @@ namespace DigitalTwin
 
                     if( targetGrid )
                     {
-                        if( requiredLifecycleState != -1 && !outState.phenotypeBuffer.IsValid() )
+                        if( requiredLifecycleState != LifecycleState::Any && !outState.phenotypeBuffer.IsValid() )
                         {
                             uint32_t globalCapacity = 0;
                             for( const auto& g: blueprint.GetGroups() )
@@ -1033,13 +1019,6 @@ namespace DigitalTwin
                             }
                             size_t phenotypeSize     = globalCapacity * sizeof( uint32_t ) * 4;
                             outState.phenotypeBuffer = m_resourceManager->CreateBuffer( { phenotypeSize, BufferType::STORAGE, "PhenotypeBuffer" } );
-                            struct PhenotypeData
-                            {
-                                uint32_t lifecycleState;
-                                float    biomass;
-                                float    timer;
-                                uint32_t cellType;
-                            };
                             std::vector<PhenotypeData> initialPhenotypes( globalCapacity, { 0, 0.5f, 0.0f, 0 } );
                             m_streamingManager->UploadBufferImmediate( { { outState.phenotypeBuffer, initialPhenotypes.data(), phenotypeSize, 0 } } );
                         }
@@ -1076,8 +1055,8 @@ namespace DigitalTwin
 
                         ComputePushConstants pc{};
                         pc.fParam0     = rate;
-                        pc.fParam1     = static_cast<float>( requiredLifecycleState );
-                        pc.fParam2     = static_cast<float>( record.requiredCellType );
+                        pc.fParam1     = static_cast<float>( static_cast<int32_t>( static_cast<uint32_t>( requiredLifecycleState ) ) );
+                        pc.fParam2     = static_cast<float>( static_cast<int32_t>( static_cast<uint32_t>( record.requiredCellType ) ) );
                         pc.offset      = currentOffset;
                         pc.maxCapacity = paddedCount;
                         pc.uParam1     = groupIndex;
@@ -1127,13 +1106,6 @@ namespace DigitalTwin
                                     cap <<= 1;
                                 globalCapacity += cap;
                             }
-                            struct PhenotypeData
-                            {
-                                uint32_t lifecycleState;
-                                float    biomass;
-                                float    timer;
-                                uint32_t cellType;
-                            };
                             size_t phenotypeSize     = globalCapacity * sizeof( PhenotypeData );
                             outState.phenotypeBuffer = m_resourceManager->CreateBuffer( { phenotypeSize, BufferType::STORAGE, "PhenotypeBuffer" } );
                             std::vector<PhenotypeData> initPhenotypes( globalCapacity, { 0u, 0.5f, 0.0f, 0u } );
@@ -1162,7 +1134,7 @@ namespace DigitalTwin
 
                         ComputePushConstants pc{};
                         pc.fParam0     = rate;
-                        pc.fParam1     = static_cast<float>( record.requiredCellType );
+                        pc.fParam1     = static_cast<float>( static_cast<int32_t>( static_cast<uint32_t>( record.requiredCellType ) ) );
                         pc.offset      = currentOffset;
                         pc.maxCapacity = paddedCount;
                         pc.uParam1     = groupIndex;
@@ -1208,13 +1180,6 @@ namespace DigitalTwin
                             }
                             size_t phenotypeSize     = globalCapacity * sizeof( uint32_t ) * 4;
                             outState.phenotypeBuffer = m_resourceManager->CreateBuffer( { phenotypeSize, BufferType::STORAGE, "PhenotypeBuffer" } );
-                            struct PhenotypeData
-                            {
-                                uint32_t lifecycleState;
-                                float    biomass;
-                                float    timer;
-                                uint32_t cellType;
-                            };
                             std::vector<PhenotypeData> initPhenotypes( globalCapacity, { 0, 0.5f, 0.0f, 0 } );
                             m_streamingManager->UploadBufferImmediate( { { outState.phenotypeBuffer, initPhenotypes.data(), phenotypeSize, 0 } } );
                         }
@@ -1258,11 +1223,11 @@ namespace DigitalTwin
                         pc.fParam0     = chemo.chemotacticSensitivity;
                         pc.fParam1     = chemo.receptorSaturation;
                         pc.fParam2     = chemo.maxVelocity;
-                        pc.fParam3     = static_cast<float>( record.requiredCellType );
+                        pc.fParam3     = static_cast<float>( static_cast<int32_t>( static_cast<uint32_t>( record.requiredCellType ) ) );
                         pc.fParam4     = chemo.contactInhibitionDensity;
                         pc.offset      = currentOffset;
                         pc.maxCapacity = globalHashCapacity; // hash scan bound spans all groups
-                        pc.uParam0     = static_cast<uint32_t>( record.requiredLifecycleState ); // -1 → 0xFFFFFFFF
+                        pc.uParam0     = static_cast<uint32_t>( record.requiredLifecycleState );
                         pc.uParam1     = groupIndex;
                         pc.domainSize  = glm::vec4( blueprint.GetDomainSize(), enableContactInhibition ? hashCellSize : 0.0f );
                         pc.gridSize    = glm::uvec4( targetGrid->width, targetGrid->height, targetGrid->depth,
@@ -1298,7 +1263,6 @@ namespace DigitalTwin
                                 cap <<= 1;
                             globalCapacity += cap;
                         }
-                        struct PhenotypeData { uint32_t lifecycleState; float biomass; float timer; uint32_t cellType; };
                         size_t phenotypeSize     = globalCapacity * sizeof( PhenotypeData );
                         outState.phenotypeBuffer = m_resourceManager->CreateBuffer( { phenotypeSize, BufferType::STORAGE, "PhenotypeBuffer" } );
                         std::vector<PhenotypeData> initPhenotypes( globalCapacity, { 0u, 0.5f, 0.0f, 0u } );
@@ -1307,7 +1271,6 @@ namespace DigitalTwin
 
                     // Override cellType to PhalanxCell (3) for this group's slots
                     {
-                        struct PhenotypeData { uint32_t lifecycleState; float biomass; float timer; uint32_t cellType; };
                         std::vector<PhenotypeData> phalanxInit( paddedCount, { 0u, 0.5f, 0.0f, 3u } );
                         size_t slotByteOffset = currentOffset * sizeof( PhenotypeData );
                         size_t slotByteSize   = paddedCount   * sizeof( PhenotypeData );
@@ -1445,13 +1408,6 @@ namespace DigitalTwin
                             globalCapacity += cap;
                         }
 
-                        struct PhenotypeData
-                        {
-                            uint32_t lifecycleState;
-                            float    biomass;
-                            float    timer;
-                            uint32_t cellType;
-                        };
                         size_t phenotypeSize     = globalCapacity * sizeof( PhenotypeData );
                         outState.phenotypeBuffer = m_resourceManager->CreateBuffer( { phenotypeSize, BufferType::STORAGE, "PhenotypeBuffer" } );
 
@@ -1563,13 +1519,6 @@ namespace DigitalTwin
                             globalCapacity += cap;
                         }
 
-                        struct PhenotypeData
-                        {
-                            uint32_t lifecycleState;
-                            float    biomass;
-                            float    timer;
-                            uint32_t cellType;
-                        };
                         size_t phenotypeSize     = globalCapacity * sizeof( PhenotypeData );
                         outState.phenotypeBuffer = m_resourceManager->CreateBuffer( { phenotypeSize, BufferType::STORAGE, "PhenotypeBuffer" } );
 
@@ -1826,7 +1775,7 @@ namespace DigitalTwin
                     springPC.fParam0     = spring.springStiffness;
                     springPC.fParam1     = spring.restingLength;
                     springPC.fParam2     = spring.dampingCoefficient;
-                    springPC.fParam3     = static_cast<float>( record.requiredCellType );
+                    springPC.fParam3     = static_cast<float>( static_cast<int32_t>( static_cast<uint32_t>( record.requiredCellType ) ) );
                     springPC.fParam4     = spring.anchorPhalanxCells ? 1.0f : 0.0f;
                     springPC.uParam0     = groupIndex; // grpNdx
 
@@ -1881,7 +1830,7 @@ namespace DigitalTwin
                     {
                         ComputePushConstants pc    = task->GetPushConstants();
                         pc.fParam0                 = std::get<Behaviours::BrownianMotion>( record.behaviour ).speed;
-                        pc.fParam1                 = static_cast<float>( record.requiredCellType );
+                        pc.fParam1                 = static_cast<float>( static_cast<int32_t>( static_cast<uint32_t>( record.requiredCellType ) ) );
                         pc.uParam0                 = static_cast<uint32_t>( record.requiredLifecycleState );
                         task->UpdatePushConstants( pc );
                     }
@@ -1895,8 +1844,8 @@ namespace DigitalTwin
                         ComputePushConstants pc   = task->GetPushConstants();
                         pc.fParam0                = bio.repulsionStiffness;
                         pc.fParam1                = bio.adhesionStrength;
-                        pc.fParam2                = static_cast<float>( record.requiredLifecycleState );
-                        pc.fParam3                = static_cast<float>( record.requiredCellType );
+                        pc.fParam2                = static_cast<float>( static_cast<int32_t>( static_cast<uint32_t>( record.requiredLifecycleState ) ) );
+                        pc.fParam3                = static_cast<float>( static_cast<int32_t>( static_cast<uint32_t>( record.requiredCellType ) ) );
                         pc.fParam4                = bio.dampingCoefficient;
                         pc.fParam5                = bio.maxRadius;
                         // domainSize.w holds the spatial hash cell size — do NOT overwrite with maxRadius
@@ -1928,14 +1877,14 @@ namespace DigitalTwin
                         bool  isConsume         = std::holds_alternative<Behaviours::ConsumeField>( record.behaviour );
                         float rate              = isConsume ? -std::get<Behaviours::ConsumeField>( record.behaviour ).rate
                                                             : std::get<Behaviours::SecreteField>( record.behaviour ).rate;
-                        int   reqLifecycleState = isConsume
+                        LifecycleState reqLifecycleState = isConsume
                                                       ? std::get<Behaviours::ConsumeField>( record.behaviour ).requiredLifecycleState
                                                       : std::get<Behaviours::SecreteField>( record.behaviour ).requiredLifecycleState;
 
                         ComputePushConstants pc = task->GetPushConstants();
                         pc.fParam0              = rate;
-                        pc.fParam1              = static_cast<float>( reqLifecycleState );
-                        pc.fParam2              = static_cast<float>( record.requiredCellType );
+                        pc.fParam1              = static_cast<float>( static_cast<int32_t>( static_cast<uint32_t>( reqLifecycleState ) ) );
+                        pc.fParam2              = static_cast<float>( static_cast<int32_t>( static_cast<uint32_t>( record.requiredCellType ) ) );
                         task->UpdatePushConstants( pc );
                     }
                 }
@@ -1961,7 +1910,7 @@ namespace DigitalTwin
                         pc.fParam0                 = chemo.chemotacticSensitivity;
                         pc.fParam1                 = chemo.receptorSaturation;
                         pc.fParam2                 = chemo.maxVelocity;
-                        pc.fParam3                 = static_cast<float>( record.requiredCellType );
+                        pc.fParam3                 = static_cast<float>( static_cast<int32_t>( static_cast<uint32_t>( record.requiredCellType ) ) );
                         pc.uParam0                 = static_cast<uint32_t>( record.requiredLifecycleState );
                         task->UpdatePushConstants( pc );
                     }
@@ -2007,7 +1956,7 @@ namespace DigitalTwin
                         pc.fParam0                  = spring.springStiffness;
                         pc.fParam1                  = spring.restingLength;
                         pc.fParam2                  = spring.dampingCoefficient;
-                        pc.fParam3                  = static_cast<float>( record.requiredCellType );
+                        pc.fParam3                  = static_cast<float>( static_cast<int32_t>( static_cast<uint32_t>( record.requiredCellType ) ) );
                         pc.fParam4                  = spring.anchorPhalanxCells ? 1.0f : 0.0f;
                         task->UpdatePushConstants( pc );
                     }
@@ -2023,7 +1972,7 @@ namespace DigitalTwin
                                                  : -std::get<Behaviours::Drain>( record.behaviour ).rate;
                         ComputePushConstants pc = task->GetPushConstants();
                         pc.fParam0              = rate;
-                        pc.fParam1              = static_cast<float>( record.requiredCellType );
+                        pc.fParam1              = static_cast<float>( static_cast<int32_t>( static_cast<uint32_t>( record.requiredCellType ) ) );
                         task->UpdatePushConstants( pc );
                     }
                 }

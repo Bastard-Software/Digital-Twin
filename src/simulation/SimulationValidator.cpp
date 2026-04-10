@@ -9,11 +9,10 @@
 
 namespace DigitalTwin
 {
-    // Valid requiredLifecycleState values: -1 (no requirement) or 0-4 (Live through Necrotic).
+    // Valid filter values: LifecycleState::Any (0xFFFFFFFF = no requirement) or 0-4 (Live through Necrotic).
     // Dead_PendingRemoval (5) is a transient GPU-side state — behaviours conditioned on it never fire.
-    static constexpr int k_MinRequiredState = -1;
-    static constexpr int k_MaxRequiredState = 4;
-    static constexpr int k_MaxCellType      = 3; // PhalanxCell
+    static constexpr uint32_t k_MaxRequiredState = 4;
+    static constexpr uint32_t k_MaxCellType      = 3; // PhalanxCell
 
     ValidationResult SimulationValidator::Validate( const SimulationBlueprint& blueprint )
     {
@@ -173,17 +172,20 @@ namespace DigitalTwin
                                        "': duplicate behaviour type detected. Only the first instance will be effective." );
 
                 // BehaviourRecord-level lifecycle and cell type filtering
-                if( record.requiredLifecycleState < -1 || record.requiredLifecycleState > k_MaxRequiredState )
-                    result.AddError( "AgentGroup '" + group.GetName() +
-                                     "': BehaviourRecord requiredLifecycleState out of range (got: " +
-                                     std::to_string( record.requiredLifecycleState ) +
-                                     ", valid range: -1 to 4)" );
-
-                if( record.requiredCellType < -1 || record.requiredCellType > k_MaxCellType )
-                    result.AddError( "AgentGroup '" + group.GetName() +
-                                     "': BehaviourRecord requiredCellType out of range (got: " +
-                                     std::to_string( record.requiredCellType ) +
-                                     ", valid range: -1 to 3)" );
+                {
+                    uint32_t ls = static_cast<uint32_t>( record.requiredLifecycleState );
+                    if( ls != 0xFFFFFFFFu && ls > k_MaxRequiredState )
+                        result.AddError( "AgentGroup '" + group.GetName() +
+                                         "': BehaviourRecord requiredLifecycleState out of range (got: " +
+                                         std::to_string( ls ) + ", valid values: 0-4 or Any)" );
+                }
+                {
+                    uint32_t ct = static_cast<uint32_t>( record.requiredCellType );
+                    if( ct != 0xFFFFFFFFu && ct > k_MaxCellType )
+                        result.AddError( "AgentGroup '" + group.GetName() +
+                                         "': BehaviourRecord requiredCellType out of range (got: " +
+                                         std::to_string( ct ) + ", valid values: 0-3 or Any)" );
+                }
 
                 // Per-type parameter checks
                 std::visit(
@@ -205,13 +207,12 @@ namespace DigitalTwin
                             const std::string typeName =
                                 std::is_same_v<T, Behaviours::ConsumeField> ? "ConsumeField" : "SecreteField";
 
-                            if( behaviour.requiredLifecycleState < k_MinRequiredState ||
-                                behaviour.requiredLifecycleState > k_MaxRequiredState )
                             {
-                                result.AddError( "AgentGroup '" + group.GetName() + "': " + typeName +
-                                                 " requiredLifecycleState is out of range (got: " +
-                                                 std::to_string( behaviour.requiredLifecycleState ) +
-                                                 ", valid range: -1 to 4)" );
+                                uint32_t ls = static_cast<uint32_t>( behaviour.requiredLifecycleState );
+                                if( ls != 0xFFFFFFFFu && ls > k_MaxRequiredState )
+                                    result.AddError( "AgentGroup '" + group.GetName() + "': " + typeName +
+                                                     " requiredLifecycleState is out of range (got: " +
+                                                     std::to_string( ls ) + ", valid values: 0-4 or Any)" );
                             }
 
                             if( behaviour.rate == 0.0f )

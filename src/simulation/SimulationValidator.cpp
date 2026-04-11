@@ -5,6 +5,7 @@
 #include "simulation/GridField.h"
 #include "simulation/SimulationBlueprint.h"
 
+#include <glm/glm.hpp>
 #include <unordered_set>
 
 namespace DigitalTwin
@@ -23,6 +24,7 @@ namespace DigitalTwin
         CheckFieldReferences( blueprint, result );
         CheckBehaviourParams( blueprint, result );
         CheckCellCycleThresholds( blueprint, result );
+        CheckCadherinAdhesion( blueprint, result );
         CheckPopulations( blueprint, result );
 
         return result;
@@ -369,6 +371,70 @@ namespace DigitalTwin
                                    "': CellCycle is present but no ConsumeField is defined. "
                                    "Cells will never become Hypoxic or Necrotic." );
         }
+    }
+
+    void SimulationValidator::CheckCadherinAdhesion( const SimulationBlueprint& blueprint, ValidationResult& result )
+    {
+        for( const auto& group : blueprint.GetGroups() )
+        {
+            bool hasCadherin    = false;
+            bool hasBiomechanics = false;
+            const Behaviours::CadherinAdhesion* cadherin = nullptr;
+
+            for( const auto& record : group.GetBehaviours() )
+            {
+                if( std::holds_alternative<Behaviours::CadherinAdhesion>( record.behaviour ) )
+                {
+                    hasCadherin = true;
+                    cadherin    = &std::get<Behaviours::CadherinAdhesion>( record.behaviour );
+                }
+                if( std::holds_alternative<Behaviours::Biomechanics>( record.behaviour ) )
+                    hasBiomechanics = true;
+            }
+
+            if( !hasCadherin )
+                continue;
+
+            if( !hasBiomechanics )
+                result.AddError( "AgentGroup '" + group.GetName() +
+                                 "': CadherinAdhesion requires Biomechanics to also be present on the same group." );
+
+            if( cadherin->expressionRate < 0.0f )
+                result.AddError( "AgentGroup '" + group.GetName() +
+                                 "': CadherinAdhesion expressionRate must be >= 0 (got: " +
+                                 std::to_string( cadherin->expressionRate ) + ")." );
+
+            if( cadherin->degradationRate < 0.0f )
+                result.AddError( "AgentGroup '" + group.GetName() +
+                                 "': CadherinAdhesion degradationRate must be >= 0 (got: " +
+                                 std::to_string( cadherin->degradationRate ) + ")." );
+
+            if( cadherin->couplingStrength <= 0.0f )
+                result.AddError( "AgentGroup '" + group.GetName() +
+                                 "': CadherinAdhesion couplingStrength must be > 0 (got: " +
+                                 std::to_string( cadherin->couplingStrength ) + ")." );
+
+            const glm::vec4& expr = cadherin->targetExpression;
+            if( expr.x < 0.0f || expr.x > 1.0f ||
+                expr.y < 0.0f || expr.y > 1.0f ||
+                expr.z < 0.0f || expr.z > 1.0f ||
+                expr.w < 0.0f || expr.w > 1.0f )
+                result.AddError( "AgentGroup '" + group.GetName() +
+                                 "': CadherinAdhesion targetExpression components must be in [0, 1]." );
+        }
+
+        // Warn if any off-diagonal affinity matrix element is outside [-1, 1]
+        const glm::mat4& m = blueprint.GetCadherinAffinityMatrix();
+        for( int col = 0; col < 4; ++col )
+            for( int row = 0; row < 4; ++row )
+                if( row != col && ( m[ col ][ row ] < -1.0f || m[ col ][ row ] > 1.0f ) )
+                {
+                    result.AddWarning( "CadherinAffinityMatrix: off-diagonal element [" +
+                                       std::to_string( row ) + "][" + std::to_string( col ) +
+                                       "] = " + std::to_string( m[ col ][ row ] ) +
+                                       " is outside [-1, 1]. This may produce unexpected adhesion forces." );
+                    return; // one warning is enough
+                }
     }
 
     void SimulationValidator::CheckPopulations( const SimulationBlueprint& blueprint, ValidationResult& result )

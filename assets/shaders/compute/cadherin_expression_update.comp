@@ -1,0 +1,65 @@
+#version 460
+layout(local_size_x = 256) in;
+
+// Per-agent lerp of current cadherin expression profile toward targetExpression.
+// Up-regulation uses expressionRate; down-regulation uses degradationRate.
+// No ping-pong: cadherinProfileBuffer is read-write in place.
+
+layout(push_constant) uniform PushConstants {
+    float dt;
+    float totalTime;
+    float expressionRate;   // fParam0 — up-regulation speed (1/s)
+    float degradationRate;  // fParam1 — down-regulation speed (1/s)
+    float targetX;          // fParam2 — target E-cadherin   (0-1)
+    float targetY;          // fParam3 — target N-cadherin   (0-1)
+    float targetZ;          // fParam4 — target VE-cadherin  (0-1)
+    float targetW;          // fParam5 — target Cadherin-11  (0-1)
+    uint  offset;
+    uint  maxCapacity;
+    uint  uParam0;          // requiredLifecycleState (0xFFFFFFFF = Any)
+    uint  grpNdx;
+    vec4  domainSize;       // unused
+    uvec4 gridSize;         // unused
+} pc;
+
+layout(std140, binding = 0) readonly buffer Agents { vec4 positions[]; } inAgents;
+
+layout(std430, binding = 1) buffer CadherinProfiles { vec4 profiles[]; } cadherinProfiles;
+
+layout(std430, binding = 2) readonly buffer CounterBuffer { uint counts[]; } counters;
+
+struct PhenotypeData {
+    uint  lifecycleState;
+    float biomass;
+    float timer;
+    uint  cellType;
+};
+layout(std430, binding = 3) readonly buffer Phenotypes { PhenotypeData data[]; } phenotypes;
+
+void main()
+{
+    uint idx = gl_GlobalInvocationID.x;
+    if (idx >= pc.maxCapacity) return;
+    if (idx >= counters.counts[pc.grpNdx]) return;
+
+    uint globalIdx = pc.offset + idx;
+
+    // Dead-slot guard (w == 0 means unallocated / removed)
+    if (inAgents.positions[globalIdx].w == 0.0) return;
+
+    // Lifecycle state filter (0xFFFFFFFF = Any → int(-1) < 0 → skip)
+    int reqLC = int(pc.uParam0);
+    if (reqLC >= 0 && int(phenotypes.data[globalIdx].lifecycleState) != reqLC) return;
+
+    vec4 current = cadherinProfiles.profiles[globalIdx];
+    vec4 target  = vec4(pc.targetX, pc.targetY, pc.targetZ, pc.targetW);
+
+    // Per-channel: upregulate or degrade toward target
+    vec4 delta  = target - current;
+    vec4 rising = vec4(greaterThan(delta, vec4(0.0)));
+    vec4 rate   = mix(vec4(pc.degradationRate), vec4(pc.expressionRate), rising);
+    vec4 result = current + sign(delta) * rate * pc.dt;
+
+    // Clamp to prevent overshoot in either direction
+    cadherinProfiles.profiles[globalIdx] = clamp(result, min(current, target), max(current, target));
+}

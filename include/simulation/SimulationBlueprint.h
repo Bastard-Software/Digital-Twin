@@ -89,6 +89,14 @@ namespace DigitalTwin
         const SpatialPartitioningConfig& GetSpatialPartitioning() const { return m_spatialConfig; }
         SpatialPartitioningConfig&       ConfigureSpatialPartitioning() { return m_spatialConfig; }
 
+        // --- Cadherin affinity matrix ---
+        SimulationBlueprint& SetCadherinAffinityMatrix( const glm::mat4& m )
+        {
+            m_cadherinAffinityMatrix = m;
+            return *this;
+        }
+        const glm::mat4& GetCadherinAffinityMatrix() const { return m_cadherinAffinityMatrix; }
+
     private:
         std::string               m_name       = "Untitled Simulation";
         glm::vec3                 m_domainSize = glm::vec3( 1000.0f );
@@ -96,5 +104,6 @@ namespace DigitalTwin
         SpatialPartitioningConfig m_spatialConfig;
         std::vector<GridField>    m_gridFields;
         std::vector<AgentGroup>   m_groups;
+        glm::mat4                 m_cadherinAffinityMatrix = glm::mat4( 1.0f ); // Identity = pure homophilic
     };
 } // namespace DigitalTwin

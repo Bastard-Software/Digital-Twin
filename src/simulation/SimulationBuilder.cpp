@@ -47,6 +47,10 @@ namespace DigitalTwin
             resourceManager->DestroyBuffer( agentCountBuffer );
         if( phenotypeBuffer.IsValid() )
             resourceManager->DestroyBuffer( phenotypeBuffer );
+        if( cadherinProfileBuffer.IsValid() )
+            resourceManager->DestroyBuffer( cadherinProfileBuffer );
+        if( cadherinAffinityBuffer.IsValid() )
+            resourceManager->DestroyBuffer( cadherinAffinityBuffer );
         if( orientationBuffer.IsValid() )
             resourceManager->DestroyBuffer( orientationBuffer );
         if( signalingBuffer.IsValid() )
@@ -83,8 +87,10 @@ namespace DigitalTwin
         agentBuffers[ 0 ] = {};
         agentBuffers[ 1 ] = {};
         agentCountBuffer  = {};
-        phenotypeBuffer       = {};
-        signalingBuffer       = {};
+        phenotypeBuffer        = {};
+        cadherinProfileBuffer  = {};
+        cadherinAffinityBuffer = {};
+        signalingBuffer        = {};
         vesselEdgeBuffer       = {};
         vesselEdgeCountBuffer  = {};
         vesselComponentBuffer  = {};
@@ -682,6 +688,69 @@ namespace DigitalTwin
             }
         }
 
+        // Pre-pass: allocate cadherin profile buffer and affinity UBO.
+        // Both are always allocated so Stage 5's unified JKR shader always has valid bindings.
+        {
+            bool hasCadherin = false;
+            for( const auto& g: blueprint.GetGroups() )
+                for( const auto& record: g.GetBehaviours() )
+                    if( std::holds_alternative<Behaviours::CadherinAdhesion>( record.behaviour ) )
+                        { hasCadherin = true; break; }
+
+            if( hasCadherin )
+            {
+                uint32_t globalCapacity = 0;
+                for( const auto& g: blueprint.GetGroups() )
+                {
+                    if( g.GetCount() == 0 ) continue;
+                    uint32_t cap = 131072;
+                    while( cap < g.GetCount() ) cap <<= 1;
+                    globalCapacity += cap;
+                }
+
+                size_t profileSize             = globalCapacity * sizeof( glm::vec4 );
+                outState.cadherinProfileBuffer = m_resourceManager->CreateBuffer(
+                    { profileSize, BufferType::STORAGE, "CadherinProfileBuffer" } );
+
+                std::vector<glm::vec4> profiles( globalCapacity, glm::vec4( 0.0f ) );
+                uint32_t off = 0;
+                for( const auto& g: blueprint.GetGroups() )
+                {
+                    if( g.GetCount() == 0 ) continue;
+                    uint32_t cap = 131072;
+                    while( cap < g.GetCount() ) cap <<= 1;
+                    glm::vec4 target = glm::vec4( 0.0f );
+                    for( const auto& record: g.GetBehaviours() )
+                        if( std::holds_alternative<Behaviours::CadherinAdhesion>( record.behaviour ) )
+                        {
+                            target = std::get<Behaviours::CadherinAdhesion>( record.behaviour ).targetExpression;
+                            break;
+                        }
+                    for( uint32_t i = 0; i < cap; i++ )
+                        profiles[ off + i ] = target;
+                    off += cap;
+                }
+                m_streamingManager->UploadBufferImmediate(
+                    { { outState.cadherinProfileBuffer, profiles.data(), profileSize, 0 } } );
+            }
+            else
+            {
+                // Dummy: one vec4 (16 bytes) — binding always valid, shader branch skips it
+                glm::vec4 dummy( 0.0f );
+                outState.cadherinProfileBuffer = m_resourceManager->CreateBuffer(
+                    { sizeof( glm::vec4 ), BufferType::STORAGE, "CadherinProfileBuffer_Dummy" } );
+                m_streamingManager->UploadBufferImmediate(
+                    { { outState.cadherinProfileBuffer, &dummy, sizeof( glm::vec4 ), 0 } } );
+            }
+
+            // Affinity UBO — always the blueprint matrix (identity when cadherin unused)
+            glm::mat4 affinity                  = blueprint.GetCadherinAffinityMatrix();
+            outState.cadherinAffinityBuffer     = m_resourceManager->CreateBuffer(
+                { sizeof( glm::mat4 ), BufferType::STORAGE, "CadherinAffinityBuffer" } );
+            m_streamingManager->UploadBufferImmediate(
+                { { outState.cadherinAffinityBuffer, &affinity, sizeof( glm::mat4 ), 0 } } );
+        }
+
         uint32_t behaviourIndex = 0;
 
         for( const auto& group: blueprint.GetGroups() )
@@ -783,6 +852,8 @@ namespace DigitalTwin
                         bgJkr0->Bind( 6, m_resourceManager->GetBuffer( outState.phenotypeBuffer ) );
                     else
                         bgJkr0->Bind( 6, m_resourceManager->GetBuffer( outState.agentBuffers[ 0 ] ) );
+                    bgJkr0->Bind( 7, m_resourceManager->GetBuffer( outState.cadherinProfileBuffer ) );
+                    bgJkr0->Bind( 8, m_resourceManager->GetBuffer( outState.cadherinAffinityBuffer ) );
                     bgJkr0->Build();
 
                     BindingGroup* bgJkr1 = m_resourceManager->GetBindingGroup( m_resourceManager->CreateBindingGroup( jkrPipeHandle, 0 ) );
@@ -796,6 +867,8 @@ namespace DigitalTwin
                         bgJkr1->Bind( 6, m_resourceManager->GetBuffer( outState.phenotypeBuffer ) );
                     else
                         bgJkr1->Bind( 6, m_resourceManager->GetBuffer( outState.agentBuffers[ 1 ] ) );
+                    bgJkr1->Bind( 7, m_resourceManager->GetBuffer( outState.cadherinProfileBuffer ) );
+                    bgJkr1->Bind( 8, m_resourceManager->GetBuffer( outState.cadherinAffinityBuffer ) );
                     bgJkr1->Build();
 
                     // 3. Configure Task specific parameters
@@ -816,6 +889,16 @@ namespace DigitalTwin
                     // Same convention as Anastomosis and Chemotaxis shaders.
                     jkrPC.domainSize           = glm::vec4( blueprint.GetDomainSize(), blueprint.GetSpatialPartitioning().cellSize );
 
+                    // Cadherin-scaled adhesion: check if this group also has CadherinAdhesion
+                    {
+                        const Behaviours::CadherinAdhesion* cadherin = nullptr;
+                        for( const auto& r: group.GetBehaviours() )
+                            if( const auto* c = std::get_if<Behaviours::CadherinAdhesion>( &r.behaviour ) )
+                                { cadherin = c; break; }
+                        jkrPC.gridSize.x = cadherin ? 1u : 0u;
+                        jkrPC.gridSize.y = cadherin ? *reinterpret_cast<const uint32_t*>( &cadherin->couplingStrength ) : 0u;
+                    }
+
                     // 4. Append Task to Compute Graph
                     glm::uvec3 jkrDispatch( ( paddedCount + 255 ) / 256, 1, 1 );
 
@@ -825,6 +908,72 @@ namespace DigitalTwin
                     outState.computeGraph.AddTask( jkrTask );
 
                     DT_INFO( "[SimulationBuilder] Compiled Biomechanics (JKR) for '{}' at {}Hz", group.GetName(), record.targetHz );
+                }
+                if( std::holds_alternative<Behaviours::CadherinAdhesion>( record.behaviour ) )
+                {
+                    const auto& cadherin = std::get<Behaviours::CadherinAdhesion>( record.behaviour );
+
+                    // Ensure phenotype buffer exists (needed for lifecycle-state filter)
+                    if( !outState.phenotypeBuffer.IsValid() )
+                    {
+                        uint32_t globalCapacity = 0;
+                        for( const auto& g: blueprint.GetGroups() )
+                        {
+                            if( g.GetCount() == 0 )
+                                continue;
+                            uint32_t cap = 131072;
+                            while( cap < g.GetCount() )
+                                cap <<= 1;
+                            globalCapacity += cap;
+                        }
+                        size_t phenotypeSize     = globalCapacity * sizeof( uint32_t ) * 4;
+                        outState.phenotypeBuffer = m_resourceManager->CreateBuffer( { phenotypeSize, BufferType::STORAGE, "PhenotypeBuffer" } );
+                        std::vector<PhenotypeData> initPhenotypes( globalCapacity, { 0, 0.5f, 0.0f, 0 } );
+                        m_streamingManager->UploadBufferImmediate( { { outState.phenotypeBuffer, initPhenotypes.data(), phenotypeSize, 0 } } );
+                    }
+
+                    ShaderHandle shaderHandle = m_resourceManager->CreateShader(
+                        "shaders/compute/cadherin_expression_update.comp" );
+                    ComputePipelineDesc   pipeDesc{ shaderHandle, "CadherinExpressionUpdate" };
+                    ComputePipelineHandle pipeHandle = m_resourceManager->CreatePipeline( pipeDesc );
+                    ComputePipeline*      pipe       = m_resourceManager->GetPipeline( pipeHandle );
+
+                    // Two binding groups tracking the active agent buffer index (dead-cell guard only).
+                    // cadherinProfileBuffer is in-place readwrite — same handle in both groups.
+                    BindingGroup* bg0 = m_resourceManager->GetBindingGroup( m_resourceManager->CreateBindingGroup( pipeHandle, 0 ) );
+                    bg0->Bind( 0, m_resourceManager->GetBuffer( outState.agentBuffers[ 0 ] ) );
+                    bg0->Bind( 1, m_resourceManager->GetBuffer( outState.cadherinProfileBuffer ) );
+                    bg0->Bind( 2, m_resourceManager->GetBuffer( outState.agentCountBuffer ) );
+                    bg0->Bind( 3, m_resourceManager->GetBuffer( outState.phenotypeBuffer ) );
+                    bg0->Build();
+
+                    BindingGroup* bg1 = m_resourceManager->GetBindingGroup( m_resourceManager->CreateBindingGroup( pipeHandle, 0 ) );
+                    bg1->Bind( 0, m_resourceManager->GetBuffer( outState.agentBuffers[ 1 ] ) );
+                    bg1->Bind( 1, m_resourceManager->GetBuffer( outState.cadherinProfileBuffer ) );
+                    bg1->Bind( 2, m_resourceManager->GetBuffer( outState.agentCountBuffer ) );
+                    bg1->Bind( 3, m_resourceManager->GetBuffer( outState.phenotypeBuffer ) );
+                    bg1->Build();
+
+                    ComputePushConstants cadPC{};
+                    cadPC.fParam0     = cadherin.expressionRate;
+                    cadPC.fParam1     = cadherin.degradationRate;
+                    cadPC.fParam2     = cadherin.targetExpression.x;
+                    cadPC.fParam3     = cadherin.targetExpression.y;
+                    cadPC.fParam4     = cadherin.targetExpression.z;
+                    cadPC.fParam5     = cadherin.targetExpression.w;
+                    cadPC.offset      = currentOffset;
+                    cadPC.maxCapacity = paddedCount;
+                    cadPC.uParam0     = static_cast<uint32_t>( record.requiredLifecycleState );
+                    cadPC.uParam1     = groupIndex;
+
+                    glm::uvec3 dispatch( ( paddedCount + 255 ) / 256, 1, 1 );
+                    ComputeTask cadTask( pipe, bg0, bg1, record.targetHz, cadPC, dispatch );
+                    cadTask.SetTag( "cadherin_expr" + tagBase );
+                    // No ChainFlip: this shader writes to cadherinProfileBuffer, not agent positions.
+                    outState.computeGraph.AddTask( cadTask );
+
+                    DT_INFO( "[SimulationBuilder] Compiled CadherinAdhesion (expression) for '{}' at {}Hz",
+                             group.GetName(), record.targetHz );
                 }
                 if( std::holds_alternative<Behaviours::CellCycle>( record.behaviour ) )
                 {
@@ -1849,6 +1998,32 @@ namespace DigitalTwin
                         pc.fParam4                = bio.dampingCoefficient;
                         pc.fParam5                = bio.maxRadius;
                         // domainSize.w holds the spatial hash cell size — do NOT overwrite with maxRadius
+                        // Update cadherin coupling flag in case couplingStrength changed via HotReload
+                        {
+                            const Behaviours::CadherinAdhesion* cadherin = nullptr;
+                            for( const auto& r: group.GetBehaviours() )
+                                if( const auto* c = std::get_if<Behaviours::CadherinAdhesion>( &r.behaviour ) )
+                                    { cadherin = c; break; }
+                            pc.gridSize.x = cadherin ? 1u : 0u;
+                            pc.gridSize.y = cadherin ? *reinterpret_cast<const uint32_t*>( &cadherin->couplingStrength ) : 0u;
+                        }
+                        task->UpdatePushConstants( pc );
+                    }
+                }
+                else if( std::holds_alternative<Behaviours::CadherinAdhesion>( record.behaviour ) )
+                {
+                    ComputeTask* task = state.computeGraph.FindTask( "cadherin_expr" + tagBase );
+                    if( task )
+                    {
+                        const auto&          cad = std::get<Behaviours::CadherinAdhesion>( record.behaviour );
+                        ComputePushConstants pc   = task->GetPushConstants();
+                        pc.fParam0               = cad.expressionRate;
+                        pc.fParam1               = cad.degradationRate;
+                        pc.fParam2               = cad.targetExpression.x;
+                        pc.fParam3               = cad.targetExpression.y;
+                        pc.fParam4               = cad.targetExpression.z;
+                        pc.fParam5               = cad.targetExpression.w;
+                        pc.uParam0               = static_cast<uint32_t>( record.requiredLifecycleState );
                         task->UpdatePushConstants( pc );
                     }
                 }

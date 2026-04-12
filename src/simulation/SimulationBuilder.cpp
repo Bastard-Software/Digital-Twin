@@ -1,6 +1,7 @@
 #include "simulation/SimulationBuilder.h"
 
 #include "core/Log.h"
+#include <glm/gtc/packing.hpp>
 #include "resources/ResourceManager.h"
 #include "resources/StreamingManager.h"
 #include "rhi/BindingGroup.h"
@@ -994,6 +995,7 @@ namespace DigitalTwin
                         bgJkr0->Bind( 6, m_resourceManager->GetBuffer( outState.agentBuffers[ 0 ] ) );
                     bgJkr0->Bind( 7, m_resourceManager->GetBuffer( outState.cadherinProfileBuffer ) );
                     bgJkr0->Bind( 8, m_resourceManager->GetBuffer( outState.cadherinAffinityBuffer ) );
+                    bgJkr0->Bind( 9, m_resourceManager->GetBuffer( outState.polarityBuffer ) );
                     bgJkr0->Build();
 
                     BindingGroup* bgJkr1 = m_resourceManager->GetBindingGroup( m_resourceManager->CreateBindingGroup( jkrPipeHandle, 0 ) );
@@ -1009,6 +1011,7 @@ namespace DigitalTwin
                         bgJkr1->Bind( 6, m_resourceManager->GetBuffer( outState.agentBuffers[ 1 ] ) );
                     bgJkr1->Bind( 7, m_resourceManager->GetBuffer( outState.cadherinProfileBuffer ) );
                     bgJkr1->Bind( 8, m_resourceManager->GetBuffer( outState.cadherinAffinityBuffer ) );
+                    bgJkr1->Bind( 9, m_resourceManager->GetBuffer( outState.polarityBuffer ) );
                     bgJkr1->Build();
 
                     // 3. Configure Task specific parameters
@@ -1037,6 +1040,18 @@ namespace DigitalTwin
                                 { cadherin = c; break; }
                         jkrPC.gridSize.x = cadherin ? 1u : 0u;
                         jkrPC.gridSize.y = cadherin ? *reinterpret_cast<const uint32_t*>( &cadherin->couplingStrength ) : 0u;
+                    }
+
+                    // Polarity-modulated adhesion: check if this group also has CellPolarity
+                    {
+                        const Behaviours::CellPolarity* polarity = nullptr;
+                        for( const auto& r: group.GetBehaviours() )
+                            if( const auto* p = std::get_if<Behaviours::CellPolarity>( &r.behaviour ) )
+                                { polarity = p; break; }
+                        jkrPC.gridSize.z = polarity ? 1u : 0u;
+                        jkrPC.gridSize.w = polarity
+                            ? glm::packHalf2x16( glm::vec2( polarity->apicalRepulsion, polarity->basalAdhesion ) )
+                            : 0u;
                     }
 
                     // 4. Append Task to Compute Graph
@@ -2146,6 +2161,17 @@ namespace DigitalTwin
                                     { cadherin = c; break; }
                             pc.gridSize.x = cadherin ? 1u : 0u;
                             pc.gridSize.y = cadherin ? *reinterpret_cast<const uint32_t*>( &cadherin->couplingStrength ) : 0u;
+                        }
+                        // Update polarity flag in case apicalRepulsion/basalAdhesion changed via HotReload
+                        {
+                            const Behaviours::CellPolarity* polarity = nullptr;
+                            for( const auto& r: group.GetBehaviours() )
+                                if( const auto* p = std::get_if<Behaviours::CellPolarity>( &r.behaviour ) )
+                                    { polarity = p; break; }
+                            pc.gridSize.z = polarity ? 1u : 0u;
+                            pc.gridSize.w = polarity
+                                ? glm::packHalf2x16( glm::vec2( polarity->apicalRepulsion, polarity->basalAdhesion ) )
+                                : 0u;
                         }
                         task->UpdatePushConstants( pc );
                     }

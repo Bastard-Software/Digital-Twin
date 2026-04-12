@@ -17,6 +17,8 @@ layout(push_constant) uniform PushConstants {
     vec4  domainSize;
     uvec4 gridSize;          // x: cadherin active flag (0=off, 1=on)
                              // y: couplingStrength encoded as uintBitsToFloat
+                             // z: polarity active flag (0=off, 1=on)
+                             // w: packHalf2x16(apicalRepulsion, basalAdhesion)
 } pc;
 
 layout(std140, binding = 0) readonly buffer InputAgents { vec4 positions[]; } inAgents;
@@ -39,6 +41,10 @@ layout(std430, binding = 6) readonly buffer Phenotypes { PhenotypeData data[]; }
 // Cadherin differential adhesion (always bound; active only when pc.gridSize.x != 0)
 layout(std430, binding = 7) readonly buffer CadherinProfiles { vec4 profiles[]; } cadherinProfiles;
 layout(std430, binding = 8) readonly buffer CadherinAffinityBuf { mat4 M; } cadherinAffinity;
+
+// Apical-basal polarity (always bound; active only when pc.gridSize.z != 0)
+// xyz = outward direction, w = magnitude (0=interior, 1=surface)
+layout(std430, binding = 9) readonly buffer PolarityBuf { vec4 data[]; } polarityData;
 
 uint hashPos(ivec3 cell) {
     const uint p1 = 73856093; const uint p2 = 19349663; const uint p3 = 83492791;
@@ -125,6 +131,20 @@ void main() {
                             vec4  profileJ = cadherinProfiles.profiles[neighborAgentIdx];
                             float A = clamp(dot(profileI, cadherinAffinity.M * profileJ), 0.0, 1.0);
                             adhForce *= A * couplingStrength;
+                        }
+
+                        // Polarity-modulated adhesion — apical-apical contacts weaken, basal-basal strengthen
+                        if (pc.gridSize.z != 0u) {
+                            vec2  pp        = unpackHalf2x16(pc.gridSize.w); // x=apicalRepulsion, y=basalAdhesion
+                            vec3  r_ij      = diff / dist;                   // unit vector i→j (from neighbor toward me)
+                            float dotI      = dot(polarityData.data[originalAgentIdx].xyz, -r_ij); // >0 if basal faces neighbor
+                            float dotJ      = dot(polarityData.data[neighborAgentIdx].xyz,  r_ij); // >0 if basal faces neighbor
+                            float alignment = clamp((dotI + dotJ) * 0.5 + 0.5, 0.0, 1.0);
+                            float scale     = mix(pp.x, pp.y, alignment);   // apicalRepulsion → basalAdhesion
+                            float magI      = polarityData.data[originalAgentIdx].w;
+                            float magJ      = polarityData.data[neighborAgentIdx].w;
+                            float strength  = mix(1.0, scale, magI * magJ); // blend off→on by polarity magnitude
+                            adhForce *= strength;
                         }
 
                         float netForce = repForce - adhForce;

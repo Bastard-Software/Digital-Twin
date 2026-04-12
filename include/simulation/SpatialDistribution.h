@@ -48,6 +48,19 @@ namespace DigitalTwin
          *         geometry — no RNG, fully deterministic.
          */
         static std::vector<glm::vec4> LatticeInSphere( float spacing, float radius, const glm::vec3& center = glm::vec3( 0.0f ) );
+
+        /**
+         * @brief Fills a cylinder with agents placed on a regular cubic lattice.
+         * @param spacing    Distance between adjacent lattice points.
+         * @param radius     Radius of the cylinder (distance from axis).
+         * @param halfLength Half-length along the cylinder axis.
+         * @param center     Center of the cylinder.
+         * @param axis       Unit vector defining the cylinder axis (default Y-up).
+         * @return All lattice points where dist_from_axis <= radius AND |projection| <= halfLength.
+         */
+        static std::vector<glm::vec4> LatticeInCylinder( float spacing, float radius, float halfLength,
+                                                          const glm::vec3& center = glm::vec3( 0.0f ),
+                                                          const glm::vec3& axis   = glm::vec3( 0.0f, 1.0f, 0.0f ) );
     };
 
 } // namespace DigitalTwin

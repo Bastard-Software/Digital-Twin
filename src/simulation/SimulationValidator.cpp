@@ -25,6 +25,7 @@ namespace DigitalTwin
         CheckBehaviourParams( blueprint, result );
         CheckCellCycleThresholds( blueprint, result );
         CheckCadherinAdhesion( blueprint, result );
+        CheckCellPolarity( blueprint, result );
         CheckPopulations( blueprint, result );
 
         return result;
@@ -435,6 +436,49 @@ namespace DigitalTwin
                                        " is outside [-1, 1]. This may produce unexpected adhesion forces." );
                     return; // one warning is enough
                 }
+    }
+
+    void SimulationValidator::CheckCellPolarity( const SimulationBlueprint& blueprint, ValidationResult& result )
+    {
+        for( const auto& group : blueprint.GetGroups() )
+        {
+            bool hasCellPolarity  = false;
+            bool hasBiomechanics  = false;
+            const Behaviours::CellPolarity* polarity = nullptr;
+
+            for( const auto& record : group.GetBehaviours() )
+            {
+                if( std::holds_alternative<Behaviours::CellPolarity>( record.behaviour ) )
+                {
+                    hasCellPolarity = true;
+                    polarity        = &std::get<Behaviours::CellPolarity>( record.behaviour );
+                }
+                if( std::holds_alternative<Behaviours::Biomechanics>( record.behaviour ) )
+                    hasBiomechanics = true;
+            }
+
+            if( !hasCellPolarity )
+                continue;
+
+            if( !hasBiomechanics )
+                result.AddError( "AgentGroup '" + group.GetName() +
+                                 "': CellPolarity requires Biomechanics to also be present on the same group." );
+
+            if( polarity->regulationRate < 0.0f )
+                result.AddError( "AgentGroup '" + group.GetName() +
+                                 "': CellPolarity regulationRate must be >= 0 (got: " +
+                                 std::to_string( polarity->regulationRate ) + ")." );
+
+            if( polarity->apicalRepulsion < 0.0f )
+                result.AddError( "AgentGroup '" + group.GetName() +
+                                 "': CellPolarity apicalRepulsion must be >= 0 (got: " +
+                                 std::to_string( polarity->apicalRepulsion ) + ")." );
+
+            if( polarity->basalAdhesion < 0.0f )
+                result.AddError( "AgentGroup '" + group.GetName() +
+                                 "': CellPolarity basalAdhesion must be >= 0 (got: " +
+                                 std::to_string( polarity->basalAdhesion ) + ")." );
+        }
     }
 
     void SimulationValidator::CheckPopulations( const SimulationBlueprint& blueprint, ValidationResult& result )

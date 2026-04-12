@@ -91,6 +91,12 @@ namespace Gaudi
                         }
                     }
                 }
+                else if constexpr( std::is_same_v<T, DigitalTwin::Behaviours::CellPolarity> )
+                {
+                    changed |= ImGui::SliderFloat( "Regulation Rate",   &b.regulationRate,  0.0f, 1.0f, "%.3f" );
+                    changed |= ImGui::SliderFloat( "Apical Repulsion",  &b.apicalRepulsion, 0.0f, 1.0f );
+                    changed |= ImGui::SliderFloat( "Basal Adhesion",    &b.basalAdhesion,   1.0f, 3.0f );
+                }
                 else if constexpr( std::is_same_v<T, DigitalTwin::Behaviours::CadherinAdhesion> )
                 {
                     ImGui::SeparatorText( "Target Expression" );

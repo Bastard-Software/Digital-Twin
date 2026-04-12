@@ -144,6 +144,79 @@ TEST( SpatialDistribution_LatticeInSphere, Deterministic )
 }
 
 // =================================================================================================
+// SpatialDistribution::LatticeInCylinder — CPU-only
+// =================================================================================================
+
+TEST( SpatialDistribution_LatticeInCylinder, AllInsideCylinder )
+{
+    const float radius     = 4.0f;
+    const float halfLength = 6.0f;
+    auto        positions  = SpatialDistribution::LatticeInCylinder( 1.0f, radius, halfLength );
+
+    ASSERT_FALSE( positions.empty() );
+    for( const auto& p : positions )
+    {
+        // Axis is Y by default
+        float radDist = std::sqrt( p.x * p.x + p.z * p.z );
+        EXPECT_LE( radDist, radius + 1e-4f );
+        EXPECT_LE( std::abs( p.y ), halfLength + 1e-4f );
+    }
+}
+
+TEST( SpatialDistribution_LatticeInCylinder, CorrectSpacing )
+{
+    const float spacing    = 1.5f;
+    auto        positions  = SpatialDistribution::LatticeInCylinder( spacing, 3.0f, 4.0f );
+
+    ASSERT_FALSE( positions.empty() );
+    // No two points should be closer than spacing (minus floating-point tolerance)
+    for( size_t i = 0; i < positions.size(); ++i )
+        for( size_t j = i + 1; j < positions.size(); ++j )
+        {
+            glm::vec3 a( positions[ i ] ), b( positions[ j ] );
+            EXPECT_GE( glm::length( b - a ), spacing - 1e-3f );
+        }
+}
+
+TEST( SpatialDistribution_LatticeInCylinder, StatusFlagAlive )
+{
+    auto positions = SpatialDistribution::LatticeInCylinder( 1.0f, 3.0f, 4.0f );
+    for( const auto& p : positions )
+        EXPECT_FLOAT_EQ( p.w, 1.0f );
+}
+
+TEST( SpatialDistribution_LatticeInCylinder, CenterOffset )
+{
+    const glm::vec3 center( 5.0f, -3.0f, 2.0f );
+    auto            positions = SpatialDistribution::LatticeInCylinder( 1.0f, 2.0f, 3.0f, center );
+
+    ASSERT_FALSE( positions.empty() );
+    for( const auto& p : positions )
+    {
+        float radDist = std::sqrt( ( p.x - center.x ) * ( p.x - center.x ) +
+                                   ( p.z - center.z ) * ( p.z - center.z ) );
+        EXPECT_LE( radDist, 2.0f + 1e-4f );
+        EXPECT_LE( std::abs( p.y - center.y ), 3.0f + 1e-4f );
+    }
+}
+
+TEST( SpatialDistribution_LatticeInCylinder, CustomAxis )
+{
+    // Cylinder aligned with X axis
+    auto positions = SpatialDistribution::LatticeInCylinder( 1.0f, 2.0f, 4.0f,
+                                                              glm::vec3( 0.0f ),
+                                                              glm::vec3( 1.0f, 0.0f, 0.0f ) );
+
+    ASSERT_FALSE( positions.empty() );
+    for( const auto& p : positions )
+    {
+        float radDist = std::sqrt( p.y * p.y + p.z * p.z );
+        EXPECT_LE( radDist, 2.0f + 1e-4f );
+        EXPECT_LE( std::abs( p.x ), 4.0f + 1e-4f );
+    }
+}
+
+// =================================================================================================
 // MorphologyGenerator — CPU-only
 // =================================================================================================
 

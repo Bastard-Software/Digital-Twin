@@ -116,4 +116,30 @@ namespace DigitalTwin
         return positions;
     }
 
+    std::vector<glm::vec4> SpatialDistribution::LatticeInCylinder( float spacing, float radius, float halfLength,
+                                                                     const glm::vec3& center, const glm::vec3& axis )
+    {
+        std::vector<glm::vec4> positions;
+
+        // Build two basis vectors perpendicular to axis
+        glm::vec3 a = glm::normalize( axis );
+        glm::vec3 u = ( std::abs( a.x ) < 0.9f ) ? glm::vec3( 1, 0, 0 ) : glm::vec3( 0, 1, 0 );
+        glm::vec3 b = glm::normalize( glm::cross( a, u ) );
+        glm::vec3 c = glm::cross( a, b );
+
+        float extent = std::max( { radius, halfLength } );
+        for( float i = -extent; i <= extent; i += spacing )
+            for( float j = -extent; j <= extent; j += spacing )
+                for( float k = -extent; k <= extent; k += spacing )
+                {
+                    glm::vec3 p   = b * i + c * j + a * k;
+                    float     axP = glm::dot( p, a );
+                    glm::vec3 rad = p - axP * a;
+                    if( std::abs( axP ) <= halfLength && glm::dot( rad, rad ) <= radius * radius )
+                        positions.push_back( { center.x + p.x, center.y + p.y, center.z + p.z, 1.0f } );
+                }
+
+        return positions;
+    }
+
 } // namespace DigitalTwin

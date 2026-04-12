@@ -31,6 +31,28 @@ namespace DigitalTwin::Behaviours
     };
 
     /**
+     * @brief Apical-basal polarity for tissue organisation and lumen formation.
+     * Each cell develops a polarity vector pointing outward (basal direction) based
+     * on local neighbor geometry. Polarity modulates JKR adhesion: basal-basal contacts
+     * are strengthened, apical-apical contacts are weakened or repulsive, driving
+     * cavity/lumen formation from initially solid cell aggregates.
+     *
+     * Works in combination with Biomechanics (required).
+     *
+     * Biological relevance:
+     *   - Endothelial cells:    strong polarity → vessel lumen formation
+     *   - Tumour cells:         regulationRate ≈ 0 → polarity loss (EMT, invasion)
+     *   - Epithelial cells:     strong polarity → organized tissue layers / acini
+     *   - Immune/white cells:   do not use this (front-rear migration polarity is Chemotaxis)
+     */
+    struct CellPolarity
+    {
+        float regulationRate  = 0.1f;  // EMA rate for polarity adaptation (1/s)
+        float apicalRepulsion = 0.5f;  // adhesion multiplier when apical faces apical (< 1 = weaker)
+        float basalAdhesion   = 1.5f;  // adhesion multiplier when basal faces basal (> 1 = stronger)
+    };
+
+    /**
      * @brief Differential adhesion through cadherin expression profiles.
      * Works in combination with Biomechanics: when both are present on a group,
      * the JKR adhesion term is scaled by the per-pair affinity
@@ -161,6 +183,7 @@ namespace DigitalTwin
         Behaviours::BrownianMotion,
         Behaviours::ConsumeField,
         Behaviours::SecreteField,
+        Behaviours::CellPolarity,
         Behaviours::CadherinAdhesion,
         Behaviours::Biomechanics,
         Behaviours::CellCycle,

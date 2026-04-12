@@ -56,9 +56,14 @@ namespace DigitalTwin
         // Full-size when any group has CellPolarity; 16-byte dummy otherwise.
         BufferHandle polarityBuffer;
 
-        // Per-agent orientation normals (xyz=outward normal, w=0). Static — written once at init.
-        // Groups without orientations get default (0,1,0,0). Read by geometry.vert to orient meshes.
+        // Per-agent orientation quaternions (xyzw). Dynamic when rigid body active — updated by JKR
+        // each frame. Groups without a contact hull store (0,1,0,0) (shortest-arc mode in geometry.vert).
+        // Groups with a contact hull store identity quaternion (0,0,0,1) (quaternion mode).
         BufferHandle orientationBuffer;
+
+        // Per-group contact hull for rigid body dynamics (144 bytes: vec4 meta + 8 × vec4 points).
+        // Allocated when any group has Biomechanics. hullMeta.x=0 for sphere/spiky-sphere groups.
+        BufferHandle contactHullBuffer;
 
         // Angiogenesis signaling (Notch-Dll4 pathway state per agent)
         BufferHandle signalingBuffer;

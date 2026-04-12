@@ -2,6 +2,7 @@
 
 #include <cmath>
 #include <glm/gtc/constants.hpp>
+#include <glm/trigonometric.hpp>
 
 namespace DigitalTwin
 {
@@ -50,6 +51,21 @@ namespace DigitalTwin
             12, 13, 14, 14, 15, 12, // Right
             16, 17, 18, 18, 19, 16, // Top
             20, 21, 22, 22, 23, 20  // Bottom
+        };
+
+        // Contact hull: 12 points — 8 corners + 4 equatorial edge midpoints, sub-sphere radius = size/4
+        const float r = size * 0.25f;
+        data.contactHull = {
+            // 8 corners
+            { -hs, -hs, -hs, r }, { +hs, -hs, -hs, r },
+            { -hs, +hs, -hs, r }, { +hs, +hs, -hs, r },
+            { -hs, -hs, +hs, r }, { +hs, -hs, +hs, r },
+            { -hs, +hs, +hs, r }, { +hs, +hs, +hs, r },
+            // 4 equatorial edge midpoints (Y=0 plane)
+            { +hs, 0.0f, 0.0f, r },
+            { -hs, 0.0f, 0.0f, r },
+            { 0.0f, 0.0f, +hs, r },
+            { 0.0f, 0.0f, -hs, r },
         };
 
         return data;
@@ -164,6 +180,16 @@ namespace DigitalTwin
             data.indices.push_back( botCenter );
             data.indices.push_back( botRim + i );
             data.indices.push_back( botRim + i + 1 );
+        }
+
+        // Contact hull: 4 top-rim + 4 bottom-rim points at 90° intervals, sub-sphere radius = radius/3
+        const float r = radius / 3.0f;
+        for( int i = 0; i < 4; ++i )
+        {
+            float angle = i * glm::pi<float>() * 0.5f;
+            float c = cosf( angle ), s = sinf( angle );
+            data.contactHull.push_back( { radius * c, +hh, radius * s, r } );
+            data.contactHull.push_back( { radius * c, -hh, radius * s, r } );
         }
 
         return data;
@@ -292,6 +318,14 @@ namespace DigitalTwin
             data.indices.push_back( t1 ); data.indices.push_back( b1 ); data.indices.push_back( b0 );
         }
 
+        // Contact hull: 8 circumference points at 45° intervals, sub-sphere radius = thickness/2
+        const float r = hh; // = thickness/2
+        for( int i = 0; i < 8; ++i )
+        {
+            float angle = i * glm::pi<float>() * 0.25f;
+            data.contactHull.push_back( { radius * cosf( angle ), 0.0f, radius * sinf( angle ), r } );
+        }
+
         return data;
     }
 
@@ -337,13 +371,34 @@ namespace DigitalTwin
         };
 
         data.indices = {
-             0,  1,  2,  2,  3,  0,  // Top
-             4,  5,  6,  6,  7,  4,  // Bottom
-             8,  9, 10, 10, 11,  8,  // Front
-            12, 13, 14, 14, 15, 12,  // Back
-            16, 17, 18, 18, 19, 16,  // Right
-            20, 21, 22, 22, 23, 20,  // Left
+             2,  1,  0,  0,  3,  2,  // Top    (reversed: was CW from above, now CCW)
+             6,  5,  4,  4,  7,  6,  // Bottom (reversed: was CCW from above, now CW)
+             8,  9, 10, 10, 11,  8,  // Front  (original — already correct)
+            12, 13, 14, 14, 15, 12,  // Back   (original — already correct)
+            16, 17, 18, 18, 19, 16,  // Right  (original — already correct)
+            20, 21, 22, 22, 23, 20,  // Left   (original — already correct)
         };
+
+        // Contact hull: 8 points — 2 per edge at ±1/2 edge-length positions (Y=0 mid-plane).
+        // Two sub-spheres per edge define each cadherin-bearing interface; this guarantees a
+        // non-zero lever arm (and thus a non-zero restoring torque) at all rotation angles,
+        // and avoids single-point null-torque configurations.  No corner points — corners
+        // cannot generate useful alignment torques and can lock the tile at off-zero angles.
+        const float hullR = ht * 2.0f; // cadherin contact zone radius (~VE-cadherin plaque width)
+        const float hx    = hw * 0.5f; // half of half-width  — lateral offset on front/back edges
+        const float hz    = hh * 0.5f; // half of half-height — axial offset on right/left edges
+        data.contactHull = {
+            { +hw, 0.0f, +hz, hullR },  // right edge, front point
+            { +hw, 0.0f, -hz, hullR },  // right edge, back point
+            { -hw, 0.0f, +hz, hullR },  // left edge,  front point
+            { -hw, 0.0f, -hz, hullR },  // left edge,  back point
+            { +hx, 0.0f, +hh, hullR },  // front edge, right point
+            { -hx, 0.0f, +hh, hullR },  // front edge, left point
+            { +hx, 0.0f, -hh, hullR },  // back edge,  right point
+            { -hx, 0.0f, -hh, hullR },  // back edge,  left point
+        };
+        data.hullExtentZ = hh * 0.5f; // reduced steric Z-extent keeps tiles inside interactDist at all demo angles
+        data.hullExtentY = ht;        // model-Y half-extent (thickness / 2)
 
         return data;
     }
@@ -463,6 +518,27 @@ namespace DigitalTwin
             data.vertices.push_back( { innerPt( +hh, t ), nrm } );  // 3: inner R
             data.indices.push_back( ab );     data.indices.push_back( ab + 1 ); data.indices.push_back( ab + 2 );
             data.indices.push_back( ab + 2 ); data.indices.push_back( ab + 1 ); data.indices.push_back( ab + 3 );
+        }
+
+        // Contact hull: 8 points — 4 corners + 4 edge midpoints, on the mid-radius surface.
+        // X = axial (±hh), arc angle = ±halfArc or 0, Y/Z from mid-radius at that angle.
+        // Sub-sphere radius = thickness/2.
+        {
+            const float subR = ( R_out - R_in ) * 0.5f; // = thickness/2
+            // 4 corners
+            for( float axial : { -hh, +hh } )
+                for( float t : { -halfArc, +halfArc } )
+                    data.contactHull.push_back( { axial,
+                                                  R_mid * cosf( t ) - R_mid,
+                                                  R_mid * sinf( t ),
+                                                  subR } );
+            // 4 edge midpoints: axial midpoints at each arc-end, arc-center at each axial end
+            data.contactHull.push_back( { 0.0f, R_mid * cosf( -halfArc ) - R_mid, R_mid * sinf( -halfArc ), subR } );
+            data.contactHull.push_back( { 0.0f, R_mid * cosf( +halfArc ) - R_mid, R_mid * sinf( +halfArc ), subR } );
+            data.contactHull.push_back( {  -hh, R_mid * cosf( 0.0f )    - R_mid, R_mid * sinf( 0.0f ),     subR } );
+            data.contactHull.push_back( {  +hh, R_mid * cosf( 0.0f )    - R_mid, R_mid * sinf( 0.0f ),     subR } );
+            data.hullExtentZ = R_mid * sinf( halfArc ); // circumferential half-width
+            data.hullExtentY = subR;                     // thickness / 2
         }
 
         return data;

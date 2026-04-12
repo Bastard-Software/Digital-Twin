@@ -3518,3 +3518,145 @@ TEST_F( SimulationBuilderTest, EndothelialTube_BuildsAndDispatches )
 
     state.Destroy( m_resourceManager.get() );
 }
+
+// =============================================================================
+// Rigid body dynamics — builder wiring + orientation evolution tests
+// =============================================================================
+
+// 1. Builder wiring: a blueprint with CurvedTile morphology + JKR Biomechanics must allocate
+//    the contactHullBuffer and orientationBuffer.
+//
+// CurvedTile has a non-empty contactHull, so the builder should produce both buffers.
+TEST_F( SimulationBuilderTest, JKR_RigidBody_BuilderWiring )
+{
+    if( !m_device )
+        GTEST_SKIP();
+
+    SimulationBlueprint blueprint;
+    blueprint.SetName( "RigidBodyWiringTest" );
+    blueprint.SetDomainSize( glm::vec3( 20.0f ), 1.5f );
+
+    blueprint.ConfigureSpatialPartitioning()
+        .SetMethod( SpatialPartitioningMethod::HashGrid )
+        .SetCellSize( 3.0f )
+        .SetMaxDensity( 64 )
+        .SetComputeHz( 60.0f );
+
+    auto jkr = BiomechanicsGenerator::JKR()
+                   .SetYoungsModulus( 20.0f )
+                   .SetPoissonRatio( 0.4f )
+                   .SetAdhesionEnergy( 1.0f )
+                   .SetMaxInteractionRadius( 0.75f )
+                   .SetDampingCoefficient( 200.0f )
+                   .Build();
+
+    // Two cells side-by-side; positions don't need to be physically meaningful here.
+    std::vector<glm::vec4> positions = {
+        glm::vec4( 0.0f, 0.0f, 0.0f, 1.0f ),
+        glm::vec4( 0.5f, 0.0f, 0.0f, 1.0f )
+    };
+
+    AgentGroup& group = blueprint.AddAgentGroup( "Tiles" );
+    group.SetCount( 2 )
+         .SetMorphology( MorphologyGenerator::CreateCurvedTile( 10.0f, 0.3f, 0.5f, 1.0f ) )
+         .SetDistribution( positions );
+    group.AddBehaviour( jkr ).SetHz( 60.0f );
+
+    SimulationBuilder builder( m_resourceManager.get(), m_streamingManager.get() );
+    SimulationState   state = builder.Build( blueprint );
+
+    EXPECT_TRUE( state.orientationBuffer.IsValid() )  << "orientationBuffer not allocated";
+    EXPECT_TRUE( state.contactHullBuffer.IsValid() )  << "contactHullBuffer not allocated";
+
+    state.Destroy( m_resourceManager.get() );
+}
+
+// 2. Orientation evolution: after several JKR frames, cells with hull contacts must have
+//    orientations that differ from their initial identity quaternion.
+//
+// Two cells are placed 0.4 units apart along X with small CurvedTile morphology (subR=0.25).
+// Hull points are ~0.15 from centre along X; inner contacts overlap by ~0.4 with subR=0.25.
+// Adhesion-only hull torque fires: cross(arm, dir*(-adh)) is non-zero for off-axis contacts.
+// After 10 frames the stored quaternions must move away from identity.
+TEST_F( SimulationBuilderTest, JKR_RigidBody_OrientationChanges )
+{
+    if( !m_device )
+        GTEST_SKIP();
+
+    SimulationBlueprint blueprint;
+    blueprint.SetName( "RigidBodyOrientTest" );
+    blueprint.SetDomainSize( glm::vec3( 20.0f ), 1.5f );
+
+    blueprint.ConfigureSpatialPartitioning()
+        .SetMethod( SpatialPartitioningMethod::HashGrid )
+        .SetCellSize( 3.0f )
+        .SetMaxDensity( 64 )
+        .SetComputeHz( 60.0f );
+
+    auto jkr = BiomechanicsGenerator::JKR()
+                   .SetYoungsModulus( 20.0f )
+                   .SetPoissonRatio( 0.4f )
+                   .SetAdhesionEnergy( 2.0f )     // adhesion drives hull torque (adhesion-only model)
+                   .SetMaxInteractionRadius( 0.75f )
+                   .SetDampingCoefficient( 0.0f ) // no damping — maximise rotation per step
+                   .Build();
+
+    // 0.4 units apart: inner axial hull corners (at x≈±0.15) are 0.1 apart → overlap=0.4 for subR=0.25
+    std::vector<glm::vec4> positions = {
+        glm::vec4( 0.0f, 0.0f, 0.0f, 1.0f ),
+        glm::vec4( 0.4f, 0.0f, 0.0f, 1.0f )
+    };
+
+    AgentGroup& group = blueprint.AddAgentGroup( "Tiles" );
+    group.SetCount( 2 )
+         .SetMorphology( MorphologyGenerator::CreateCurvedTile( 10.0f, 0.3f, 0.5f, 1.0f ) )
+         .SetDistribution( positions );
+    group.AddBehaviour( jkr ).SetHz( 60.0f );
+
+    SimulationBuilder builder( m_resourceManager.get(), m_streamingManager.get() );
+    SimulationState   state = builder.Build( blueprint );
+    ASSERT_TRUE( state.orientationBuffer.IsValid() );
+    ASSERT_TRUE( state.contactHullBuffer.IsValid() );
+
+    // Record initial orientations (identity quaternions for hull morphology)
+    std::vector<glm::vec4> initialOrientations( 2 );
+    m_streamingManager->ReadbackBufferImmediate(
+        state.orientationBuffer, initialOrientations.data(), 2 * sizeof( glm::vec4 ) );
+
+    // Dispatch 10 frames
+    auto compCtxHandle = m_device->CreateThreadContext( QueueType::COMPUTE );
+    auto compCtx       = m_device->GetThreadContext( compCtxHandle );
+    auto compCmd       = compCtx->GetCommandBuffer( compCtx->CreateCommandBuffer() );
+
+    GraphDispatcher dispatcher;
+    const float     dt = 1.0f / 60.0f;
+    for( int frame = 0; frame < 10; ++frame )
+    {
+        compCmd->Begin();
+        dispatcher.Dispatch( &state.computeGraph, compCmd, nullptr, dt, dt * static_cast<float>( frame ), frame % 2 );
+        compCmd->End();
+        m_device->GetComputeQueue()->Submit( { compCmd } );
+        m_device->GetComputeQueue()->WaitIdle();
+    }
+
+    std::vector<glm::vec4> finalOrientations( 2 );
+    m_streamingManager->ReadbackBufferImmediate(
+        state.orientationBuffer, finalOrientations.data(), 2 * sizeof( glm::vec4 ) );
+
+    // At least one cell must have rotated — orientation.xyz should be non-zero.
+    // Adhesion-only hull torques fire on overlapping off-axis contacts (Z offset ~0.109).
+    // Threshold is 5e-5 — well above floating-point noise (~1e-7).
+    bool anyChanged = false;
+    for( int i = 0; i < 2; ++i )
+    {
+        glm::vec4 d = finalOrientations[i] - initialOrientations[i];
+        if( std::abs( d.x ) > 5e-5f || std::abs( d.y ) > 5e-5f || std::abs( d.z ) > 5e-5f )
+        {
+            anyChanged = true;
+            break;
+        }
+    }
+    EXPECT_TRUE( anyChanged ) << "No cell rotated after 10 frames of hull contact";
+
+    state.Destroy( m_resourceManager.get() );
+}

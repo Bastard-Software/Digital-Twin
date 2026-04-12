@@ -753,6 +753,15 @@ TEST_F( ComputeTest, Shader_JKRForces_Logic )
     // Dummy polarity buffer for binding 9 (polarity flag = 0 in push constants → inactive)
     glm::vec4    zeroPolarityData[2] = {};
     BufferHandle polarityDummy = m_rm->CreateBuffer( { sizeof( zeroPolarityData ), BufferType::STORAGE, "JKRPolarityDummy" } );
+    // Dummy orientation buffer for binding 10 (hull count=0 → rigid body path inactive)
+    glm::vec4    identityQuat[2] = { glm::vec4( 0, 0, 0, 1 ), glm::vec4( 0, 0, 0, 1 ) };
+    BufferHandle orientationDummy = m_rm->CreateBuffer( { sizeof( identityQuat ), BufferType::STORAGE, "JKROrientationDummy" } );
+    m_stream->UploadBufferImmediate( { { orientationDummy, identityQuat, sizeof( identityQuat ) } } );
+    // Dummy contact hull buffer for binding 11 (hullMeta.x=0 → point-particle fallback)
+    struct ContactHullGPU { glm::vec4 meta{}; glm::vec4 points[16]{}; };
+    ContactHullGPU dummyHull{};
+    BufferHandle contactHullDummy = m_rm->CreateBuffer( { sizeof( ContactHullGPU ), BufferType::STORAGE, "JKRContactHullDummy" } );
+    m_stream->UploadBufferImmediate( { { contactHullDummy, &dummyHull, sizeof( ContactHullGPU ) } } );
 
     BindingGroupHandle bgHandle = m_rm->CreateBindingGroup( pipeHandle, 0 );
     BindingGroup*      bg       = m_rm->GetBindingGroup( bgHandle );
@@ -766,6 +775,8 @@ TEST_F( ComputeTest, Shader_JKRForces_Logic )
     bg->Bind( 7, m_rm->GetBuffer( cadProfileDummy ) );
     bg->Bind( 8, m_rm->GetBuffer( cadAffinityDummy ) );
     bg->Bind( 9, m_rm->GetBuffer( polarityDummy ) );
+    bg->Bind( 10, m_rm->GetBuffer( orientationDummy ) );
+    bg->Bind( 11, m_rm->GetBuffer( contactHullDummy ) );
     bg->Build();
 
     // 4. Setup Push Constants (Packed exactly as in SimulationBuilder)
@@ -5572,6 +5583,16 @@ static std::pair<float, float> RunJKRCadherin(
     ComputePipelineHandle pipeHandle = rm->CreatePipeline( pipeDesc );
     ComputePipeline*      pipeline   = rm->GetPipeline( pipeHandle );
 
+    // Dummy orientation buffer for binding 10 (hull count=0 → rigid body path inactive)
+    glm::vec4 identityQuats[2] = { glm::vec4( 0, 0, 0, 1 ), glm::vec4( 0, 0, 0, 1 ) };
+    BufferHandle orientBuf = rm->CreateBuffer( { sizeof( identityQuats ), BufferType::STORAGE, "JKROrientDummy" } );
+    stream->UploadBufferImmediate( { { orientBuf, identityQuats, sizeof( identityQuats ) } } );
+    // Dummy contact hull buffer for binding 11 (hullMeta.x=0 → point-particle fallback)
+    struct ContactHullGPU { glm::vec4 meta{}; glm::vec4 points[16]{}; };
+    ContactHullGPU dummyHull{};
+    BufferHandle hullBuf = rm->CreateBuffer( { sizeof( ContactHullGPU ), BufferType::STORAGE, "JKRHullDummy" } );
+    stream->UploadBufferImmediate( { { hullBuf, &dummyHull, sizeof( ContactHullGPU ) } } );
+
     BindingGroup* bg = rm->GetBindingGroup( rm->CreateBindingGroup( pipeHandle, 0 ) );
     bg->Bind( 0, rm->GetBuffer( inBuf ) );
     bg->Bind( 1, rm->GetBuffer( outBuf ) );
@@ -5583,6 +5604,8 @@ static std::pair<float, float> RunJKRCadherin(
     bg->Bind( 7, rm->GetBuffer( profBuf ) );
     bg->Bind( 8, rm->GetBuffer( affBuf ) );
     bg->Bind( 9, rm->GetBuffer( polarityBuf ) );
+    bg->Bind( 10, rm->GetBuffer( orientBuf ) );
+    bg->Bind( 11, rm->GetBuffer( hullBuf ) );
     bg->Build();
 
     uint32_t couplingBits  = 0u;
@@ -5622,6 +5645,7 @@ static std::pair<float, float> RunJKRCadherin(
     rm->DestroyBuffer( hashBuf ); rm->DestroyBuffer( offsetBuf ); rm->DestroyBuffer( countBuf );
     rm->DestroyBuffer( phenoBuf ); rm->DestroyBuffer( profBuf ); rm->DestroyBuffer( affBuf );
     rm->DestroyBuffer( polarityBuf );
+    rm->DestroyBuffer( orientBuf ); rm->DestroyBuffer( hullBuf );
 
     return { result[ 0 ].x, result[ 1 ].x };
 }
@@ -5959,4 +5983,464 @@ TEST_F( ComputeTest, Shader_CadherinExpressionUpdate_NoOvershoot )
     EXPECT_NEAR( result.y, 0.5f, 1e-5f ) << "N-cad overshot target";
     EXPECT_NEAR( result.z, 0.5f, 1e-5f ) << "VE-cad overshot target";
     EXPECT_NEAR( result.w, 0.5f, 1e-5f ) << "Cad-11 overshot target";
+}
+
+// =============================================================================
+// jkr_forces.comp — rigid body dynamics tests
+// =============================================================================
+
+struct RigidBodyResult
+{
+    std::vector<glm::vec4> positions;
+    std::vector<glm::vec4> orientations;
+};
+
+// Dispatch jkr_forces with a contact hull and orientation buffer; return new positions + orientations.
+// All agents are placed near the origin so they all land in hash cell (0,0,0).
+//
+// cadherin parameters (all default to 0/disabled):
+//   cadherinCoupling > 0  enables cadherin; all agents are assigned a uniform profile (1,0,0,0)
+//   with an identity affinity matrix so adhScale = cadherinCoupling for all pairs.
+static RigidBodyResult RunJKRRigidBody(
+    Device*                device,
+    ResourceManager*       rm,
+    StreamingManager*      stream,
+    std::vector<glm::vec4> inPositions,
+    std::vector<glm::vec4> inOrientations,
+    uint32_t               hullCount,
+    std::vector<glm::vec4> hullPoints,      // xyz=model offset, w=sub-sphere radius (up to 16)
+    float                  repulsion,
+    float                  adhesion,
+    float                  maxRadius,
+    float                  damping           = 0.0f,
+    float                  dt                = 1.0f,
+    float                  stericZ           = 0.0f,   // hullMeta.z — model-Z half-extent
+    float                  stericY           = 0.0f,   // hullMeta.w — model-Y half-extent
+    float                  edgeAlignStrength = 0.0f,   // hullMeta.y — cadherin edge alignment
+    float                  cadherinCoupling  = 0.0f )  // >0 enables cadherin (adhScale=coupling)
+{
+    struct ContactHullGPU { glm::vec4 meta{}; glm::vec4 points[16]{}; };
+    struct AgentHash { uint32_t hash; uint32_t agentIndex; };
+
+    uint32_t agentCount      = static_cast<uint32_t>( inPositions.size() );
+    uint32_t offsetArraySize = 256;
+
+    // Place all agents in hash cell (0,0,0): cellSize = maxRadius * 3 covers all test offsets.
+    std::vector<AgentHash>   sortedHashes( agentCount );
+    std::vector<uint32_t>    cellOffsets( offsetArraySize, 0xFFFFFFFF );
+    cellOffsets[0] = 0;
+    for ( uint32_t i = 0; i < agentCount; i++ )
+        sortedHashes[i] = { 0u, i };
+
+    ContactHullGPU hullGPU{};
+    hullGPU.meta = glm::vec4( float( hullCount ), edgeAlignStrength, stericZ, stericY );
+    for ( uint32_t i = 0; i < std::min( hullCount, 16u ); i++ )
+        hullGPU.points[i] = hullPoints[i];
+
+    glm::mat4               identity = glm::mat4( 1.0f );
+    std::vector<glm::vec4>  zeros( agentCount, glm::vec4( 0.0f ) );
+    // Uniform cadherin profile (channel 0 = 1.0) for all agents when cadherin is active.
+    std::vector<glm::vec4>  cadProfiles( agentCount, glm::vec4( 1.0f, 0.0f, 0.0f, 0.0f ) );
+    std::vector<PhenotypeData> phenos( agentCount, { 0u, 0.5f, 0.0f, 0u } );
+
+    BufferHandle inBuf     = rm->CreateBuffer( { agentCount * sizeof( glm::vec4 ),       BufferType::STORAGE,  "RBInBuf" } );
+    BufferHandle outBuf    = rm->CreateBuffer( { agentCount * sizeof( glm::vec4 ),       BufferType::STORAGE,  "RBOutBuf" } );
+    BufferHandle pressBuf  = rm->CreateBuffer( { agentCount * sizeof( float ),           BufferType::STORAGE,  "RBPressBuf" } );
+    BufferHandle hashBuf   = rm->CreateBuffer( { agentCount * sizeof( AgentHash ),       BufferType::STORAGE,  "RBHashBuf" } );
+    BufferHandle offsetBuf = rm->CreateBuffer( { offsetArraySize * sizeof( uint32_t ),   BufferType::STORAGE,  "RBOffsetBuf" } );
+    BufferHandle countBuf  = rm->CreateBuffer( { agentCount * sizeof( uint32_t ),        BufferType::INDIRECT, "RBCountBuf" } );
+    BufferHandle phenoBuf  = rm->CreateBuffer( { agentCount * sizeof( PhenotypeData ),   BufferType::STORAGE,  "RBPhenoBuf" } );
+    BufferHandle profBuf   = rm->CreateBuffer( { agentCount * sizeof( glm::vec4 ),       BufferType::STORAGE,  "RBProfBuf" } );
+    BufferHandle affBuf    = rm->CreateBuffer( { sizeof( glm::mat4 ),                    BufferType::STORAGE,  "RBAffBuf" } );
+    BufferHandle polBuf    = rm->CreateBuffer( { agentCount * sizeof( glm::vec4 ),       BufferType::STORAGE,  "RBPolBuf" } );
+    BufferHandle orientBuf = rm->CreateBuffer( { agentCount * sizeof( glm::vec4 ),       BufferType::STORAGE,  "RBOrientBuf" } );
+    BufferHandle hullBuf   = rm->CreateBuffer( { sizeof( ContactHullGPU ),               BufferType::STORAGE,  "RBHullBuf" } );
+
+    stream->UploadBufferImmediate( { { inBuf,     inPositions.data(),    agentCount * sizeof( glm::vec4 ) } } );
+    stream->UploadBufferImmediate( { { hashBuf,   sortedHashes.data(),   agentCount * sizeof( AgentHash ) } } );
+    stream->UploadBufferImmediate( { { offsetBuf, cellOffsets.data(),    offsetArraySize * sizeof( uint32_t ) } } );
+    stream->UploadBufferImmediate( { { countBuf,  &agentCount,           sizeof( uint32_t ) } } );
+    stream->UploadBufferImmediate( { { phenoBuf,  phenos.data(),         agentCount * sizeof( PhenotypeData ) } } );
+    // Upload cadherin profiles: full expression (channel 0 = 1.0) when cadherin is active, zeros otherwise.
+    const void* profData = ( cadherinCoupling > 0.0f ) ? (const void*)cadProfiles.data() : (const void*)zeros.data();
+    stream->UploadBufferImmediate( { { profBuf, profData, agentCount * sizeof( glm::vec4 ) } } );
+    stream->UploadBufferImmediate( { { affBuf,    &identity,             sizeof( identity ) } } );
+    stream->UploadBufferImmediate( { { polBuf,    zeros.data(),          agentCount * sizeof( glm::vec4 ) } } );
+    stream->UploadBufferImmediate( { { orientBuf, inOrientations.data(), agentCount * sizeof( glm::vec4 ) } } );
+    stream->UploadBufferImmediate( { { hullBuf,   &hullGPU,             sizeof( ContactHullGPU ) } } );
+
+    ComputePipelineDesc   pipeDesc{};
+    pipeDesc.shader                  = rm->CreateShader( "shaders/compute/jkr_forces.comp" );
+    ComputePipelineHandle pipeHandle = rm->CreatePipeline( pipeDesc );
+    ComputePipeline*      pipeline   = rm->GetPipeline( pipeHandle );
+
+    BindingGroup* bg = rm->GetBindingGroup( rm->CreateBindingGroup( pipeHandle, 0 ) );
+    bg->Bind( 0,  rm->GetBuffer( inBuf ) );
+    bg->Bind( 1,  rm->GetBuffer( outBuf ) );
+    bg->Bind( 2,  rm->GetBuffer( pressBuf ) );
+    bg->Bind( 3,  rm->GetBuffer( hashBuf ) );
+    bg->Bind( 4,  rm->GetBuffer( offsetBuf ) );
+    bg->Bind( 5,  rm->GetBuffer( countBuf ) );
+    bg->Bind( 6,  rm->GetBuffer( phenoBuf ) );
+    bg->Bind( 7,  rm->GetBuffer( profBuf ) );
+    bg->Bind( 8,  rm->GetBuffer( affBuf ) );
+    bg->Bind( 9,  rm->GetBuffer( polBuf ) );
+    bg->Bind( 10, rm->GetBuffer( orientBuf ) );
+    bg->Bind( 11, rm->GetBuffer( hullBuf ) );
+    bg->Build();
+
+    ComputePushConstants pc{};
+    pc.dt          = dt;
+    pc.maxCapacity = agentCount;
+    pc.offset      = 0;
+    pc.fParam0     = repulsion;
+    pc.fParam1     = adhesion;
+    pc.fParam2     = -1.0f;         // reqLC = any
+    pc.fParam3     = -1.0f;         // reqCT = any
+    pc.fParam4     = damping;
+    pc.fParam5     = maxRadius;
+    pc.uParam0     = offsetArraySize;
+    pc.uParam1     = 0;             // grpNdx = 0
+    pc.domainSize  = glm::vec4( 100.0f, 100.0f, 100.0f, maxRadius * 3.0f );
+    // Cadherin: gridSize.x=1 enables it; gridSize.y = uintBitsToFloat(couplingStrength).
+    // Affinity matrix is identity so A=dot(profile,(M*profile))=1.0 → adhScale=couplingStrength.
+    if ( cadherinCoupling > 0.0f ) {
+        uint32_t couplingBits;
+        std::memcpy( &couplingBits, &cadherinCoupling, sizeof( float ) );
+        pc.gridSize = glm::uvec4( 1u, couplingBits, 0u, 0u );
+    } else {
+        pc.gridSize = glm::uvec4( 0, 0, 0, 0 ); // cadherin off, polarity off
+    }
+
+    auto ctx = device->GetThreadContext( device->CreateThreadContext( QueueType::COMPUTE ) );
+    auto cmd = ctx->GetCommandBuffer( ctx->CreateCommandBuffer() );
+    cmd->Begin();
+    cmd->SetPipeline( pipeline );
+    cmd->SetBindingGroup( bg, pipeline->GetLayout(), VK_PIPELINE_BIND_POINT_COMPUTE );
+    cmd->PushConstants( pipeline->GetLayout(), VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof( pc ), &pc );
+    cmd->Dispatch( ( agentCount + 255 ) / 256, 1, 1 );
+    cmd->End();
+    device->GetComputeQueue()->Submit( { cmd } );
+    device->GetComputeQueue()->WaitIdle();
+
+    RigidBodyResult result;
+    result.positions.resize( agentCount );
+    result.orientations.resize( agentCount );
+    stream->ReadbackBufferImmediate( outBuf,    result.positions.data(),    agentCount * sizeof( glm::vec4 ) );
+    stream->ReadbackBufferImmediate( orientBuf, result.orientations.data(), agentCount * sizeof( glm::vec4 ) );
+
+    rm->DestroyBuffer( inBuf );    rm->DestroyBuffer( outBuf );    rm->DestroyBuffer( pressBuf );
+    rm->DestroyBuffer( hashBuf );  rm->DestroyBuffer( offsetBuf ); rm->DestroyBuffer( countBuf );
+    rm->DestroyBuffer( phenoBuf ); rm->DestroyBuffer( profBuf );   rm->DestroyBuffer( affBuf );
+    rm->DestroyBuffer( polBuf );   rm->DestroyBuffer( orientBuf ); rm->DestroyBuffer( hullBuf );
+
+    return result;
+}
+
+// 1. Off-axis hull contact produces a non-zero torque that rotates the cell.
+//
+// Cell 0 at (0,0,0), cell 1 at (0, 0.5, 0).  Hull: 1 point at (0,0,0.5), subR=0.4.
+// Cell 0's hull point in world = (0,0,0.5).  Cell 1's hull point = (0,0.5,0.5).
+// Pair distance = 0.5 < contactDist=0.8 → overlap=0.3.
+// Adhesion-only torque: dir = (0,-1,0) (pointing from cell 0 hull pt toward cell 1 hull pt).
+// Force = dir * (-adh) = (0,+F,0).
+// Torque = cross((0,0,0.5), (0,+F,0)) = (-F*0.5, 0, 0) → rotation about X axis (negative).
+// Integrated: orientations[0].x < 0.
+TEST_F( ComputeTest, RigidBody_TorqueFromEdgeContact )
+{
+    if( !m_device )
+        GTEST_SKIP();
+
+    std::vector<glm::vec4> pos  = { glm::vec4( 0.0f, 0.0f, 0.0f, 1.0f ),
+                                    glm::vec4( 0.0f, 0.5f, 0.0f, 1.0f ) };
+    std::vector<glm::vec4> ori  = { glm::vec4( 0.0f, 0.0f, 0.0f, 1.0f ),
+                                    glm::vec4( 0.0f, 0.0f, 0.0f, 1.0f ) };
+    std::vector<glm::vec4> hull = { glm::vec4( 0.0f, 0.0f, 0.5f, 0.4f ) }; // xyz=offset, w=subR
+
+    auto r = RunJKRRigidBody( m_device.get(), m_rm.get(), m_stream.get(),
+                               pos, ori,
+                               1u, hull,
+                               50.0f, 20.0f, 1.5f );
+
+    // Adhesion-only torque: adhesive force pulls hull point toward contact → negative X torque.
+    EXPECT_LT( r.orientations[0].x, -0.1f ) << "Cell 0 should rotate about X (negative, adhesion pulls)";
+    EXPECT_GT( r.orientations[1].x,  0.1f ) << "Cell 1 should rotate about X (positive, reaction)";
+}
+
+// 2. Collinear hull contact produces zero torque.
+//
+// Cell 0 at (0,0,0), cell 1 at (0.55, 0, 0).  Hull: 1 point at (0.3,0,0), subR=0.3.
+// Adhesion force is purely along X (collinear with lever arm).
+// cross((0.3,0,0), (+F,0,0)) = (0,0,0) → zero torque → identity quaternion preserved.
+TEST_F( ComputeTest, RigidBody_NoTorqueWhenAligned )
+{
+    if( !m_device )
+        GTEST_SKIP();
+
+    std::vector<glm::vec4> pos  = { glm::vec4( 0.0f,  0.0f, 0.0f, 1.0f ),
+                                    glm::vec4( 0.55f, 0.0f, 0.0f, 1.0f ) };
+    std::vector<glm::vec4> ori  = { glm::vec4( 0.0f, 0.0f, 0.0f, 1.0f ),
+                                    glm::vec4( 0.0f, 0.0f, 0.0f, 1.0f ) };
+    std::vector<glm::vec4> hull = { glm::vec4( 0.3f, 0.0f, 0.0f, 0.3f ) };
+
+    auto r = RunJKRRigidBody( m_device.get(), m_rm.get(), m_stream.get(),
+                               pos, ori,
+                               1u, hull,
+                               50.0f, 20.0f, 1.5f );
+
+    // Force is coaxial with lever arm → cross product is zero → no rotation.
+    EXPECT_NEAR( r.orientations[0].x, 0.0f, 1e-4f ) << "No torque: x should stay 0";
+    EXPECT_NEAR( r.orientations[0].y, 0.0f, 1e-4f ) << "No torque: y should stay 0";
+    EXPECT_NEAR( r.orientations[0].z, 0.0f, 1e-4f ) << "No torque: z should stay 0";
+    EXPECT_NEAR( r.orientations[0].w, 1.0f, 1e-4f ) << "No torque: w should stay 1";
+}
+
+// 3. Quaternion remains unit-length after integration.
+//
+// Uses the same off-axis contact as test 1 (large adhesion torque, large angular step)
+// to stress-test normalisation.
+TEST_F( ComputeTest, RigidBody_QuaternionNormalized )
+{
+    if( !m_device )
+        GTEST_SKIP();
+
+    std::vector<glm::vec4> pos  = { glm::vec4( 0.0f, 0.0f, 0.0f, 1.0f ),
+                                    glm::vec4( 0.0f, 0.5f, 0.0f, 1.0f ) };
+    std::vector<glm::vec4> ori  = { glm::vec4( 0.0f, 0.0f, 0.0f, 1.0f ),
+                                    glm::vec4( 0.0f, 0.0f, 0.0f, 1.0f ) };
+    std::vector<glm::vec4> hull = { glm::vec4( 0.0f, 0.0f, 0.5f, 0.4f ) };
+
+    auto r = RunJKRRigidBody( m_device.get(), m_rm.get(), m_stream.get(),
+                               pos, ori,
+                               1u, hull,
+                               50.0f, 20.0f, 1.5f );
+
+    for ( int i = 0; i < 2; i++ )
+    {
+        glm::vec4 q = r.orientations[i];
+        float     len2 = q.x*q.x + q.y*q.y + q.z*q.z + q.w*q.w;
+        EXPECT_NEAR( len2, 1.0f, 1e-4f ) << "Quaternion [" << i << "] is not unit length";
+    }
+}
+
+// 4. hull count = 0 falls back to point-particle JKR: position changes, orientation unchanged.
+//
+// Two heavily overlapping agents (dist=0.1, interactDist=3.0) with no contact hull.
+// Repulsion pushes them apart.  Orientation buffer must be untouched.
+TEST_F( ComputeTest, RigidBody_PointParticleFallback )
+{
+    if( !m_device )
+        GTEST_SKIP();
+
+    std::vector<glm::vec4> pos  = { glm::vec4( 0.0f, 0.0f, 0.0f, 1.0f ),
+                                    glm::vec4( 0.1f, 0.0f, 0.0f, 1.0f ) };
+    std::vector<glm::vec4> ori  = { glm::vec4( 0.0f, 0.0f, 0.0f, 1.0f ),
+                                    glm::vec4( 0.0f, 0.0f, 0.0f, 1.0f ) };
+
+    // hullCount=0: point-particle path
+    auto r = RunJKRRigidBody( m_device.get(), m_rm.get(), m_stream.get(),
+                               pos, ori,
+                               0u, {},
+                               50.0f, 0.0f, 1.5f, 0.0f, 0.016f );
+
+    // Cell 0 pushed in −X by repulsion.
+    EXPECT_LT( r.positions[0].x, 0.0f ) << "Cell 0 should be pushed left";
+    EXPECT_GT( r.positions[1].x, 0.1f ) << "Cell 1 should be pushed right";
+
+    // No hull path → orientation block not reached → identity preserved.
+    EXPECT_NEAR( r.orientations[0].x, 0.0f, 1e-5f ) << "Orientation x unchanged";
+    EXPECT_NEAR( r.orientations[0].y, 0.0f, 1e-5f ) << "Orientation y unchanged";
+    EXPECT_NEAR( r.orientations[0].z, 0.0f, 1e-5f ) << "Orientation z unchanged";
+    EXPECT_NEAR( r.orientations[0].w, 1.0f, 1e-5f ) << "Orientation w unchanged";
+}
+
+// 5. Dead cells (position.w=0) are excluded from the neighbour force loop.
+//
+// Cell 0 is dead (w=0) and overlaps hull-point-to-hull-point with live cell 1.
+// The guard `if (neighborData.w == 0.0) continue;` in the neighbour loop means
+// cell 1 never processes cell 0 as a source of force → cell 1's orientation stays
+// at identity despite being close enough for hull contact.
+TEST_F( ComputeTest, RigidBody_DeadCell_ExcludedFromNeighborhood )
+{
+    if( !m_device )
+        GTEST_SKIP();
+
+    std::vector<glm::vec4> pos  = { glm::vec4( 0.0f, 0.0f, 0.0f, 0.0f ),  // dead (w=0)
+                                    glm::vec4( 0.0f, 0.5f, 0.0f, 1.0f ) }; // live
+    std::vector<glm::vec4> ori  = { glm::vec4( 0.0f, 0.0f, 0.0f, 1.0f ),
+                                    glm::vec4( 0.0f, 0.0f, 0.0f, 1.0f ) };
+    // Hull point at (0,0,0.5), subR=0.4: hull[0] of cell 0 = (0,0,0.5),
+    // hull[0] of cell 1 = (0,0.5,0.5), distance=0.5 < contactDist=0.8 — would contact if not guarded.
+    std::vector<glm::vec4> hull = { glm::vec4( 0.0f, 0.0f, 0.5f, 0.4f ) };
+
+    auto r = RunJKRRigidBody( m_device.get(), m_rm.get(), m_stream.get(),
+                               pos, ori,
+                               1u, hull,
+                               50.0f, 0.0f, 1.5f );
+
+    // Cell 1 (live) must not rotate — dead cell 0 is skipped as a neighbour.
+    EXPECT_NEAR( r.orientations[1].x, 0.0f, 1e-5f ) << "Live cell should not be torqued by dead neighbor";
+    EXPECT_NEAR( r.orientations[1].y, 0.0f, 1e-5f );
+    EXPECT_NEAR( r.orientations[1].z, 0.0f, 1e-5f );
+    EXPECT_NEAR( r.orientations[1].w, 1.0f, 1e-5f );
+    // Cell 1 must not have moved.
+    EXPECT_NEAR( r.positions[1].y, 0.5f, 1e-4f ) << "Live cell position should be unchanged";
+}
+
+// 6. Oriented steric repulsion pushes a rotated tile harder than an aligned tile.
+//
+// Setup: 2 cells along Z, dist=1.2.  Hull: 4 corners at (±0.5, 0, ±0.5), subR=0.1.
+// stericZ=0.5, stericY=0.1 enables the oriented box steric path.
+//
+// Cell 0 at (0,0,0), cell 1 at (0,0,1.2).
+// ALIGNED run: both cells identity quaternion.
+//   Support extents along Z: max(0.5*0 + 0.1*0 + 0.5*1) + ... = 0.5 each → sOver = 1.0-1.2 < 0.
+//   Wait — Z is model-Z and d_hat ≈ (0,0,1).  stericHalfX derived from |points.x| = 0.5.
+//   myExt = 0.5*|dot(axisX,z)| + 0.1*|dot(axisY,z)| + 0.5*|dot(axisZ,z)|
+//         = 0.5*0 + 0.1*0 + 0.5*1 = 0.5  (identity: axisZ = +Z).
+//   sDist = 0.5 + 0.5 = 1.0 < dist=1.2 → no steric overlap → no extra force.
+//
+// ROTATED run: cell 1 rotated 30° about Y (model Y = (0,1,0), qi=(0,sinπ/12,0,cosπ/12)).
+//   cell 1's axisX after rotation = ( cos30°, 0, sin30° ) = (0.866, 0, 0.5).
+//   nAxisZ after rotation = (-sin30°, 0, cos30°) = (-0.5, 0, 0.866).
+//   nExt = 0.5*|dot(axisX,(0,0,1))| + 0.1*0 + 0.5*|dot(axisZ,(0,0,1))|
+//        = 0.5*0.5 + 0 + 0.5*0.866 = 0.25 + 0.433 = 0.683.
+//   sDist = 0.5 + 0.683 = 1.183 > dist=1.2? → 1.183 < 1.2, no overlap yet (just barely).
+//
+// Actually at dist=1.1 to make overlap clearer — see setup below.
+//
+// Simpler assertion: after N frames with stericZ>0, steric-enabled repulsion produces
+// more separation than steric-disabled repulsion (stericZ=0) for the rotated case.
+TEST_F( ComputeTest, RigidBody_StericRepulsion_RotatedTile )
+{
+    if( !m_device )
+        GTEST_SKIP();
+
+    // 4-corner tile hull: corners at (±0.5, 0, ±0.5), sub-sphere radius 0.1
+    std::vector<glm::vec4> hull = {
+        glm::vec4(  0.5f, 0.0f,  0.5f, 0.1f ),
+        glm::vec4( -0.5f, 0.0f,  0.5f, 0.1f ),
+        glm::vec4( -0.5f, 0.0f, -0.5f, 0.1f ),
+        glm::vec4(  0.5f, 0.0f, -0.5f, 0.1f ),
+    };
+
+    // Cell 1 rotated 45° about Y: sin(45°)=cos(45°)=1/√2
+    const float s = 1.0f / std::sqrt( 2.0f );
+    std::vector<glm::vec4> pos = { glm::vec4( 0.0f, 0.0f, 0.0f,  1.0f ),
+                                   glm::vec4( 0.0f, 0.0f, 1.1f,  1.0f ) };
+    // Cell 0 identity, cell 1 rotated 45° about Y axis: q = (0, sin22.5°, 0, cos22.5°)
+    const float half45 = glm::radians( 22.5f );
+    std::vector<glm::vec4> oriRotated = {
+        glm::vec4( 0.0f, 0.0f,           0.0f,           1.0f ),
+        glm::vec4( 0.0f, std::sin(half45), 0.0f, std::cos(half45) )
+    };
+    std::vector<glm::vec4> oriAligned = {
+        glm::vec4( 0.0f, 0.0f, 0.0f, 1.0f ),
+        glm::vec4( 0.0f, 0.0f, 0.0f, 1.0f )
+    };
+
+    // Steric-enabled: stericZ=0.5 (model-Z half-extent), stericY=0.1 (model-Y = thickness)
+    auto rSteric = RunJKRRigidBody( m_device.get(), m_rm.get(), m_stream.get(),
+                                    pos, oriRotated,
+                                    4u, hull,
+                                    20.0f, 0.0f, 0.75f,
+                                    0.0f, 1.0f / 60.0f,
+                                    0.5f, 0.1f );
+
+    // No steric: same rotated setup but stericZ=stericY=0
+    auto rNoSteric = RunJKRRigidBody( m_device.get(), m_rm.get(), m_stream.get(),
+                                      pos, oriRotated,
+                                      4u, hull,
+                                      20.0f, 0.0f, 0.75f,
+                                      0.0f, 1.0f / 60.0f,
+                                      0.0f, 0.0f );
+
+    // With steric enabled, the rotated corner adds extra repulsion → cell 0 moves further
+    // in the -Z direction (away from cell 1) than without steric.
+    float sepSteric   = rSteric.positions[1].z   - rSteric.positions[0].z;
+    float sepNoSteric = rNoSteric.positions[1].z  - rNoSteric.positions[0].z;
+
+    EXPECT_GT( sepSteric, sepNoSteric )
+        << "Steric repulsion should increase separation for a rotated tile "
+        << "(steric=" << sepSteric << ", no-steric=" << sepNoSteric << ")";
+}
+
+// 7. Distributed hull adhesion-only torques drive a rotated tile toward alignment.
+//
+// Cell 0 at (0,0,0) identity, Cell 1 at (1.4,0,0) rotated +15 deg Y.
+// Hull: 8 points — 4 corners + 4 edge midpoints, matching CreateTile(1.4, 1.4, 0.2).
+//
+// At 15° rotation, cell 1's left edge midpoint (-0.7,0,0) maps to world (0.724, 0, 0.181).
+// Distance to cell 0's right midpoint (0.7, 0, 0) = 0.183 < contactDist 0.2 → contact fires.
+//
+// Adhesion-only torque on cell 1: dir = (0.131, 0, 0.989), force = dir*(-adh) toward Pb.
+// Lever arm = qrot(q1, (-0.7,0,0)) = (-0.676, 0, 0.181).
+// torque_j = cross((-0.676,0,0.181), (-0.131,-,−0.989)*adh) → negative Y → Y decreases.
+// Cell 1 (rotated +15°) gets a restoring torque — its Y quaternion component decreases toward 0.
+//
+// Without cadherin (adhesion=0): hull torque = cross(arm, 0) = 0 → no rotation change.
+TEST_F( ComputeTest, RigidBody_DistributedHull_RestoresRotation )
+{
+    if( !m_device )
+        GTEST_SKIP();
+
+    // 8-point tile hull: 4 corners + 4 edge midpoints, matching CreateTile(1.4, 1.4, 0.2)
+    std::vector<glm::vec4> hull = {
+        glm::vec4(  0.7f, 0.0f,  0.7f, 0.1f ),   // corner ++
+        glm::vec4( -0.7f, 0.0f,  0.7f, 0.1f ),   // corner -+
+        glm::vec4( -0.7f, 0.0f, -0.7f, 0.1f ),   // corner --
+        glm::vec4(  0.7f, 0.0f, -0.7f, 0.1f ),   // corner +-
+        glm::vec4(  0.7f, 0.0f,  0.0f, 0.1f ),   // right edge mid
+        glm::vec4( -0.7f, 0.0f,  0.0f, 0.1f ),   // left edge mid
+        glm::vec4(  0.0f, 0.0f,  0.7f, 0.1f ),   // front edge mid
+        glm::vec4(  0.0f, 0.0f, -0.7f, 0.1f ),   // back edge mid
+    };
+
+    std::vector<glm::vec4> pos = {
+        glm::vec4( 0.0f, 0.0f, 0.0f, 1.0f ),   // cell 0: center
+        glm::vec4( 1.4f, 0.0f, 0.0f, 1.0f ),   // cell 1: within edge-midpoint contact range
+    };
+
+    // Cell 1 rotated +15 deg around Y: half-angle = 7.5 deg
+    const float h15 = glm::radians( 7.5f );
+    std::vector<glm::vec4> ori = {
+        glm::vec4( 0.0f,              0.0f, 0.0f, 1.0f ),
+        glm::vec4( 0.0f, std::sin(h15), 0.0f, std::cos(h15) ),
+    };
+    const float initRotatedY = std::sin( h15 );  // ≈ 0.1305
+
+    // ── With cadherin (adhesion > 0) ────────────────────────────────────────────
+    // Edge midpoint contact fires; adhesion torque is restoring on cell 1.
+    auto rAdh = RunJKRRigidBody( m_device.get(), m_rm.get(), m_stream.get(),
+                                  pos, ori,
+                                  8u, hull,
+                                  20.0f,          // repulsion
+                                  2.0f,           // adhesion
+                                  0.75f,          // maxRadius
+                                  100.0f,         // damping
+                                  1.0f / 60.0f,   // dt
+                                  0.7f, 0.1f,     // stericZ, stericY
+                                  0.0f,           // edgeAlignStrength = 0 (no phenomenological torque)
+                                  2.0f );         // cadherinCoupling (adhScale=2)
+
+    // Rotated tile: adhesion-only torque reduces its Y rotation toward 0.
+    EXPECT_LT( rAdh.orientations[1].y, initRotatedY )
+        << "Rotated tile should have reduced Y rotation from distributed hull adhesion";
+    // Some torque must have fired — Y should have changed noticeably.
+    EXPECT_LT( rAdh.orientations[1].y, initRotatedY - 1e-4f )
+        << "Y rotation change should be measurable";
+
+    // ── Without cadherin (adhesion = 0) ─────────────────────────────────────────
+    // Hull torque = cross(arm, dir*0) = 0 → no rotation despite hull contact.
+    auto rNoAdh = RunJKRRigidBody( m_device.get(), m_rm.get(), m_stream.get(),
+                                    pos, ori,
+                                    8u, hull,
+                                    20.0f, 0.0f, 0.75f,
+                                    100.0f, 1.0f / 60.0f,
+                                    0.7f, 0.1f,
+                                    0.0f, 0.0f );
+
+    // Without adhesion, no hull torque → cell 1 stays at initial rotation.
+    EXPECT_NEAR( rNoAdh.orientations[1].y, initRotatedY, 1e-4f )
+        << "No torque without adhesion — Y rotation should be unchanged";
 }

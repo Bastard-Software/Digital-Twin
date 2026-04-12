@@ -165,24 +165,25 @@ namespace Gaudi
               &Demos::SetupTissueSortingDemo },
 
             { "EC Contact",
-              "5 VE-cadherin endothelial cells arranged as a\n"
-              "cross on a cylinder surface (r=3).\n\n"
-              "CurvedTile dimensions are matched to the JKR\n"
-              "equilibrium distance (~1.47) so edges should\n"
-              "touch when cells settle.\n\n"
-              "Purpose: verify tile size vs JKR equilibrium\n"
-              "distance. Tune arcAngle/axialSpacing here before\n"
-              "scaling to the full tube demo.",
+              "5 flat endothelial tiles in a 2D cross pattern.\n\n"
+              "Outer tiles start at different Y rotations (+20, +15,\n"
+              "-12, -8 deg). VE-cadherin ramps up; distributed hull\n"
+              "contacts (4 corners + 4 edge midpoints) generate\n"
+              "adhesion-only torques that drive all tiles to parallel\n"
+              "edge-to-edge contact within ~10 s regardless of\n"
+              "initial rotation direction or magnitude.\n\n"
+              "Demonstrates: flat tile JKR, CadherinAdhesion,\n"
+              "mechanistic edge alignment morphogenesis.",
               &Demos::SetupECContactDemo },
 
             { "Endothelial Tube",
               "200 VE-cadherin endothelial cells start randomly\n"
               "scattered inside a solid cylinder.\n\n"
               "Apical-basal polarity develops from neighbor\n"
-              "geometry: surface cells polarise outward (w→1),\n"
-              "interior cells stay symmetric (w→0).\n\n"
+              "geometry: surface cells polarise outward (w->1),\n"
+              "interior cells stay symmetric (w->0).\n\n"
               "Polarity-modulated JKR weakens interior contacts\n"
-              "→ cavity opens → lumenised tube self-assembles.\n\n"
+              "-> cavity opens -> lumenised tube self-assembles.\n\n"
               "Demonstrates: CellPolarity + CadherinAdhesion,\n"
               "lumen morphogenesis (Nakamura 2026).",
               &Demos::SetupEndothelialTubeDemo },

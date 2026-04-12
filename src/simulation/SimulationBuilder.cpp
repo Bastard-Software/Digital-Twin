@@ -56,6 +56,8 @@ namespace DigitalTwin
             resourceManager->DestroyBuffer( polarityBuffer );
         if( orientationBuffer.IsValid() )
             resourceManager->DestroyBuffer( orientationBuffer );
+        if( contactHullBuffer.IsValid() )
+            resourceManager->DestroyBuffer( contactHullBuffer );
         if( signalingBuffer.IsValid() )
             resourceManager->DestroyBuffer( signalingBuffer );
         if( vesselEdgeBuffer.IsValid() )
@@ -94,6 +96,8 @@ namespace DigitalTwin
         cadherinProfileBuffer  = {};
         cadherinAffinityBuffer = {};
         polarityBuffer         = {};
+        orientationBuffer      = {};
+        contactHullBuffer      = {};
         signalingBuffer        = {};
         vesselEdgeBuffer       = {};
         vesselEdgeCountBuffer  = {};
@@ -287,13 +291,20 @@ namespace DigitalTwin
             for( uint32_t i = copyCount; i < capacity; ++i )
                 megaPositions.push_back( glm::vec4( 0.0f ) );
 
-            // --- Agent orientations (per-cell outward normal; default +Y when not provided) ---
+            // --- Agent orientations ---
+            // Groups with a contact hull use identity quaternion (0,0,0,1) — triggers quaternion
+            // mode in geometry.vert and physics-driven rotation in jkr_forces.comp.
+            // Groups without a contact hull use the stored normal (0,1,0,0) — shortest-arc mode.
             {
+                const bool  hasHull      = !group.GetMorphology().contactHull.empty();
                 const auto& orientations = group.GetOrientations();
                 uint32_t    oriCount     = std::min( group.GetCount(), static_cast<uint32_t>( orientations.size() ) );
                 megaOrientations.insert( megaOrientations.end(), orientations.begin(), orientations.begin() + oriCount );
+                const glm::vec4 defaultOri = hasHull
+                    ? glm::vec4( 0.0f, 0.0f, 0.0f, 1.0f )   // identity quaternion → physics-driven
+                    : glm::vec4( 0.0f, 1.0f, 0.0f, 0.0f );  // +Y normal → shortest-arc
                 for( uint32_t i = oriCount; i < capacity; ++i )
-                    megaOrientations.push_back( glm::vec4( 0.0f, 1.0f, 0.0f, 0.0f ) ); // default: face +Y
+                    megaOrientations.push_back( defaultOri );
             }
 
             currentAgentOffset += capacity;
@@ -847,7 +858,6 @@ namespace DigitalTwin
                         bg0->Bind( 3, m_resourceManager->GetBuffer( outState.hashBuffer ) );
                         bg0->Bind( 4, m_resourceManager->GetBuffer( outState.offsetBuffer ) );
                         bg0->Bind( 5, m_resourceManager->GetBuffer( outState.phenotypeBuffer ) );
-                        bg0->Bind( 6, m_resourceManager->GetBuffer( outState.orientationBuffer ) );
                         bg0->Build();
 
                         BindingGroup* bg1 = m_resourceManager->GetBindingGroup( m_resourceManager->CreateBindingGroup( polarityPipeHandle, 0 ) );
@@ -857,7 +867,6 @@ namespace DigitalTwin
                         bg1->Bind( 3, m_resourceManager->GetBuffer( outState.hashBuffer ) );
                         bg1->Bind( 4, m_resourceManager->GetBuffer( outState.offsetBuffer ) );
                         bg1->Bind( 5, m_resourceManager->GetBuffer( outState.phenotypeBuffer ) );
-                        bg1->Bind( 6, m_resourceManager->GetBuffer( outState.orientationBuffer ) );
                         bg1->Build();
 
                         ComputePushConstants polPC{};
@@ -982,7 +991,31 @@ namespace DigitalTwin
                     ComputePipelineHandle jkrPipeHandle = m_resourceManager->CreatePipeline( jkrDesc );
                     ComputePipeline*      jkrPipe       = m_resourceManager->GetPipeline( jkrPipeHandle );
 
-                    // 2. Setup Binding Groups
+                    // 2a. Build contact hull buffer from this group's morphology.
+                    //     Struct layout (GPU): vec4 meta + 16 × vec4 points = 272 bytes.
+                    struct ContactHullGPU
+                    {
+                        glm::vec4 meta;          // x=count, y=edgeAlignStrength, z=hullExtentZ, w=hullExtentY
+                        glm::vec4 points[ 16 ]; // model-space offsets + sub-sphere radii
+                    };
+                    ContactHullGPU hullGPU{};
+                    {
+                        const auto& hull      = group.GetMorphology().contactHull;
+                        uint32_t    hullCount = std::min( static_cast<uint32_t>( hull.size() ), 16u );
+                        hullGPU.meta          = glm::vec4( float( hullCount ),
+                                                           group.GetMorphology().edgeAlignStrength,
+                                                           group.GetMorphology().hullExtentZ,
+                                                           group.GetMorphology().hullExtentY );
+                        for( uint32_t h = 0; h < hullCount; ++h )
+                            hullGPU.points[ h ] = hull[ h ];
+                    }
+                    if( !outState.contactHullBuffer.IsValid() )
+                        outState.contactHullBuffer = m_resourceManager->CreateBuffer(
+                            { sizeof( ContactHullGPU ), BufferType::STORAGE, "ContactHullBuffer" } );
+                    m_streamingManager->UploadBufferImmediate(
+                        { { outState.contactHullBuffer, &hullGPU, sizeof( ContactHullGPU ), 0 } } );
+
+                    // 2b. Setup Binding Groups
                     // Note: hashBuffer, offsetBuffer, and pressureBuffer are globally built in CompileSpatialGrid
                     BindingGroup* bgJkr0 = m_resourceManager->GetBindingGroup( m_resourceManager->CreateBindingGroup( jkrPipeHandle, 0 ) );
                     bgJkr0->Bind( 0, m_resourceManager->GetBuffer( outState.agentBuffers[ 0 ] ) );
@@ -998,6 +1031,8 @@ namespace DigitalTwin
                     bgJkr0->Bind( 7, m_resourceManager->GetBuffer( outState.cadherinProfileBuffer ) );
                     bgJkr0->Bind( 8, m_resourceManager->GetBuffer( outState.cadherinAffinityBuffer ) );
                     bgJkr0->Bind( 9, m_resourceManager->GetBuffer( outState.polarityBuffer ) );
+                    bgJkr0->Bind( 10, m_resourceManager->GetBuffer( outState.orientationBuffer ) );
+                    bgJkr0->Bind( 11, m_resourceManager->GetBuffer( outState.contactHullBuffer ) );
                     bgJkr0->Build();
 
                     BindingGroup* bgJkr1 = m_resourceManager->GetBindingGroup( m_resourceManager->CreateBindingGroup( jkrPipeHandle, 0 ) );
@@ -1014,6 +1049,8 @@ namespace DigitalTwin
                     bgJkr1->Bind( 7, m_resourceManager->GetBuffer( outState.cadherinProfileBuffer ) );
                     bgJkr1->Bind( 8, m_resourceManager->GetBuffer( outState.cadherinAffinityBuffer ) );
                     bgJkr1->Bind( 9, m_resourceManager->GetBuffer( outState.polarityBuffer ) );
+                    bgJkr1->Bind( 10, m_resourceManager->GetBuffer( outState.orientationBuffer ) );
+                    bgJkr1->Bind( 11, m_resourceManager->GetBuffer( outState.contactHullBuffer ) );
                     bgJkr1->Build();
 
                     // 3. Configure Task specific parameters

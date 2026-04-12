@@ -7,6 +7,16 @@
 namespace DigitalTwin
 {
     /**
+     * @brief Result type for distributions that produce both positions and per-cell outward normals.
+     * Follows the same pattern as VesselTreeResult.
+     */
+    struct DT_API CylinderShellResult
+    {
+        std::vector<glm::vec4> positions;  // xyz = position, w = 1.0
+        std::vector<glm::vec4> normals;    // xyz = outward radial normal, w = 0.0
+    };
+
+    /**
      * @brief Mathematical strategies for spatial distribution (seeding) of agents in the simulation volume.
      */
     class DT_API SpatialDistribution
@@ -61,6 +71,47 @@ namespace DigitalTwin
         static std::vector<glm::vec4> LatticeInCylinder( float spacing, float radius, float halfLength,
                                                           const glm::vec3& center = glm::vec3( 0.0f ),
                                                           const glm::vec3& axis   = glm::vec3( 0.0f, 1.0f, 0.0f ) );
+
+        /**
+         * @brief Distributes agents uniformly inside a cylindrical volume.
+         * @param count       Number of agents to seed.
+         * @param radius      Outer radius of the cylinder.
+         * @param halfLength  Half-length along the cylinder axis.
+         * @param center      Center of the cylinder.
+         * @param axis        Unit vector defining the cylinder axis (default Y-up).
+         * @param innerRadius Inner radius cutout (0 = solid cylinder, >0 = hollow annular volume).
+         * @param seed        RNG seed for deterministic placement.
+         * @return std::vector<glm::vec4> (xyz = position, w = 1.0f status flag)
+         */
+        static std::vector<glm::vec4> UniformInCylinder(
+            uint32_t count, float radius, float halfLength,
+            const glm::vec3& center = glm::vec3( 0.0f ),
+            const glm::vec3& axis   = glm::vec3( 0.0f, 1.0f, 0.0f ),
+            float    innerRadius    = 0.0f,
+            uint32_t seed           = 42 );
+
+        /**
+         * @brief Places agents in rings on the surface of a cylindrical shell (hollow tube).
+         *
+         * Returns both positions and per-cell outward radial normals, which can be passed
+         * directly to AgentGroup::SetOrientations() to orient curved-tile morphologies outward.
+         *
+         * @param axialSpacing  Distance between successive rings along the cylinder axis.
+         * @param radius        Radius of the cylinder shell.
+         * @param halfLength    Half-length along the cylinder axis.
+         * @param cellsPerRing  Number of cells in each circumferential ring.
+         * @param center        Center of the cylinder.
+         * @param axis          Unit vector defining the cylinder axis (default Y-up).
+         * @param jitter        Random angular + axial displacement as a fraction of spacing (0 = perfect grid).
+         * @param seed          RNG seed for deterministic jitter.
+         */
+        static CylinderShellResult ShellOnCylinder(
+            float axialSpacing, float radius, float halfLength,
+            uint32_t cellsPerRing,
+            const glm::vec3& center = glm::vec3( 0.0f ),
+            const glm::vec3& axis   = glm::vec3( 0.0f, 1.0f, 0.0f ),
+            float    jitter         = 0.0f,
+            uint32_t seed           = 42 );
     };
 
 } // namespace DigitalTwin

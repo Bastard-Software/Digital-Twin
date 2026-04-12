@@ -3452,22 +3452,23 @@ TEST_F( SimulationBuilderTest, EndothelialTube_BuildsAndDispatches )
         .SetMaxDensity( 64 )
         .SetComputeHz( 60.0f );
 
-    auto positions = SpatialDistribution::LatticeInCylinder( 1.35f, 3.0f, 6.0f );
-    ASSERT_GT( positions.size(), 0u );
+    auto shell = SpatialDistribution::ShellOnCylinder( 1.35f, 3.0f, 6.0f, 14 );
+    ASSERT_GT( shell.positions.size(), 0u );
 
-    const uint32_t count = static_cast<uint32_t>( positions.size() );
+    const uint32_t count = static_cast<uint32_t>( shell.positions.size() );
 
     auto jkr = BiomechanicsGenerator::JKR()
-                   .SetYoungsModulus( 15.0f )
+                   .SetYoungsModulus( 20.0f )
                    .SetPoissonRatio( 0.4f )
-                   .SetAdhesionEnergy( 2.0f )
-                   .SetMaxInteractionRadius( 0.75f )  // interactDist 1.5 > spacing 1.35 → neighbors found
-                   .SetDampingCoefficient( 200.0f )
+                   .SetAdhesionEnergy( 1.5f )
+                   .SetMaxInteractionRadius( 0.75f )  // interactDist 1.5 > spacing 1.35
+                   .SetDampingCoefficient( 500.0f )
                    .Build();
 
     AgentGroup& ecs = blueprint.AddAgentGroup( "Endothelial Cells" );
     ecs.SetCount( count );
-    ecs.SetDistribution( positions );
+    ecs.SetDistribution( shell.positions );
+    ecs.SetOrientations( shell.normals );
     ecs.AddBehaviour( jkr ).SetHz( 60.0f );
     ecs.AddBehaviour( Behaviours::CadherinAdhesion{
                           glm::vec4( 0.0f, 0.0f, 1.0f, 0.0f ),

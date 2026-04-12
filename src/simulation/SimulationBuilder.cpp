@@ -847,6 +847,7 @@ namespace DigitalTwin
                         bg0->Bind( 3, m_resourceManager->GetBuffer( outState.hashBuffer ) );
                         bg0->Bind( 4, m_resourceManager->GetBuffer( outState.offsetBuffer ) );
                         bg0->Bind( 5, m_resourceManager->GetBuffer( outState.phenotypeBuffer ) );
+                        bg0->Bind( 6, m_resourceManager->GetBuffer( outState.orientationBuffer ) );
                         bg0->Build();
 
                         BindingGroup* bg1 = m_resourceManager->GetBindingGroup( m_resourceManager->CreateBindingGroup( polarityPipeHandle, 0 ) );
@@ -856,6 +857,7 @@ namespace DigitalTwin
                         bg1->Bind( 3, m_resourceManager->GetBuffer( outState.hashBuffer ) );
                         bg1->Bind( 4, m_resourceManager->GetBuffer( outState.offsetBuffer ) );
                         bg1->Bind( 5, m_resourceManager->GetBuffer( outState.phenotypeBuffer ) );
+                        bg1->Bind( 6, m_resourceManager->GetBuffer( outState.orientationBuffer ) );
                         bg1->Build();
 
                         ComputePushConstants polPC{};

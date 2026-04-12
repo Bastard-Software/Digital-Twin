@@ -163,6 +163,29 @@ namespace Gaudi
               "Demonstrates: CadherinAdhesion, differential\n"
               "adhesion hypothesis (Steinberg 1963).",
               &Demos::SetupTissueSortingDemo },
+
+            { "EC Contact",
+              "5 VE-cadherin endothelial cells arranged as a\n"
+              "cross on a cylinder surface (r=3).\n\n"
+              "CurvedTile dimensions are matched to the JKR\n"
+              "equilibrium distance (~1.47) so edges should\n"
+              "touch when cells settle.\n\n"
+              "Purpose: verify tile size vs JKR equilibrium\n"
+              "distance. Tune arcAngle/axialSpacing here before\n"
+              "scaling to the full tube demo.",
+              &Demos::SetupECContactDemo },
+
+            { "Endothelial Tube",
+              "200 VE-cadherin endothelial cells start randomly\n"
+              "scattered inside a solid cylinder.\n\n"
+              "Apical-basal polarity develops from neighbor\n"
+              "geometry: surface cells polarise outward (w→1),\n"
+              "interior cells stay symmetric (w→0).\n\n"
+              "Polarity-modulated JKR weakens interior contacts\n"
+              "→ cavity opens → lumenised tube self-assembles.\n\n"
+              "Demonstrates: CellPolarity + CadherinAdhesion,\n"
+              "lumen morphogenesis (Nakamura 2026).",
+              &Demos::SetupEndothelialTubeDemo },
         };
 
         ImGuiIO& io = ImGui::GetIO();

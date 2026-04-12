@@ -41,7 +41,8 @@ struct PhenotypeData {
     float timer;
     uint  cellType;
 };
-layout(std430, binding = 5) readonly buffer Phenotypes { PhenotypeData data[]; } phenotypes;
+layout(std430, binding = 5) readonly buffer Phenotypes  { PhenotypeData data[]; } phenotypes;
+layout(std430, binding = 6) writeonly buffer Orientations { vec4 orientations[]; };
 
 uint hashPos(ivec3 cell) {
     const uint p1 = 73856093u; const uint p2 = 19349663u; const uint p3 = 83492791u;
@@ -130,4 +131,58 @@ void main()
     float newW    = mix(old.w, targetW, alpha);
 
     polarity.data[globalIdx] = vec4(newDir, newW);
+
+    // Update orientation buffer with a full quaternion so CurvedTile meshes
+    // track the evolving surface normal AND align height edges with the tube axis.
+    //
+    // CurvedTile model space: +Y = outer normal, +X = height/axial, +Z = circumferential.
+    // We build a world frame (B, N, T) where:
+    //   N = polarity direction (outer normal)
+    //   B = world up projected onto tangent plane (→ model +X, aligns tile height with tube axis)
+    //   T = cross(B, N) (→ model +Z, circumferential)
+    //
+    // geometry.vert: abs(w) > 0.001 → quaternion mode (qx, qy, qz, qw).
+    if (newW > 0.1)
+    {
+        vec3 N = normalize(newDir);
+
+        // Project world up onto the tangent plane to get the "height along surface" direction
+        vec3 up = vec3(0.0, 1.0, 0.0);
+        vec3 B  = up - dot(up, N) * N;
+        float bLen = length(B);
+        if (bLen < 0.001) {
+            // Normal parallel to up — fall back to world X
+            B = vec3(1.0, 0.0, 0.0) - dot(vec3(1.0, 0.0, 0.0), N) * N;
+            bLen = length(B);
+        }
+        B /= bLen;
+        vec3 T = cross(B, N); // right-handed: B × N = T
+
+        // Rotation matrix R: columns = (B, N, T), maps model to world
+        float m00 = B.x, m01 = N.x, m02 = T.x;
+        float m10 = B.y, m11 = N.y, m12 = T.y;
+        float m20 = B.z, m21 = N.z, m22 = T.z;
+
+        // Matrix → quaternion (Shepperd's method)
+        float tr = m00 + m11 + m22;
+        vec4 q;
+        if (tr > 0.0) {
+            float s = 2.0 * sqrt(tr + 1.0);
+            q = vec4((m21 - m12) / s, (m02 - m20) / s, (m10 - m01) / s, s / 4.0);
+        } else if (m00 > m11 && m00 > m22) {
+            float s = 2.0 * sqrt(1.0 + m00 - m11 - m22);
+            q = vec4(s / 4.0, (m01 + m10) / s, (m02 + m20) / s, (m21 - m12) / s);
+        } else if (m11 > m22) {
+            float s = 2.0 * sqrt(1.0 - m00 + m11 - m22);
+            q = vec4((m01 + m10) / s, s / 4.0, (m12 + m21) / s, (m02 - m20) / s);
+        } else {
+            float s = 2.0 * sqrt(1.0 - m00 - m11 + m22);
+            q = vec4((m02 + m20) / s, (m12 + m21) / s, s / 4.0, (m10 - m01) / s);
+        }
+
+        // Ensure |w| > 0.001 so geometry.vert uses quaternion mode, not shortest-arc
+        if (abs(q.w) < 0.002) q.w = 0.002;
+
+        orientations[globalIdx] = q;
+    }
 }

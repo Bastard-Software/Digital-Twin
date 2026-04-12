@@ -750,6 +750,9 @@ TEST_F( ComputeTest, Shader_JKRForces_Logic )
     glm::mat4    identityMat      = glm::mat4( 1.0f );
     BufferHandle cadAffinityDummy = m_rm->CreateBuffer( { sizeof( glm::mat4 ),     BufferType::STORAGE, "JKRCadAffinityDummy" } );
     m_stream->UploadBufferImmediate( { { cadAffinityDummy, &identityMat, sizeof( glm::mat4 ) } } );
+    // Dummy polarity buffer for binding 9 (polarity flag = 0 in push constants → inactive)
+    glm::vec4    zeroPolarityData[2] = {};
+    BufferHandle polarityDummy = m_rm->CreateBuffer( { sizeof( zeroPolarityData ), BufferType::STORAGE, "JKRPolarityDummy" } );
 
     BindingGroupHandle bgHandle = m_rm->CreateBindingGroup( pipeHandle, 0 );
     BindingGroup*      bg       = m_rm->GetBindingGroup( bgHandle );
@@ -762,6 +765,7 @@ TEST_F( ComputeTest, Shader_JKRForces_Logic )
     bg->Bind( 6, m_rm->GetBuffer( phenotypeDummyBuf ) );
     bg->Bind( 7, m_rm->GetBuffer( cadProfileDummy ) );
     bg->Bind( 8, m_rm->GetBuffer( cadAffinityDummy ) );
+    bg->Bind( 9, m_rm->GetBuffer( polarityDummy ) );
     bg->Build();
 
     // 4. Setup Push Constants (Packed exactly as in SimulationBuilder)
@@ -823,6 +827,7 @@ TEST_F( ComputeTest, Shader_JKRForces_Logic )
     m_rm->DestroyBuffer( countBuf );
     m_rm->DestroyBuffer( cadProfileDummy );
     m_rm->DestroyBuffer( cadAffinityDummy );
+    m_rm->DestroyBuffer( polarityDummy );
 }
 
 // 7. Compute fenotype update test

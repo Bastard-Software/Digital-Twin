@@ -1,5 +1,6 @@
 #include "SetupHelpers.h"
 #include "resources/ResourceManager.h"
+#include <glm/gtc/packing.hpp>
 #include "resources/StreamingManager.h"
 #include "rhi/BindingGroup.h"
 #include "rhi/Buffer.h"
@@ -749,6 +750,9 @@ TEST_F( ComputeTest, Shader_JKRForces_Logic )
     glm::mat4    identityMat      = glm::mat4( 1.0f );
     BufferHandle cadAffinityDummy = m_rm->CreateBuffer( { sizeof( glm::mat4 ),     BufferType::STORAGE, "JKRCadAffinityDummy" } );
     m_stream->UploadBufferImmediate( { { cadAffinityDummy, &identityMat, sizeof( glm::mat4 ) } } );
+    // Dummy polarity buffer for binding 9 (polarity flag = 0 in push constants → inactive)
+    glm::vec4    zeroPolarityData[2] = {};
+    BufferHandle polarityDummy = m_rm->CreateBuffer( { sizeof( zeroPolarityData ), BufferType::STORAGE, "JKRPolarityDummy" } );
 
     BindingGroupHandle bgHandle = m_rm->CreateBindingGroup( pipeHandle, 0 );
     BindingGroup*      bg       = m_rm->GetBindingGroup( bgHandle );
@@ -761,6 +765,7 @@ TEST_F( ComputeTest, Shader_JKRForces_Logic )
     bg->Bind( 6, m_rm->GetBuffer( phenotypeDummyBuf ) );
     bg->Bind( 7, m_rm->GetBuffer( cadProfileDummy ) );
     bg->Bind( 8, m_rm->GetBuffer( cadAffinityDummy ) );
+    bg->Bind( 9, m_rm->GetBuffer( polarityDummy ) );
     bg->Build();
 
     // 4. Setup Push Constants (Packed exactly as in SimulationBuilder)
@@ -822,6 +827,7 @@ TEST_F( ComputeTest, Shader_JKRForces_Logic )
     m_rm->DestroyBuffer( countBuf );
     m_rm->DestroyBuffer( cadProfileDummy );
     m_rm->DestroyBuffer( cadAffinityDummy );
+    m_rm->DestroyBuffer( polarityDummy );
 }
 
 // 7. Compute fenotype update test
@@ -5512,7 +5518,12 @@ static std::pair<float, float> RunJKRCadherin(
     glm::vec4         profile1,       // cadherin profile for agent 1
     glm::mat4         affinityMatrix,
     uint32_t          cadherinFlag,   // 0 = off, 1 = on
-    float             couplingStrength )
+    float             couplingStrength,
+    uint32_t          polarityFlag    = 0u,        // 0 = off, 1 = on
+    glm::vec4         polarity0       = glm::vec4( 0.0f ), // xyz=dir w=magnitude
+    glm::vec4         polarity1       = glm::vec4( 0.0f ),
+    float             apicalRepulsion = 0.5f,
+    float             basalAdhesion   = 1.5f )
 {
     uint32_t agentCount = 2;
 
@@ -5541,17 +5552,20 @@ static std::pair<float, float> RunJKRCadherin(
     BufferHandle phenoBuf   = rm->CreateBuffer( { agentCount * sizeof( PhenotypeData ),      BufferType::STORAGE,  "JKRCadPhenoBuf" } );
     BufferHandle profBuf    = rm->CreateBuffer( { agentCount * sizeof( glm::vec4 ),          BufferType::STORAGE,  "JKRCadProfBuf" } );
     BufferHandle affBuf     = rm->CreateBuffer( { sizeof( glm::mat4 ),                       BufferType::STORAGE,  "JKRCadAffBuf" } );
+    BufferHandle polarityBuf= rm->CreateBuffer( { agentCount * sizeof( glm::vec4 ),          BufferType::STORAGE,  "JKRCadPolarityBuf" } );
 
-    std::vector<glm::vec4>     profiles  = { profile0, profile1 };
+    std::vector<glm::vec4>     profiles   = { profile0, profile1 };
+    std::vector<glm::vec4>     polarities = { polarity0, polarity1 };
     std::vector<PhenotypeData> phenotypes( agentCount, { 0u, 0.5f, 0.0f, 0u } );
 
-    stream->UploadBufferImmediate( { { inBuf,     inAgents.data(),     agentCount * sizeof( glm::vec4 ) } } );
-    stream->UploadBufferImmediate( { { hashBuf,   sortedHashes.data(), agentCount * sizeof( AgentHash ) } } );
-    stream->UploadBufferImmediate( { { offsetBuf, cellOffsets.data(),  offsetArraySize * sizeof( uint32_t ) } } );
-    stream->UploadBufferImmediate( { { countBuf,  &agentCount,         sizeof( uint32_t ) } } );
-    stream->UploadBufferImmediate( { { phenoBuf,  phenotypes.data(),   agentCount * sizeof( PhenotypeData ) } } );
-    stream->UploadBufferImmediate( { { profBuf,   profiles.data(),     agentCount * sizeof( glm::vec4 ) } } );
-    stream->UploadBufferImmediate( { { affBuf,    &affinityMatrix,     sizeof( glm::mat4 ) } } );
+    stream->UploadBufferImmediate( { { inBuf,        inAgents.data(),     agentCount * sizeof( glm::vec4 ) } } );
+    stream->UploadBufferImmediate( { { hashBuf,      sortedHashes.data(), agentCount * sizeof( AgentHash ) } } );
+    stream->UploadBufferImmediate( { { offsetBuf,    cellOffsets.data(),  offsetArraySize * sizeof( uint32_t ) } } );
+    stream->UploadBufferImmediate( { { countBuf,     &agentCount,         sizeof( uint32_t ) } } );
+    stream->UploadBufferImmediate( { { phenoBuf,     phenotypes.data(),   agentCount * sizeof( PhenotypeData ) } } );
+    stream->UploadBufferImmediate( { { profBuf,      profiles.data(),     agentCount * sizeof( glm::vec4 ) } } );
+    stream->UploadBufferImmediate( { { affBuf,       &affinityMatrix,     sizeof( glm::mat4 ) } } );
+    stream->UploadBufferImmediate( { { polarityBuf,  polarities.data(),   agentCount * sizeof( glm::vec4 ) } } );
 
     ComputePipelineDesc   pipeDesc{};
     pipeDesc.shader                  = rm->CreateShader( "shaders/compute/jkr_forces.comp" );
@@ -5568,10 +5582,12 @@ static std::pair<float, float> RunJKRCadherin(
     bg->Bind( 6, rm->GetBuffer( phenoBuf ) );
     bg->Bind( 7, rm->GetBuffer( profBuf ) );
     bg->Bind( 8, rm->GetBuffer( affBuf ) );
+    bg->Bind( 9, rm->GetBuffer( polarityBuf ) );
     bg->Build();
 
-    uint32_t couplingBits = 0u;
+    uint32_t couplingBits  = 0u;
     std::memcpy( &couplingBits, &couplingStrength, sizeof( float ) );
+    uint32_t polarityBits  = glm::packHalf2x16( glm::vec2( apicalRepulsion, basalAdhesion ) );
 
     ComputePushConstants pc{};
     pc.dt          = 1.0f;
@@ -5586,7 +5602,7 @@ static std::pair<float, float> RunJKRCadherin(
     pc.uParam0     = offsetArraySize;
     pc.uParam1     = 0;
     pc.domainSize  = glm::vec4( 100.0f, 100.0f, 100.0f, maxRadius * 2.0f + 1.0f ); // cellSize spans both agents
-    pc.gridSize    = glm::uvec4( cadherinFlag, couplingBits, 0u, 0u );
+    pc.gridSize    = glm::uvec4( cadherinFlag, couplingBits, polarityFlag, polarityBits );
 
     auto ctx = device->GetThreadContext( device->CreateThreadContext( QueueType::COMPUTE ) );
     auto cmd = ctx->GetCommandBuffer( ctx->CreateCommandBuffer() );
@@ -5605,6 +5621,7 @@ static std::pair<float, float> RunJKRCadherin(
     rm->DestroyBuffer( inBuf );  rm->DestroyBuffer( outBuf );  rm->DestroyBuffer( pressBuf );
     rm->DestroyBuffer( hashBuf ); rm->DestroyBuffer( offsetBuf ); rm->DestroyBuffer( countBuf );
     rm->DestroyBuffer( phenoBuf ); rm->DestroyBuffer( profBuf ); rm->DestroyBuffer( affBuf );
+    rm->DestroyBuffer( polarityBuf );
 
     return { result[ 0 ].x, result[ 1 ].x };
 }
@@ -5681,6 +5698,105 @@ TEST_F( ComputeTest, Shader_JKRForces_Cadherin_OrthogonalProfiles_ZeroAdhesion )
     float disp_base  = x1_base  - x0_base;
     EXPECT_GT( disp_ortho, disp_base )
         << "Orthogonal profiles (A=0) should produce more repulsion than normal JKR";
+}
+
+// =============================================================================
+// jkr_forces.comp — polarity-modulated adhesion tests
+// =============================================================================
+
+// Polarity vectors: agent 0 faces +X (basal toward agent 1), agent 1 faces -X (basal toward agent 0).
+// Both basal-facing → high alignment → scale = basalAdhesion > 1 → stronger adhesion → less repulsion.
+TEST_F( ComputeTest, Shader_JKR_Polarity_BasalFacing_StrongAdhesion )
+{
+    if( !m_device )
+        GTEST_SKIP();
+
+    float repulsion = 50.0f, adhesion = 5.0f, maxRadius = 1.5f;
+
+    // Basal-basal: polarity vectors point toward each other (outward toward the contact)
+    // Agent 0 at x=0, polarity +X; agent 1 at x=2.9, polarity -X
+    glm::vec4 pol0 = glm::vec4(  1.0f, 0.0f, 0.0f, 1.0f ); // dir=+X, magnitude=1
+    glm::vec4 pol1 = glm::vec4( -1.0f, 0.0f, 0.0f, 1.0f ); // dir=-X, magnitude=1
+
+    auto [x0_pol, x1_pol] = RunJKRCadherin(
+        m_device.get(), m_rm.get(), m_stream.get(),
+        0.0f, 2.9f, repulsion, adhesion, maxRadius,
+        glm::vec4( 0.0f ), glm::vec4( 0.0f ), glm::mat4( 1.0f ),
+        0u, 1.0f,   // cadherin OFF
+        1u, pol0, pol1, 0.5f, 2.0f );  // polarity ON, basalAdhesion=2
+
+    auto [x0_base, x1_base] = RunJKRCadherin(
+        m_device.get(), m_rm.get(), m_stream.get(),
+        0.0f, 2.9f, repulsion, adhesion, maxRadius,
+        glm::vec4( 0.0f ), glm::vec4( 0.0f ), glm::mat4( 1.0f ),
+        0u, 1.0f ); // polarity OFF (default)
+
+    // Basal-basal contact → more adhesion → less separation
+    float disp_pol  = x1_pol  - x0_pol;
+    float disp_base = x1_base - x0_base;
+    EXPECT_LT( disp_pol, disp_base )
+        << "Basal-basal polarity should increase adhesion → reduce separation";
+}
+
+// Apical-apical: both polarities point away from contact → low alignment → apicalRepulsion < 1 → less adhesion.
+TEST_F( ComputeTest, Shader_JKR_Polarity_ApicalFacing_WeakAdhesion )
+{
+    if( !m_device )
+        GTEST_SKIP();
+
+    float repulsion = 50.0f, adhesion = 5.0f, maxRadius = 1.5f;
+
+    // Agent 0 at x=0, polarity -X (apical faces agent 1); agent 1 at x=2.9, polarity +X
+    glm::vec4 pol0 = glm::vec4( -1.0f, 0.0f, 0.0f, 1.0f ); // apical toward agent 1
+    glm::vec4 pol1 = glm::vec4(  1.0f, 0.0f, 0.0f, 1.0f ); // apical toward agent 0
+
+    auto [x0_pol, x1_pol] = RunJKRCadherin(
+        m_device.get(), m_rm.get(), m_stream.get(),
+        0.0f, 2.9f, repulsion, adhesion, maxRadius,
+        glm::vec4( 0.0f ), glm::vec4( 0.0f ), glm::mat4( 1.0f ),
+        0u, 1.0f,
+        1u, pol0, pol1, 0.1f, 1.5f );  // polarity ON, apicalRepulsion=0.1 (strongly weakened)
+
+    auto [x0_base, x1_base] = RunJKRCadherin(
+        m_device.get(), m_rm.get(), m_stream.get(),
+        0.0f, 2.9f, repulsion, adhesion, maxRadius,
+        glm::vec4( 0.0f ), glm::vec4( 0.0f ), glm::mat4( 1.0f ),
+        0u, 1.0f );
+
+    // Apical-apical contact → less adhesion → more separation
+    float disp_pol  = x1_pol  - x0_pol;
+    float disp_base = x1_base - x0_base;
+    EXPECT_GT( disp_pol, disp_base )
+        << "Apical-apical polarity should reduce adhesion → increase separation";
+}
+
+// Zero polarity magnitude (w=0) → mix(1.0, scale, 0) = 1.0 → no change from baseline.
+TEST_F( ComputeTest, Shader_JKR_Polarity_ZeroMagnitude_NoEffect )
+{
+    if( !m_device )
+        GTEST_SKIP();
+
+    float repulsion = 50.0f, adhesion = 5.0f, maxRadius = 1.5f;
+
+    // Polarity vectors have direction but w=0 (interior cell — no polarity effect)
+    glm::vec4 pol0 = glm::vec4(  1.0f, 0.0f, 0.0f, 0.0f ); // magnitude = 0
+    glm::vec4 pol1 = glm::vec4( -1.0f, 0.0f, 0.0f, 0.0f ); // magnitude = 0
+
+    auto [x0_pol, x1_pol] = RunJKRCadherin(
+        m_device.get(), m_rm.get(), m_stream.get(),
+        0.0f, 2.9f, repulsion, adhesion, maxRadius,
+        glm::vec4( 0.0f ), glm::vec4( 0.0f ), glm::mat4( 1.0f ),
+        0u, 1.0f,
+        1u, pol0, pol1, 0.1f, 3.0f ); // polarity flag ON but w=0 on both
+
+    auto [x0_base, x1_base] = RunJKRCadherin(
+        m_device.get(), m_rm.get(), m_stream.get(),
+        0.0f, 2.9f, repulsion, adhesion, maxRadius,
+        glm::vec4( 0.0f ), glm::vec4( 0.0f ), glm::mat4( 1.0f ),
+        0u, 1.0f ); // polarity OFF
+
+    EXPECT_NEAR( x0_pol, x0_base, 1e-4f ) << "Zero-magnitude polarity should produce no change";
+    EXPECT_NEAR( x1_pol, x1_base, 1e-4f ) << "Zero-magnitude polarity should produce no change";
 }
 
 // =============================================================================

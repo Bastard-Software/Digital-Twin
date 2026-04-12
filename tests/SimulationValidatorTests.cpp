@@ -697,3 +697,61 @@ TEST( SimulationValidatorTest, Cadherin_ExpressionOutOfRange_Fails )
 
     EXPECT_FALSE( SimulationValidator::Validate( bp ).IsValid() );
 }
+
+// =================================================================================================
+// CellPolarity — validator checks
+// =================================================================================================
+
+static SimulationBlueprint MakeCellPolarityBlueprint()
+{
+    SimulationBlueprint bp;
+    bp.SetDomainSize( { 100.0f, 100.0f, 100.0f }, 2.0f );
+    AgentGroup& g = bp.AddAgentGroup( "ECs" );
+    g.SetCount( 50 );
+    g.AddBehaviour( Behaviours::Biomechanics{} );
+    g.AddBehaviour( Behaviours::CellPolarity{} );
+    return bp;
+}
+
+TEST( SimulationValidatorTest, CellPolarity_ValidSetup_Passes )
+{
+    EXPECT_TRUE( SimulationValidator::Validate( MakeCellPolarityBlueprint() ).IsValid() );
+}
+
+TEST( SimulationValidatorTest, CellPolarity_RequiresBiomechanics )
+{
+    SimulationBlueprint bp;
+    bp.SetDomainSize( { 100.0f, 100.0f, 100.0f }, 2.0f );
+    AgentGroup& g = bp.AddAgentGroup( "ECs" );
+    g.SetCount( 50 );
+    g.AddBehaviour( Behaviours::CellPolarity{} ); // no Biomechanics
+
+    EXPECT_FALSE( SimulationValidator::Validate( bp ).IsValid() );
+}
+
+TEST( SimulationValidatorTest, CellPolarity_NegativeRegulationRate_Fails )
+{
+    SimulationBlueprint bp = MakeCellPolarityBlueprint();
+    std::get<Behaviours::CellPolarity>(
+        bp.GetGroupsMutable()[ 0 ].GetBehavioursMutable()[ 1 ].behaviour ).regulationRate = -0.1f;
+
+    EXPECT_FALSE( SimulationValidator::Validate( bp ).IsValid() );
+}
+
+TEST( SimulationValidatorTest, CellPolarity_NegativeApicalRepulsion_Fails )
+{
+    SimulationBlueprint bp = MakeCellPolarityBlueprint();
+    std::get<Behaviours::CellPolarity>(
+        bp.GetGroupsMutable()[ 0 ].GetBehavioursMutable()[ 1 ].behaviour ).apicalRepulsion = -0.1f;
+
+    EXPECT_FALSE( SimulationValidator::Validate( bp ).IsValid() );
+}
+
+TEST( SimulationValidatorTest, CellPolarity_NegativeBasalAdhesion_Fails )
+{
+    SimulationBlueprint bp = MakeCellPolarityBlueprint();
+    std::get<Behaviours::CellPolarity>(
+        bp.GetGroupsMutable()[ 0 ].GetBehavioursMutable()[ 1 ].behaviour ).basalAdhesion = -0.1f;
+
+    EXPECT_FALSE( SimulationValidator::Validate( bp ).IsValid() );
+}

@@ -3285,3 +3285,236 @@ TEST_F( SimulationBuilderTest, Builder_JKR_Cadherin_Wiring )
 
     state.Destroy( m_resourceManager.get() );
 }
+
+// =================================================================================================
+// Stage 4: CellPolarity buffer + task tests
+// =================================================================================================
+
+// 1. polarityBuffer always allocated; full-size when CellPolarity present.
+TEST_F( SimulationBuilderTest, Builder_CellPolarity_BufferAllocated )
+{
+    if( !m_device )
+        GTEST_SKIP();
+
+    SimulationBlueprint blueprint;
+    blueprint.SetDomainSize( glm::vec3( 100.0f ), 2.0f );
+    AgentGroup& g = blueprint.AddAgentGroup( "ECs" );
+    g.SetCount( 4 );
+    g.SetDistribution( SpatialDistribution::UniformInBox( 4, glm::vec3( 4.0f ), glm::vec3( 0.0f ) ) );
+    g.AddBehaviour( Behaviours::Biomechanics{ 15.0f, 2.0f, 1.5f, 0.0f } );
+    g.AddBehaviour( Behaviours::CellPolarity{} );
+
+    SimulationBuilder builder( m_resourceManager.get(), m_streamingManager.get() );
+    SimulationState   state = builder.Build( blueprint );
+
+    EXPECT_TRUE( state.polarityBuffer.IsValid() );
+
+    state.Destroy( m_resourceManager.get() );
+}
+
+// 2. Even without CellPolarity a dummy polarityBuffer is allocated.
+TEST_F( SimulationBuilderTest, Builder_CellPolarity_DummyBufferWhenAbsent )
+{
+    if( !m_device )
+        GTEST_SKIP();
+
+    SimulationBlueprint blueprint;
+    blueprint.SetDomainSize( glm::vec3( 100.0f ), 2.0f );
+    AgentGroup& g = blueprint.AddAgentGroup( "Cells" );
+    g.SetCount( 4 );
+    g.SetDistribution( SpatialDistribution::UniformInBox( 4, glm::vec3( 4.0f ), glm::vec3( 0.0f ) ) );
+    g.AddBehaviour( Behaviours::Biomechanics{ 15.0f, 2.0f, 1.5f, 0.0f } );
+
+    SimulationBuilder builder( m_resourceManager.get(), m_streamingManager.get() );
+    SimulationState   state = builder.Build( blueprint );
+
+    EXPECT_TRUE( state.polarityBuffer.IsValid() ); // dummy still valid
+
+    state.Destroy( m_resourceManager.get() );
+}
+
+// 3. CellPolarity task appears in the compute graph.
+TEST_F( SimulationBuilderTest, Builder_CellPolarity_TaskExists )
+{
+    if( !m_device )
+        GTEST_SKIP();
+
+    SimulationBlueprint blueprint;
+    blueprint.SetDomainSize( glm::vec3( 100.0f ), 2.0f );
+    AgentGroup& g = blueprint.AddAgentGroup( "ECs" );
+    g.SetCount( 4 );
+    g.SetDistribution( SpatialDistribution::UniformInBox( 4, glm::vec3( 4.0f ), glm::vec3( 0.0f ) ) );
+    g.AddBehaviour( Behaviours::Biomechanics{ 15.0f, 2.0f, 1.5f, 0.0f } );
+    g.AddBehaviour( Behaviours::CellPolarity{} );
+
+    SimulationBuilder builder( m_resourceManager.get(), m_streamingManager.get() );
+    SimulationState   state = builder.Build( blueprint );
+
+    // Behaviour index 1 = CellPolarity (after Biomechanics at index 0)
+    EXPECT_NE( state.computeGraph.FindTask( "polarity_0_1" ), nullptr )
+        << "polarity_update task not found in compute graph";
+
+    state.Destroy( m_resourceManager.get() );
+}
+
+// 4. Polarity task dispatches cleanly without GPU errors; polarity buffer changes after dispatch.
+TEST_F( SimulationBuilderTest, Builder_CellPolarity_DispatchUpdatesBuffer )
+{
+    if( !m_device )
+        GTEST_SKIP();
+
+    SimulationBlueprint blueprint;
+    blueprint.SetDomainSize( glm::vec3( 100.0f ), 2.0f );
+    AgentGroup& g = blueprint.AddAgentGroup( "ECs" );
+    // Use cells placed in a cluster so each has visible neighbors for polarity
+    g.SetCount( 8 );
+    g.SetDistribution( SpatialDistribution::LatticeInSphere( 1.5f, 3.0f ) );
+    g.AddBehaviour( Behaviours::Biomechanics{ 15.0f, 2.0f, 1.5f, 0.0f } );
+    g.AddBehaviour( Behaviours::CellPolarity{ 1.0f } ); // high rate for quick response
+
+    SimulationBuilder builder( m_resourceManager.get(), m_streamingManager.get() );
+    SimulationState   state = builder.Build( blueprint );
+    ASSERT_TRUE( state.polarityBuffer.IsValid() );
+
+    // Capture initial polarity (all zeroes from init)
+    std::vector<glm::vec4> before( 8 );
+    m_streamingManager->ReadbackBufferImmediate(
+        state.polarityBuffer, before.data(), 8 * sizeof( glm::vec4 ) );
+
+    // Dispatch one frame
+    auto compCtxHandle = m_device->CreateThreadContext( QueueType::COMPUTE );
+    auto compCtx       = m_device->GetThreadContext( compCtxHandle );
+    auto compCmd       = compCtx->GetCommandBuffer( compCtx->CreateCommandBuffer() );
+
+    GraphDispatcher dispatcher;
+    compCmd->Begin();
+    dispatcher.Dispatch( &state.computeGraph, compCmd, nullptr, 1.0f / 60.0f, 0.0f, 0 );
+    compCmd->End();
+    m_device->GetComputeQueue()->Submit( { compCmd } );
+    m_device->GetComputeQueue()->WaitIdle();
+
+    std::vector<glm::vec4> after( 8 );
+    m_streamingManager->ReadbackBufferImmediate(
+        state.polarityBuffer, after.data(), 8 * sizeof( glm::vec4 ) );
+
+    // At least some agents should have non-zero polarity after one dispatch
+    bool anyNonZero = false;
+    for( int i = 0; i < 8; ++i )
+        if( glm::length( glm::vec3( after[ i ] ) ) > 1e-4f )
+            anyNonZero = true;
+
+    EXPECT_TRUE( anyNonZero ) << "Polarity buffer unchanged after dispatch — shader may have failed";
+
+    state.Destroy( m_resourceManager.get() );
+}
+
+// 5. When CellPolarity is present, JKR task has gridSize.z == 1 (polarity wired).
+TEST_F( SimulationBuilderTest, Builder_JKR_Polarity_Wiring )
+{
+    if( !m_device )
+        GTEST_SKIP();
+
+    SimulationBlueprint blueprint;
+    blueprint.SetDomainSize( glm::vec3( 100.0f ), 2.0f );
+    AgentGroup& g = blueprint.AddAgentGroup( "ECs" );
+    g.SetCount( 2 );
+    g.SetDistribution( { glm::vec4( 0.0f, 0.0f, 0.0f, 1.0f ),
+                         glm::vec4( 1.0f, 0.0f, 0.0f, 1.0f ) } );
+    g.AddBehaviour( Behaviours::Biomechanics{ 15.0f, 2.0f, 1.5f, 0.0f } );
+    g.AddBehaviour( Behaviours::CellPolarity{} );
+
+    SimulationBuilder builder( m_resourceManager.get(), m_streamingManager.get() );
+    SimulationState   state = builder.Build( blueprint );
+
+    // JKR task tag for group 0, behaviour index 0 (Biomechanics is first)
+    ComputeTask* jkrTask = state.computeGraph.FindTask( "jkr_0_0" );
+    ASSERT_NE( jkrTask, nullptr ) << "JKR task not found";
+    EXPECT_EQ( jkrTask->GetPushConstants().gridSize.z, 1u )
+        << "gridSize.z should be 1 when CellPolarity is present";
+
+    state.Destroy( m_resourceManager.get() );
+}
+
+// 6. EndothelialTubeDemo blueprint builds, dispatches 10 frames without errors,
+//    and leaves a non-zero polarity buffer (surface cells develop outward polarity).
+TEST_F( SimulationBuilderTest, EndothelialTube_BuildsAndDispatches )
+{
+    if( !m_device )
+        GTEST_SKIP();
+
+    SimulationBlueprint blueprint;
+    blueprint.SetName( "Endothelial Tube" );
+    blueprint.SetDomainSize( glm::vec3( 40.0f ), 1.5f );
+
+    blueprint.ConfigureSpatialPartitioning()
+        .SetMethod( SpatialPartitioningMethod::HashGrid )
+        .SetCellSize( 3.0f )
+        .SetMaxDensity( 64 )
+        .SetComputeHz( 60.0f );
+
+    auto shell = SpatialDistribution::ShellOnCylinder( 1.35f, 3.0f, 6.0f, 14 );
+    ASSERT_GT( shell.positions.size(), 0u );
+
+    const uint32_t count = static_cast<uint32_t>( shell.positions.size() );
+
+    auto jkr = BiomechanicsGenerator::JKR()
+                   .SetYoungsModulus( 20.0f )
+                   .SetPoissonRatio( 0.4f )
+                   .SetAdhesionEnergy( 1.5f )
+                   .SetMaxInteractionRadius( 0.75f )  // interactDist 1.5 > spacing 1.35
+                   .SetDampingCoefficient( 500.0f )
+                   .Build();
+
+    AgentGroup& ecs = blueprint.AddAgentGroup( "Endothelial Cells" );
+    ecs.SetCount( count );
+    ecs.SetDistribution( shell.positions );
+    ecs.SetOrientations( shell.normals );
+    ecs.AddBehaviour( jkr ).SetHz( 60.0f );
+    ecs.AddBehaviour( Behaviours::CadherinAdhesion{
+                          glm::vec4( 0.0f, 0.0f, 1.0f, 0.0f ),
+                          0.05f, 0.001f, 2.5f } )
+        .SetHz( 60.0f );
+    Behaviours::CellPolarity polarity;
+    polarity.regulationRate  = 1.0f;  // fast rate so surface polarity is visible in 10 frames
+    polarity.apicalRepulsion = 0.3f;
+    polarity.basalAdhesion   = 1.5f;
+    ecs.AddBehaviour( polarity ).SetHz( 60.0f );
+    ecs.AddBehaviour( Behaviours::BrownianMotion{ 0.3f } ).SetHz( 60.0f );
+
+    SimulationBuilder builder( m_resourceManager.get(), m_streamingManager.get() );
+    SimulationState   state = builder.Build( blueprint );
+    ASSERT_TRUE( state.polarityBuffer.IsValid() );
+
+    // Dispatch 10 frames
+    auto compCtxHandle = m_device->CreateThreadContext( QueueType::COMPUTE );
+    auto compCtx       = m_device->GetThreadContext( compCtxHandle );
+    auto compCmd       = compCtx->GetCommandBuffer( compCtx->CreateCommandBuffer() );
+
+    GraphDispatcher dispatcher;
+    const float     dt = 1.0f / 60.0f;
+    for( int frame = 0; frame < 10; ++frame )
+    {
+        compCmd->Begin();
+        dispatcher.Dispatch( &state.computeGraph, compCmd, nullptr, dt, dt * static_cast<float>( frame ), frame % 2 );
+        compCmd->End();
+        m_device->GetComputeQueue()->Submit( { compCmd } );
+        m_device->GetComputeQueue()->WaitIdle();
+    }
+
+    // Read back polarity — at least one surface cell should have non-zero polarity
+    std::vector<glm::vec4> polarityData( count );
+    m_streamingManager->ReadbackBufferImmediate(
+        state.polarityBuffer, polarityData.data(), count * sizeof( glm::vec4 ) );
+
+    bool anyNonZero = false;
+    for( uint32_t i = 0; i < count; ++i )
+        if( glm::length( glm::vec3( polarityData[ i ] ) ) > 1e-4f )
+        {
+            anyNonZero = true;
+            break;
+        }
+
+    EXPECT_TRUE( anyNonZero ) << "No cells developed polarity after 10 frames";
+
+    state.Destroy( m_resourceManager.get() );
+}

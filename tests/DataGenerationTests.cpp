@@ -144,6 +144,251 @@ TEST( SpatialDistribution_LatticeInSphere, Deterministic )
 }
 
 // =================================================================================================
+// SpatialDistribution::LatticeInCylinder — CPU-only
+// =================================================================================================
+
+TEST( SpatialDistribution_LatticeInCylinder, AllInsideCylinder )
+{
+    const float radius     = 4.0f;
+    const float halfLength = 6.0f;
+    auto        positions  = SpatialDistribution::LatticeInCylinder( 1.0f, radius, halfLength );
+
+    ASSERT_FALSE( positions.empty() );
+    for( const auto& p : positions )
+    {
+        // Axis is Y by default
+        float radDist = std::sqrt( p.x * p.x + p.z * p.z );
+        EXPECT_LE( radDist, radius + 1e-4f );
+        EXPECT_LE( std::abs( p.y ), halfLength + 1e-4f );
+    }
+}
+
+TEST( SpatialDistribution_LatticeInCylinder, CorrectSpacing )
+{
+    const float spacing    = 1.5f;
+    auto        positions  = SpatialDistribution::LatticeInCylinder( spacing, 3.0f, 4.0f );
+
+    ASSERT_FALSE( positions.empty() );
+    // No two points should be closer than spacing (minus floating-point tolerance)
+    for( size_t i = 0; i < positions.size(); ++i )
+        for( size_t j = i + 1; j < positions.size(); ++j )
+        {
+            glm::vec3 a( positions[ i ] ), b( positions[ j ] );
+            EXPECT_GE( glm::length( b - a ), spacing - 1e-3f );
+        }
+}
+
+TEST( SpatialDistribution_LatticeInCylinder, StatusFlagAlive )
+{
+    auto positions = SpatialDistribution::LatticeInCylinder( 1.0f, 3.0f, 4.0f );
+    for( const auto& p : positions )
+        EXPECT_FLOAT_EQ( p.w, 1.0f );
+}
+
+TEST( SpatialDistribution_LatticeInCylinder, CenterOffset )
+{
+    const glm::vec3 center( 5.0f, -3.0f, 2.0f );
+    auto            positions = SpatialDistribution::LatticeInCylinder( 1.0f, 2.0f, 3.0f, center );
+
+    ASSERT_FALSE( positions.empty() );
+    for( const auto& p : positions )
+    {
+        float radDist = std::sqrt( ( p.x - center.x ) * ( p.x - center.x ) +
+                                   ( p.z - center.z ) * ( p.z - center.z ) );
+        EXPECT_LE( radDist, 2.0f + 1e-4f );
+        EXPECT_LE( std::abs( p.y - center.y ), 3.0f + 1e-4f );
+    }
+}
+
+TEST( SpatialDistribution_LatticeInCylinder, CustomAxis )
+{
+    // Cylinder aligned with X axis
+    auto positions = SpatialDistribution::LatticeInCylinder( 1.0f, 2.0f, 4.0f,
+                                                              glm::vec3( 0.0f ),
+                                                              glm::vec3( 1.0f, 0.0f, 0.0f ) );
+
+    ASSERT_FALSE( positions.empty() );
+    for( const auto& p : positions )
+    {
+        float radDist = std::sqrt( p.y * p.y + p.z * p.z );
+        EXPECT_LE( radDist, 2.0f + 1e-4f );
+        EXPECT_LE( std::abs( p.x ), 4.0f + 1e-4f );
+    }
+}
+
+// =================================================================================================
+// SpatialDistribution::UniformInCylinder — CPU-only
+// =================================================================================================
+
+TEST( SpatialDistribution_UniformInCylinder, CorrectCount )
+{
+    auto positions = SpatialDistribution::UniformInCylinder( 100, 3.0f, 6.0f );
+    EXPECT_EQ( positions.size(), 100u );
+}
+
+TEST( SpatialDistribution_UniformInCylinder, AllInsideCylinder )
+{
+    const float radius     = 3.0f;
+    const float halfLength = 6.0f;
+
+    auto positions = SpatialDistribution::UniformInCylinder( 200, radius, halfLength );
+    ASSERT_FALSE( positions.empty() );
+
+    for( const auto& p : positions )
+    {
+        float radDist = std::sqrt( p.x * p.x + p.z * p.z );
+        EXPECT_LE( radDist, radius + 1e-4f ) << "Point outside outer radius";
+        EXPECT_LE( std::abs( p.y ), halfLength + 1e-4f ) << "Point outside half-length";
+    }
+}
+
+TEST( SpatialDistribution_UniformInCylinder, HollowCylinder )
+{
+    const float radius      = 4.0f;
+    const float innerRadius = 2.0f;
+    const float halfLength  = 5.0f;
+
+    auto positions = SpatialDistribution::UniformInCylinder( 200, radius, halfLength,
+                                                              glm::vec3( 0.0f ),
+                                                              glm::vec3( 0.0f, 1.0f, 0.0f ),
+                                                              innerRadius );
+    ASSERT_FALSE( positions.empty() );
+
+    for( const auto& p : positions )
+    {
+        float radDist = std::sqrt( p.x * p.x + p.z * p.z );
+        EXPECT_GE( radDist, innerRadius - 1e-4f ) << "Point inside inner radius cutout";
+        EXPECT_LE( radDist, radius + 1e-4f )      << "Point outside outer radius";
+    }
+}
+
+TEST( SpatialDistribution_UniformInCylinder, StatusFlagAlive )
+{
+    auto positions = SpatialDistribution::UniformInCylinder( 50, 2.0f, 4.0f );
+    for( const auto& p : positions )
+        EXPECT_FLOAT_EQ( p.w, 1.0f );
+}
+
+TEST( SpatialDistribution_UniformInCylinder, Deterministic )
+{
+    auto p1 = SpatialDistribution::UniformInCylinder( 50, 3.0f, 5.0f,
+                                                       glm::vec3( 0.0f ),
+                                                       glm::vec3( 0.0f, 1.0f, 0.0f ),
+                                                       0.0f, 42 );
+    auto p2 = SpatialDistribution::UniformInCylinder( 50, 3.0f, 5.0f,
+                                                       glm::vec3( 0.0f ),
+                                                       glm::vec3( 0.0f, 1.0f, 0.0f ),
+                                                       0.0f, 42 );
+    ASSERT_EQ( p1.size(), p2.size() );
+    for( size_t i = 0; i < p1.size(); ++i )
+    {
+        EXPECT_FLOAT_EQ( p1[ i ].x, p2[ i ].x );
+        EXPECT_FLOAT_EQ( p1[ i ].y, p2[ i ].y );
+        EXPECT_FLOAT_EQ( p1[ i ].z, p2[ i ].z );
+    }
+}
+
+TEST( SpatialDistribution_UniformInCylinder, DifferentSeeds )
+{
+    auto p1 = SpatialDistribution::UniformInCylinder( 50, 3.0f, 5.0f,
+                                                       glm::vec3( 0.0f ),
+                                                       glm::vec3( 0.0f, 1.0f, 0.0f ),
+                                                       0.0f, 42 );
+    auto p2 = SpatialDistribution::UniformInCylinder( 50, 3.0f, 5.0f,
+                                                       glm::vec3( 0.0f ),
+                                                       glm::vec3( 0.0f, 1.0f, 0.0f ),
+                                                       0.0f, 99 );
+    ASSERT_EQ( p1.size(), p2.size() );
+    bool anyDiffers = false;
+    for( size_t i = 0; i < p1.size(); ++i )
+        if( p1[ i ].x != p2[ i ].x || p1[ i ].y != p2[ i ].y || p1[ i ].z != p2[ i ].z )
+            anyDiffers = true;
+    EXPECT_TRUE( anyDiffers ) << "Different seeds must produce different positions";
+}
+
+TEST( SpatialDistribution_UniformInCylinder, CustomAxis )
+{
+    // Cylinder aligned with X axis
+    auto positions = SpatialDistribution::UniformInCylinder( 100, 2.0f, 4.0f,
+                                                              glm::vec3( 0.0f ),
+                                                              glm::vec3( 1.0f, 0.0f, 0.0f ) );
+    ASSERT_FALSE( positions.empty() );
+    for( const auto& p : positions )
+    {
+        float radDist = std::sqrt( p.y * p.y + p.z * p.z );
+        EXPECT_LE( radDist, 2.0f + 1e-4f ) << "Point outside radial bound (X-axis cylinder)";
+        EXPECT_LE( std::abs( p.x ), 4.0f + 1e-4f ) << "Point outside axial bound";
+    }
+}
+
+TEST( SpatialDistribution_UniformInCylinder, CenterOffset )
+{
+    const glm::vec3 center( 5.0f, -3.0f, 2.0f );
+    const float     radius     = 2.0f;
+    const float     halfLength = 3.0f;
+
+    auto positions = SpatialDistribution::UniformInCylinder( 100, radius, halfLength, center );
+    ASSERT_FALSE( positions.empty() );
+    for( const auto& p : positions )
+    {
+        // Radial distance from Y axis through center
+        float dx = p.x - center.x;
+        float dz = p.z - center.z;
+        float radDist = std::sqrt( dx * dx + dz * dz );
+        EXPECT_LE( radDist, radius + 1e-4f );
+        EXPECT_LE( std::abs( p.y - center.y ), halfLength + 1e-4f );
+    }
+}
+
+// =================================================================================================
+// SpatialDistribution::ShellOnCylinder — CPU-only
+// =================================================================================================
+
+TEST( SpatialDistribution_ShellOnCylinder, AllOnSurface )
+{
+    // All positions should lie on the cylinder surface (within jitter tolerance).
+    const float radius   = 3.0f;
+    const float jitter   = 0.3f;
+    // Max radial displacement from jitter: angle_jitter * radius ≈ 0.3 * 2π/10 * 3 ≈ 0.57
+    const float pi           = 3.14159265f;
+    const float maxRadialErr = jitter * ( 2.0f * pi / 10.0f ) * radius + 0.01f;
+
+    auto result = SpatialDistribution::ShellOnCylinder( 1.35f, radius, 6.0f, 10,
+                                                         glm::vec3( 0.0f ),
+                                                         glm::vec3( 0.0f, 1.0f, 0.0f ),
+                                                         jitter, 42 );
+    ASSERT_FALSE( result.positions.empty() );
+
+    for( const auto& p : result.positions )
+    {
+        // Radial distance from Y axis
+        float radDist = std::sqrt( p.x * p.x + p.z * p.z );
+        EXPECT_NEAR( radDist, radius, maxRadialErr )
+            << "Position not on cylinder surface: radial distance = " << radDist;
+    }
+}
+
+TEST( SpatialDistribution_ShellOnCylinder, NormalsPointOutward )
+{
+    // Normals must point radially outward (no jitter on normals).
+    auto result = SpatialDistribution::ShellOnCylinder( 1.35f, 3.0f, 6.0f, 10,
+                                                         glm::vec3( 0.0f ),
+                                                         glm::vec3( 0.0f, 1.0f, 0.0f ),
+                                                         0.3f, 42 );
+    ASSERT_EQ( result.positions.size(), result.normals.size() );
+
+    for( size_t i = 0; i < result.normals.size(); ++i )
+    {
+        glm::vec3 n( result.normals[ i ] );
+        EXPECT_NEAR( glm::length( n ), 1.0f, 1e-4f ) << "Normal not unit length at index " << i;
+        // Normal w should be 0
+        EXPECT_FLOAT_EQ( result.normals[ i ].w, 0.0f );
+        // Normal must point radially outward (Y component should be ~0, XZ should match radial dir)
+        EXPECT_NEAR( n.y, 0.0f, 1e-4f ) << "Normal has Y component for Y-axis cylinder";
+    }
+}
+
+// =================================================================================================
 // MorphologyGenerator — CPU-only
 // =================================================================================================
 

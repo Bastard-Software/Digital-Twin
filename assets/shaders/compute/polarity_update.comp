@@ -1,0 +1,188 @@
+#version 460
+layout(local_size_x = 256) in;
+
+// Per-agent apical-basal polarity update using EMA toward the outward normal
+// derived from neighbor centroid geometry. No ping-pong: polarityBuffer is
+// read-write in-place (same pattern as cadherin_expression_update.comp).
+//
+// xyz = polarity direction (unit vector pointing basal/outward)
+// w   = magnitude (1 = strong surface polarity, 0 = symmetric interior)
+
+layout(push_constant) uniform PushConstants {
+    float dt;
+    float totalTime;
+    float regulationRate;    // fParam0 — EMA rate for polarity adaptation (1/s)
+    float interactionRadius; // fParam1 — from Biomechanics.maxRadius (determines neighbor search range)
+    float reqLC;             // fParam2 — requiredLifecycleState (-1 = any), float-encoded int
+    float reqCT;             // fParam3 — requiredCellType (-1 = any), float-encoded int
+    float fParam4;
+    float fParam5;
+    uint  offset;
+    uint  maxCapacity;       // globalHashCapacity — drives the inner hash scan
+    uint  offsetArraySize;   // uParam0
+    uint  grpNdx;
+    vec4  domainSize;        // .w = hash grid cell size (must match hash build)
+    uvec4 gridSize;
+} pc;
+
+layout(std140, binding = 0) readonly buffer InputAgents { vec4 positions[]; } inAgents;
+
+layout(std430, binding = 1) buffer PolarityBuffer { vec4 data[]; } polarity;
+
+layout(std430, binding = 2) readonly buffer CounterBuffer { uint counts[]; } counters;
+
+struct AgentHash { uint hash; uint agentIndex; };
+layout(std430, binding = 3) readonly buffer Hashes { AgentHash data[]; } sortedHashes;
+layout(std430, binding = 4) readonly buffer Offsets { uint startIndices[]; } cellOffsets;
+
+struct PhenotypeData {
+    uint  lifecycleState;
+    float biomass;
+    float timer;
+    uint  cellType;
+};
+layout(std430, binding = 5) readonly buffer Phenotypes  { PhenotypeData data[]; } phenotypes;
+layout(std430, binding = 6) writeonly buffer Orientations { vec4 orientations[]; };
+
+uint hashPos(ivec3 cell) {
+    const uint p1 = 73856093u; const uint p2 = 19349663u; const uint p3 = 83492791u;
+    return (uint(cell.x) * p1) ^ (uint(cell.y) * p2) ^ (uint(cell.z) * p3);
+}
+
+void main()
+{
+    uint idx = gl_GlobalInvocationID.x;
+    if (idx >= pc.maxCapacity) return;
+    if (idx >= counters.counts[pc.grpNdx]) return;
+
+    uint globalIdx = pc.offset + idx;
+
+    // Dead-slot guard
+    if (inAgents.positions[globalIdx].w == 0.0) return;
+
+    // Lifecycle / cell-type filter
+    int reqLC = int(pc.reqLC);
+    int reqCT = int(pc.reqCT);
+    if (reqLC >= 0 && int(phenotypes.data[globalIdx].lifecycleState) != reqLC) return;
+    if (reqCT >= 0 && int(phenotypes.data[globalIdx].cellType)       != reqCT) return;
+
+    vec3  myPos       = inAgents.positions[globalIdx].xyz;
+    float cellSize    = pc.domainSize.w;
+    float searchDist  = pc.interactionRadius * 2.0;
+    ivec3 myCell      = ivec3(floor(myPos / cellSize));
+
+    // Accumulate neighbor positions for centroid calculation
+    vec3  posAccum     = vec3(0.0);
+    int   neighborCount = 0;
+
+    for (int z = -1; z <= 1; z++) {
+        for (int y = -1; y <= 1; y++) {
+            for (int x = -1; x <= 1; x++) {
+                uint nHash     = hashPos(myCell + ivec3(x, y, z));
+                uint offsetIdx = nHash % pc.offsetArraySize;
+                uint startIdx  = cellOffsets.startIndices[offsetIdx];
+                if (startIdx == 0xFFFFFFFF) continue;
+
+                for (uint i = startIdx; i < pc.maxCapacity; i++) {
+                    if (sortedHashes.data[i].hash != nHash) break;
+                    uint nIdx = sortedHashes.data[i].agentIndex;
+                    if (nIdx == globalIdx) continue;
+
+                    vec4 nData = inAgents.positions[nIdx];
+                    if (nData.w == 0.0) continue;
+
+                    vec3 diff = myPos - nData.xyz;
+                    if (dot(diff, diff) < searchDist * searchDist) {
+                        posAccum += nData.xyz;
+                        neighborCount++;
+                    }
+                }
+            }
+        }
+    }
+
+    vec4 old = polarity.data[globalIdx];
+
+    if (neighborCount == 0) {
+        // No neighbors — keep current polarity unchanged
+        return;
+    }
+
+    vec3  neighborCenter = posAccum / float(neighborCount);
+    vec3  rawVec         = myPos - neighborCenter;
+    float rawLen   = length(rawVec);
+    float alpha    = pc.regulationRate * pc.dt;
+
+    // xyz: direction component — EMA toward outward unit vector then renormalize
+    vec3 newDir;
+    if (rawLen > 0.001) {
+        vec3 targetDir = rawVec / rawLen;
+        newDir = mix(old.xyz, targetDir, alpha);
+        float l = length(newDir);
+        if (l > 0.001) newDir /= l;
+    } else {
+        // Interior cell with symmetric neighbors — polarity decays toward zero
+        newDir = mix(old.xyz, vec3(0.0), alpha);
+    }
+
+    // w: magnitude — 1 on surface (large displacement from centroid), 0 deep in interior
+    // Normalized by interactionRadius so the transition happens over ~1 cell radius
+    float targetW = clamp(rawLen / pc.interactionRadius, 0.0, 1.0);
+    float newW    = mix(old.w, targetW, alpha);
+
+    polarity.data[globalIdx] = vec4(newDir, newW);
+
+    // Update orientation buffer with a full quaternion so CurvedTile meshes
+    // track the evolving surface normal AND align height edges with the tube axis.
+    //
+    // CurvedTile model space: +Y = outer normal, +X = height/axial, +Z = circumferential.
+    // We build a world frame (B, N, T) where:
+    //   N = polarity direction (outer normal)
+    //   B = world up projected onto tangent plane (→ model +X, aligns tile height with tube axis)
+    //   T = cross(B, N) (→ model +Z, circumferential)
+    //
+    // geometry.vert: abs(w) > 0.001 → quaternion mode (qx, qy, qz, qw).
+    if (newW > 0.1)
+    {
+        vec3 N = normalize(newDir);
+
+        // Project world up onto the tangent plane to get the "height along surface" direction
+        vec3 up = vec3(0.0, 1.0, 0.0);
+        vec3 B  = up - dot(up, N) * N;
+        float bLen = length(B);
+        if (bLen < 0.001) {
+            // Normal parallel to up — fall back to world X
+            B = vec3(1.0, 0.0, 0.0) - dot(vec3(1.0, 0.0, 0.0), N) * N;
+            bLen = length(B);
+        }
+        B /= bLen;
+        vec3 T = cross(B, N); // right-handed: B × N = T
+
+        // Rotation matrix R: columns = (B, N, T), maps model to world
+        float m00 = B.x, m01 = N.x, m02 = T.x;
+        float m10 = B.y, m11 = N.y, m12 = T.y;
+        float m20 = B.z, m21 = N.z, m22 = T.z;
+
+        // Matrix → quaternion (Shepperd's method)
+        float tr = m00 + m11 + m22;
+        vec4 q;
+        if (tr > 0.0) {
+            float s = 2.0 * sqrt(tr + 1.0);
+            q = vec4((m21 - m12) / s, (m02 - m20) / s, (m10 - m01) / s, s / 4.0);
+        } else if (m00 > m11 && m00 > m22) {
+            float s = 2.0 * sqrt(1.0 + m00 - m11 - m22);
+            q = vec4(s / 4.0, (m01 + m10) / s, (m02 + m20) / s, (m21 - m12) / s);
+        } else if (m11 > m22) {
+            float s = 2.0 * sqrt(1.0 - m00 + m11 - m22);
+            q = vec4((m01 + m10) / s, s / 4.0, (m12 + m21) / s, (m02 - m20) / s);
+        } else {
+            float s = 2.0 * sqrt(1.0 - m00 - m11 + m22);
+            q = vec4((m02 + m20) / s, (m12 + m21) / s, s / 4.0, (m10 - m01) / s);
+        }
+
+        // Ensure |w| > 0.001 so geometry.vert uses quaternion mode, not shortest-arc
+        if (abs(q.w) < 0.002) q.w = 0.002;
+
+        orientations[globalIdx] = q;
+    }
+}

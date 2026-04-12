@@ -52,6 +52,10 @@ namespace DigitalTwin
         // Always allocated — identity dummy when no group uses cadherin.
         BufferHandle cadherinAffinityBuffer;
 
+        // Per-agent polarity vector (xyz=outward normal, w=magnitude 0-1).
+        // Full-size when any group has CellPolarity; 16-byte dummy otherwise.
+        BufferHandle polarityBuffer;
+
         // Per-agent orientation normals (xyz=outward normal, w=0). Static — written once at init.
         // Groups without orientations get default (0,1,0,0). Read by geometry.vert to orient meshes.
         BufferHandle orientationBuffer;

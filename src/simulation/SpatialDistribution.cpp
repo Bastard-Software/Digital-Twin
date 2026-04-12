@@ -116,4 +116,112 @@ namespace DigitalTwin
         return positions;
     }
 
+    std::vector<glm::vec4> SpatialDistribution::LatticeInCylinder( float spacing, float radius, float halfLength,
+                                                                     const glm::vec3& center, const glm::vec3& axis )
+    {
+        std::vector<glm::vec4> positions;
+
+        // Build two basis vectors perpendicular to axis
+        glm::vec3 a = glm::normalize( axis );
+        glm::vec3 u = ( std::abs( a.x ) < 0.9f ) ? glm::vec3( 1, 0, 0 ) : glm::vec3( 0, 1, 0 );
+        glm::vec3 b = glm::normalize( glm::cross( a, u ) );
+        glm::vec3 c = glm::cross( a, b );
+
+        float extent = std::max( { radius, halfLength } );
+        for( float i = -extent; i <= extent; i += spacing )
+            for( float j = -extent; j <= extent; j += spacing )
+                for( float k = -extent; k <= extent; k += spacing )
+                {
+                    glm::vec3 p   = b * i + c * j + a * k;
+                    float     axP = glm::dot( p, a );
+                    glm::vec3 rad = p - axP * a;
+                    if( std::abs( axP ) <= halfLength && glm::dot( rad, rad ) <= radius * radius )
+                        positions.push_back( { center.x + p.x, center.y + p.y, center.z + p.z, 1.0f } );
+                }
+
+        return positions;
+    }
+
+    std::vector<glm::vec4> SpatialDistribution::UniformInCylinder( uint32_t count, float radius, float halfLength,
+                                                                      const glm::vec3& center, const glm::vec3& axis,
+                                                                      float innerRadius, uint32_t seed )
+    {
+        std::vector<glm::vec4> positions;
+        positions.reserve( count );
+
+        // Build orthonormal frame: a = axis, b/c = perpendicular pair
+        glm::vec3 a = glm::normalize( axis );
+        glm::vec3 u = ( std::abs( a.x ) < 0.9f ) ? glm::vec3( 1, 0, 0 ) : glm::vec3( 0, 1, 0 );
+        glm::vec3 b = glm::normalize( glm::cross( a, u ) );
+        glm::vec3 c = glm::cross( a, b );
+
+        std::mt19937                          gen( seed );
+        std::uniform_real_distribution<float> disR( -radius, radius );
+        std::uniform_real_distribution<float> disA( -halfLength, halfLength );
+
+        const float r2Max = radius * radius;
+        const float r2Min = innerRadius * innerRadius;
+
+        while( positions.size() < count )
+        {
+            float x = disR( gen );
+            float y = disR( gen );
+            float r2 = x * x + y * y;
+            if( r2 > r2Max || r2 < r2Min )
+                continue;
+
+            float axialPos = disA( gen );
+            glm::vec3 p    = center + b * x + c * y + a * axialPos;
+            positions.push_back( glm::vec4( p, 1.0f ) );
+        }
+
+        return positions;
+    }
+
+    CylinderShellResult SpatialDistribution::ShellOnCylinder( float axialSpacing, float radius, float halfLength,
+                                                                uint32_t cellsPerRing,
+                                                                const glm::vec3& center, const glm::vec3& axis,
+                                                                float jitter, uint32_t seed )
+    {
+        CylinderShellResult result;
+
+        // Build orthonormal frame: a = axis, b/c = perpendicular pair
+        glm::vec3 a = glm::normalize( axis );
+        glm::vec3 u = ( std::abs( a.x ) < 0.9f ) ? glm::vec3( 1, 0, 0 ) : glm::vec3( 0, 1, 0 );
+        glm::vec3 b = glm::normalize( glm::cross( a, u ) );
+        glm::vec3 c = glm::cross( a, b );
+
+        const float twoPI    = 2.0f * glm::pi<float>();
+        const float dAngle   = twoPI / static_cast<float>( cellsPerRing );
+        const int   numRings = static_cast<int>( std::floor( 2.0f * halfLength / axialSpacing ) ) + 1;
+
+        std::mt19937                          gen( seed );
+        std::uniform_real_distribution<float> dis( -1.0f, 1.0f );
+
+        for( int r = 0; r < numRings; ++r )
+        {
+            float axialPos      = -halfLength + r * axialSpacing;
+            float angularOffset = ( r % 2 == 1 ) ? dAngle * 0.5f : 0.0f; // hex stagger
+
+            for( uint32_t j = 0; j < cellsPerRing; ++j )
+            {
+                float angle     = static_cast<float>( j ) * dAngle + angularOffset;
+                float axialJit  = 0.0f;
+                if( jitter > 0.0f )
+                {
+                    angle    += dis( gen ) * dAngle   * jitter;
+                    axialJit  = dis( gen ) * axialSpacing * jitter;
+                }
+
+                glm::vec3 radialDir = glm::cos( angle ) * b + glm::sin( angle ) * c;
+                glm::vec3 pos       = center + a * ( axialPos + axialJit ) + radius * radialDir;
+
+                result.positions.push_back( glm::vec4( pos, 1.0f ) );
+                result.normals.push_back( glm::vec4( radialDir, 0.0f ) ); // always clean outward
+            }
+        }
+
+        return result;
+    }
+
 } // namespace DigitalTwin

@@ -1,6 +1,7 @@
 #include "simulation/SimulationBuilder.h"
 
 #include "core/Log.h"
+#include <glm/gtc/packing.hpp>
 #include "resources/ResourceManager.h"
 #include "resources/StreamingManager.h"
 #include "rhi/BindingGroup.h"
@@ -51,6 +52,8 @@ namespace DigitalTwin
             resourceManager->DestroyBuffer( cadherinProfileBuffer );
         if( cadherinAffinityBuffer.IsValid() )
             resourceManager->DestroyBuffer( cadherinAffinityBuffer );
+        if( polarityBuffer.IsValid() )
+            resourceManager->DestroyBuffer( polarityBuffer );
         if( orientationBuffer.IsValid() )
             resourceManager->DestroyBuffer( orientationBuffer );
         if( signalingBuffer.IsValid() )
@@ -90,6 +93,7 @@ namespace DigitalTwin
         phenotypeBuffer        = {};
         cadherinProfileBuffer  = {};
         cadherinAffinityBuffer = {};
+        polarityBuffer         = {};
         signalingBuffer        = {};
         vesselEdgeBuffer       = {};
         vesselEdgeCountBuffer  = {};
@@ -751,6 +755,139 @@ namespace DigitalTwin
                 { { outState.cadherinAffinityBuffer, &affinity, sizeof( glm::mat4 ), 0 } } );
         }
 
+        // Pre-pass: allocate polarity buffer. Always allocated so JKR binding 9 is always valid.
+        {
+            bool hasPolarity = false;
+            for( const auto& g: blueprint.GetGroups() )
+                for( const auto& record: g.GetBehaviours() )
+                    if( std::holds_alternative<Behaviours::CellPolarity>( record.behaviour ) )
+                        { hasPolarity = true; break; }
+
+            if( hasPolarity )
+            {
+                uint32_t globalCapacity = 0;
+                for( const auto& g: blueprint.GetGroups() )
+                {
+                    if( g.GetCount() == 0 ) continue;
+                    uint32_t cap = 131072;
+                    while( cap < g.GetCount() ) cap <<= 1;
+                    globalCapacity += cap;
+                }
+                size_t polaritySize     = globalCapacity * sizeof( glm::vec4 );
+                outState.polarityBuffer = m_resourceManager->CreateBuffer(
+                    { polaritySize, BufferType::STORAGE, "PolarityBuffer" } );
+                std::vector<glm::vec4> zeroes( globalCapacity, glm::vec4( 0.0f ) );
+                m_streamingManager->UploadBufferImmediate( { { outState.polarityBuffer, zeroes.data(), polaritySize, 0 } } );
+            }
+            else
+            {
+                glm::vec4 dummy( 0.0f );
+                outState.polarityBuffer = m_resourceManager->CreateBuffer(
+                    { sizeof( glm::vec4 ), BufferType::STORAGE, "PolarityBuffer_Dummy" } );
+                m_streamingManager->UploadBufferImmediate( { { outState.polarityBuffer, &dummy, sizeof( glm::vec4 ), 0 } } );
+            }
+        }
+
+        // Pre-pass: compile CellPolarity tasks BEFORE the main behaviour loop so they execute
+        // in the compute graph before JKR, which reads the polarity buffer.
+        {
+            ShaderHandle              polarityShader = m_resourceManager->CreateShader( "shaders/compute/polarity_update.comp" );
+            ComputePipelineDesc       polarityDesc{ polarityShader, "PolarityUpdatePipeline" };
+            ComputePipelineHandle     polarityPipeHandle = m_resourceManager->CreatePipeline( polarityDesc );
+            ComputePipeline*          polarityPipe       = m_resourceManager->GetPipeline( polarityPipeHandle );
+
+            uint32_t preOffset  = 0;
+            uint32_t preGroup   = 0;
+
+            for( const auto& group: blueprint.GetGroups() )
+            {
+                if( group.GetCount() == 0 )
+                {
+                    preGroup++;
+                    continue;
+                }
+
+                uint32_t grpPaddedCount = 131072;
+                while( grpPaddedCount < group.GetCount() ) grpPaddedCount <<= 1;
+
+                uint32_t bhvIdx = 0;
+                for( const auto& record: group.GetBehaviours() )
+                {
+                    if( std::holds_alternative<Behaviours::CellPolarity>( record.behaviour ) )
+                    {
+                        const auto& pol = std::get<Behaviours::CellPolarity>( record.behaviour );
+
+                        // Find interactionRadius from this group's Biomechanics
+                        float interactionRadius = 1.5f; // default fallback
+                        for( const auto& r: group.GetBehaviours() )
+                            if( const auto* bio = std::get_if<Behaviours::Biomechanics>( &r.behaviour ) )
+                                { interactionRadius = bio->maxRadius; break; }
+
+                        // Ensure phenotype buffer exists (needed for dead-cell guard)
+                        if( !outState.phenotypeBuffer.IsValid() )
+                        {
+                            uint32_t globalCapacity = 0;
+                            for( const auto& g: blueprint.GetGroups() )
+                            {
+                                if( g.GetCount() == 0 ) continue;
+                                uint32_t cap = 131072;
+                                while( cap < g.GetCount() ) cap <<= 1;
+                                globalCapacity += cap;
+                            }
+                            size_t phenotypeSize     = globalCapacity * sizeof( PhenotypeData );
+                            outState.phenotypeBuffer = m_resourceManager->CreateBuffer( { phenotypeSize, BufferType::STORAGE, "PhenotypeBuffer" } );
+                            std::vector<PhenotypeData> initPhenotypes( globalCapacity, { 0, 0.5f, 0.0f, 0 } );
+                            m_streamingManager->UploadBufferImmediate( { { outState.phenotypeBuffer, initPhenotypes.data(), phenotypeSize, 0 } } );
+                        }
+
+                        BindingGroup* bg0 = m_resourceManager->GetBindingGroup( m_resourceManager->CreateBindingGroup( polarityPipeHandle, 0 ) );
+                        bg0->Bind( 0, m_resourceManager->GetBuffer( outState.agentBuffers[ 0 ] ) );
+                        bg0->Bind( 1, m_resourceManager->GetBuffer( outState.polarityBuffer ) );
+                        bg0->Bind( 2, m_resourceManager->GetBuffer( outState.agentCountBuffer ) );
+                        bg0->Bind( 3, m_resourceManager->GetBuffer( outState.hashBuffer ) );
+                        bg0->Bind( 4, m_resourceManager->GetBuffer( outState.offsetBuffer ) );
+                        bg0->Bind( 5, m_resourceManager->GetBuffer( outState.phenotypeBuffer ) );
+                        bg0->Bind( 6, m_resourceManager->GetBuffer( outState.orientationBuffer ) );
+                        bg0->Build();
+
+                        BindingGroup* bg1 = m_resourceManager->GetBindingGroup( m_resourceManager->CreateBindingGroup( polarityPipeHandle, 0 ) );
+                        bg1->Bind( 0, m_resourceManager->GetBuffer( outState.agentBuffers[ 1 ] ) );
+                        bg1->Bind( 1, m_resourceManager->GetBuffer( outState.polarityBuffer ) );
+                        bg1->Bind( 2, m_resourceManager->GetBuffer( outState.agentCountBuffer ) );
+                        bg1->Bind( 3, m_resourceManager->GetBuffer( outState.hashBuffer ) );
+                        bg1->Bind( 4, m_resourceManager->GetBuffer( outState.offsetBuffer ) );
+                        bg1->Bind( 5, m_resourceManager->GetBuffer( outState.phenotypeBuffer ) );
+                        bg1->Bind( 6, m_resourceManager->GetBuffer( outState.orientationBuffer ) );
+                        bg1->Build();
+
+                        ComputePushConstants polPC{};
+                        polPC.fParam0      = pol.regulationRate;
+                        polPC.fParam1      = interactionRadius;
+                        polPC.fParam2      = static_cast<float>( static_cast<int32_t>( static_cast<uint32_t>( record.requiredLifecycleState ) ) );
+                        polPC.fParam3      = static_cast<float>( static_cast<int32_t>( static_cast<uint32_t>( record.requiredCellType ) ) );
+                        polPC.offset       = preOffset;
+                        polPC.maxCapacity  = globalHashCapacity;
+                        polPC.uParam0      = offsetArraySize;
+                        polPC.uParam1      = preGroup;
+                        polPC.domainSize   = glm::vec4( blueprint.GetDomainSize(), blueprint.GetSpatialPartitioning().cellSize );
+
+                        std::string tag = "polarity_" + std::to_string( preGroup ) + "_" + std::to_string( bhvIdx );
+                        glm::uvec3  dispatch( ( grpPaddedCount + 255 ) / 256, 1, 1 );
+                        ComputeTask polTask( polarityPipe, bg0, bg1, record.targetHz, polPC, dispatch );
+                        polTask.SetTag( tag );
+                        // No ChainFlip — writes to polarityBuffer, not agent positions
+                        outState.computeGraph.AddTask( polTask );
+
+                        DT_INFO( "[SimulationBuilder] Compiled CellPolarity for '{}' at {}Hz", group.GetName(), record.targetHz );
+                    }
+                    bhvIdx++;
+                }
+
+                preOffset += grpPaddedCount;
+                preGroup++;
+            }
+        }
+
         uint32_t behaviourIndex = 0;
 
         for( const auto& group: blueprint.GetGroups() )
@@ -763,6 +900,12 @@ namespace DigitalTwin
             {
                 std::string tagBase = "_" + std::to_string( groupIndex ) + "_" + std::to_string( behaviourIndex );
 
+                if( std::holds_alternative<Behaviours::CellPolarity>( record.behaviour ) )
+                {
+                    // Already compiled in the polarity pre-pass above
+                    behaviourIndex++;
+                    continue;
+                }
                 if( std::holds_alternative<Behaviours::BrownianMotion>( record.behaviour ) )
                 {
                     const auto&  brownian     = std::get<Behaviours::BrownianMotion>( record.behaviour );
@@ -854,6 +997,7 @@ namespace DigitalTwin
                         bgJkr0->Bind( 6, m_resourceManager->GetBuffer( outState.agentBuffers[ 0 ] ) );
                     bgJkr0->Bind( 7, m_resourceManager->GetBuffer( outState.cadherinProfileBuffer ) );
                     bgJkr0->Bind( 8, m_resourceManager->GetBuffer( outState.cadherinAffinityBuffer ) );
+                    bgJkr0->Bind( 9, m_resourceManager->GetBuffer( outState.polarityBuffer ) );
                     bgJkr0->Build();
 
                     BindingGroup* bgJkr1 = m_resourceManager->GetBindingGroup( m_resourceManager->CreateBindingGroup( jkrPipeHandle, 0 ) );
@@ -869,6 +1013,7 @@ namespace DigitalTwin
                         bgJkr1->Bind( 6, m_resourceManager->GetBuffer( outState.agentBuffers[ 1 ] ) );
                     bgJkr1->Bind( 7, m_resourceManager->GetBuffer( outState.cadherinProfileBuffer ) );
                     bgJkr1->Bind( 8, m_resourceManager->GetBuffer( outState.cadherinAffinityBuffer ) );
+                    bgJkr1->Bind( 9, m_resourceManager->GetBuffer( outState.polarityBuffer ) );
                     bgJkr1->Build();
 
                     // 3. Configure Task specific parameters
@@ -897,6 +1042,18 @@ namespace DigitalTwin
                                 { cadherin = c; break; }
                         jkrPC.gridSize.x = cadherin ? 1u : 0u;
                         jkrPC.gridSize.y = cadherin ? *reinterpret_cast<const uint32_t*>( &cadherin->couplingStrength ) : 0u;
+                    }
+
+                    // Polarity-modulated adhesion: check if this group also has CellPolarity
+                    {
+                        const Behaviours::CellPolarity* polarity = nullptr;
+                        for( const auto& r: group.GetBehaviours() )
+                            if( const auto* p = std::get_if<Behaviours::CellPolarity>( &r.behaviour ) )
+                                { polarity = p; break; }
+                        jkrPC.gridSize.z = polarity ? 1u : 0u;
+                        jkrPC.gridSize.w = polarity
+                            ? glm::packHalf2x16( glm::vec2( polarity->apicalRepulsion, polarity->basalAdhesion ) )
+                            : 0u;
                     }
 
                     // 4. Append Task to Compute Graph
@@ -2007,6 +2164,17 @@ namespace DigitalTwin
                             pc.gridSize.x = cadherin ? 1u : 0u;
                             pc.gridSize.y = cadherin ? *reinterpret_cast<const uint32_t*>( &cadherin->couplingStrength ) : 0u;
                         }
+                        // Update polarity flag in case apicalRepulsion/basalAdhesion changed via HotReload
+                        {
+                            const Behaviours::CellPolarity* polarity = nullptr;
+                            for( const auto& r: group.GetBehaviours() )
+                                if( const auto* p = std::get_if<Behaviours::CellPolarity>( &r.behaviour ) )
+                                    { polarity = p; break; }
+                            pc.gridSize.z = polarity ? 1u : 0u;
+                            pc.gridSize.w = polarity
+                                ? glm::packHalf2x16( glm::vec2( polarity->apicalRepulsion, polarity->basalAdhesion ) )
+                                : 0u;
+                        }
                         task->UpdatePushConstants( pc );
                     }
                 }
@@ -2024,6 +2192,25 @@ namespace DigitalTwin
                         pc.fParam4               = cad.targetExpression.z;
                         pc.fParam5               = cad.targetExpression.w;
                         pc.uParam0               = static_cast<uint32_t>( record.requiredLifecycleState );
+                        task->UpdatePushConstants( pc );
+                    }
+                }
+                else if( std::holds_alternative<Behaviours::CellPolarity>( record.behaviour ) )
+                {
+                    // Tag uses groupIndex/behaviourIndex matching the pre-pass loop
+                    std::string polarTag = "polarity_" + std::to_string( groupIndex ) + "_" + std::to_string( behaviourIndex );
+                    ComputeTask* task    = state.computeGraph.FindTask( polarTag );
+                    if( task )
+                    {
+                        const auto&          pol = std::get<Behaviours::CellPolarity>( record.behaviour );
+                        ComputePushConstants pc  = task->GetPushConstants();
+                        pc.fParam0               = pol.regulationRate;
+                        // fParam1 (interactionRadius) comes from the group's Biomechanics
+                        for( const auto& r: group.GetBehaviours() )
+                            if( const auto* bio = std::get_if<Behaviours::Biomechanics>( &r.behaviour ) )
+                                { pc.fParam1 = bio->maxRadius; break; }
+                        pc.fParam2               = static_cast<float>( static_cast<int32_t>( static_cast<uint32_t>( record.requiredLifecycleState ) ) );
+                        pc.fParam3               = static_cast<float>( static_cast<int32_t>( static_cast<uint32_t>( record.requiredCellType ) ) );
                         task->UpdatePushConstants( pc );
                     }
                 }

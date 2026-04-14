@@ -293,8 +293,6 @@ namespace DigitalTwin
     void Renderer::RenderSimulation( CommandBuffer* cmd, SimulationState* state, Camera* camera, uint32_t flightIndex )
     {
         GPUProfiler* profiler = m_device->GetProfiler();
-        if( profiler )
-            profiler->BeginFrame( cmd, flightIndex );
 
         // 1. Update Camera Uniform Buffer
         struct CameraUBOData

@@ -1,18 +1,35 @@
 #include "compute/ComputeGraph.h"
 
 #include "rhi/CommandBuffer.h"
+#include "rhi/GPUProfiler.h"
 #include <volk.h>
 
 namespace DigitalTwin
 {
-    uint32_t ComputeGraph::Execute( CommandBuffer* cmd, float dt, float totalTime, uint32_t activeIndex )
+    uint32_t ComputeGraph::Execute( CommandBuffer* cmd, float dt, float totalTime, uint32_t activeIndex,
+                                    GPUProfiler* profiler, uint32_t flightIndex )
     {
-        uint32_t localActive = activeIndex;
+        uint32_t    localActive  = activeIndex;
+        std::string currentPhase;
 
         for( auto& task: m_tasks )
         {
             if( task.ShouldExecute( dt ) )
             {
+                // Close previous phase zone and open the new one on phase transition
+                if( profiler )
+                {
+                    const std::string& taskPhase = task.GetPhaseName();
+                    if( taskPhase != currentPhase )
+                    {
+                        if( !currentPhase.empty() )
+                            profiler->EndZone( cmd, flightIndex, currentPhase, false );
+                        currentPhase = taskPhase;
+                        if( !currentPhase.empty() )
+                            profiler->BeginZone( cmd, flightIndex, currentPhase, false );
+                    }
+                }
+
                 task.Record( cmd, totalTime, localActive );
 
                 VkMemoryBarrier2 barrier = { VK_STRUCTURE_TYPE_MEMORY_BARRIER_2 };
@@ -31,6 +48,10 @@ namespace DigitalTwin
                     localActive = 1u - localActive;
             }
         }
+
+        // Close the last open zone
+        if( profiler && !currentPhase.empty() )
+            profiler->EndZone( cmd, flightIndex, currentPhase, false );
 
         return localActive;
     }

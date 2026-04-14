@@ -6,6 +6,7 @@ namespace DigitalTwin
 {
     class ComputeGraph;
     class CommandBuffer;
+    class GPUProfiler;
 
     /**
      * @brief Responsible for analyzing the ComputeGraph and dispatching it to GPU queues.
@@ -16,6 +17,6 @@ namespace DigitalTwin
     {
     public:
         static uint32_t Dispatch( ComputeGraph* graph, CommandBuffer* computeCmd, CommandBuffer* graphicsCmd, float dt, float totalTime,
-                                  uint32_t activeIndex );
+                                  uint32_t activeIndex, GPUProfiler* profiler = nullptr, uint32_t flightIndex = 0 );
     };
 } // namespace DigitalTwin

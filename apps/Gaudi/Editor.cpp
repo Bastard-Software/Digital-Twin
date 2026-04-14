@@ -293,6 +293,14 @@ namespace Gaudi
             if( ImGui::MenuItem( "Demos" ) )
                 m_showDemoBrowser = true;
 
+            if( ImGui::BeginMenu( "View" ) )
+            {
+                bool showOverlay = m_engine.IsShowingStatsOverlay();
+                if( ImGui::MenuItem( "Stats Overlay", nullptr, &showOverlay ) )
+                    m_engine.SetShowStatsOverlay( showOverlay );
+                ImGui::EndMenu();
+            }
+
             ImGui::EndMainMenuBar();
         }
 

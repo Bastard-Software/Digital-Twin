@@ -20,4 +20,5 @@ namespace Gaudi::Demos
     void SetupEndothelialTubeDemo  ( DigitalTwin::SimulationBlueprint& blueprint );
     void SetupECContactDemo          ( DigitalTwin::SimulationBlueprint& blueprint );
     void SetupCellMechanicsZooDemo   ( DigitalTwin::SimulationBlueprint& blueprint );
+    void SetupStressTestDemo         ( DigitalTwin::SimulationBlueprint& blueprint );
 } // namespace Gaudi::Demos

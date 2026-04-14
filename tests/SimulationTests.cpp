@@ -3660,3 +3660,92 @@ TEST_F( SimulationBuilderTest, JKR_RigidBody_OrientationChanges )
 
     state.Destroy( m_resourceManager.get() );
 }
+
+// 3. Hull-based translation: after several JKR frames, agents with hull contacts must have
+//    moved apart (hull repulsion adds to translation, not just torque).
+//
+// Previously hull contacts produced torque only; translation came from point-particle.
+// After the shader change, hull pairs generate both.  This test verifies positions change.
+//
+// Two SpikySphere agents placed 0.8 apart (hull extent R=0.5, subR=0.125 → contactDist=0.25).
+// Hull pair distance ≈ 0.8 - 0.5 - 0.5 = -0.2 → well inside contact → strong repulsion.
+// After 10 frames they should be further apart than the initial 0.8.
+TEST_F( SimulationBuilderTest, JKR_RigidBody_HullTranslation_Integration )
+{
+    if( !m_device )
+        GTEST_SKIP();
+
+    SimulationBlueprint blueprint;
+    blueprint.SetName( "HullTranslationTest" );
+    blueprint.SetDomainSize( glm::vec3( 20.0f ), 1.5f );
+
+    blueprint.ConfigureSpatialPartitioning()
+        .SetMethod( SpatialPartitioningMethod::HashGrid )
+        .SetCellSize( 3.0f )
+        .SetMaxDensity( 64 )
+        .SetComputeHz( 60.0f );
+
+    auto jkr = BiomechanicsGenerator::JKR()
+                   .SetYoungsModulus( 10.0f )
+                   .SetPoissonRatio( 0.4f )
+                   .SetAdhesionEnergy( 0.0f )      // no adhesion — pure hull repulsion
+                   .SetMaxInteractionRadius( 0.70f )
+                   .SetDampingCoefficient( 0.0f )  // no damping — maximise movement per step
+                   .Build();
+
+    // Two SpikySphere cells placed 0.8 apart — hull points deeply overlapping.
+    std::vector<glm::vec4> positions = {
+        glm::vec4( 0.0f, 0.0f, 0.0f, 1.0f ),
+        glm::vec4( 0.8f, 0.0f, 0.0f, 1.0f )
+    };
+
+    AgentGroup& group = blueprint.AddAgentGroup( "SpikyCells" );
+    group.SetCount( 2 )
+         .SetMorphology( MorphologyGenerator::CreateSpikySphere( 0.357f, 1.4f ) )
+         .SetDistribution( positions );
+    group.AddBehaviour( jkr ).SetHz( 60.0f );
+
+    SimulationBuilder builder( m_resourceManager.get(), m_streamingManager.get() );
+    SimulationState   state = builder.Build( blueprint );
+    ASSERT_TRUE( state.orientationBuffer.IsValid() );
+    ASSERT_TRUE( state.contactHullBuffer.IsValid() );
+
+    // Read initial positions
+    std::vector<glm::vec4> initialPositions( 2 );
+    m_streamingManager->ReadbackBufferImmediate(
+        state.agentBuffers[0], initialPositions.data(), 2 * sizeof( glm::vec4 ) );
+
+    float initialSep = std::abs( initialPositions[1].x - initialPositions[0].x );
+
+    // Dispatch 10 frames
+    auto compCtxHandle = m_device->CreateThreadContext( QueueType::COMPUTE );
+    auto compCtx       = m_device->GetThreadContext( compCtxHandle );
+    auto compCmd       = compCtx->GetCommandBuffer( compCtx->CreateCommandBuffer() );
+
+    GraphDispatcher dispatcher;
+    const float     dt         = 1.0f / 60.0f;
+    int             activeIdx  = 0;
+    for( int frame = 0; frame < 10; ++frame )
+    {
+        compCmd->Begin();
+        dispatcher.Dispatch( &state.computeGraph, compCmd, nullptr, dt, dt * static_cast<float>( frame ), activeIdx );
+        compCmd->End();
+        m_device->GetComputeQueue()->Submit( { compCmd } );
+        m_device->GetComputeQueue()->WaitIdle();
+        activeIdx ^= 1;
+    }
+
+    // After N frames the output is in agentBuffers[activeIdx] (the buffer last written).
+    std::vector<glm::vec4> finalPositions( 2 );
+    m_streamingManager->ReadbackBufferImmediate(
+        state.agentBuffers[activeIdx], finalPositions.data(), 2 * sizeof( glm::vec4 ) );
+
+    float finalSep = std::abs( finalPositions[1].x - finalPositions[0].x );
+
+    // Hull repulsion must have pushed cells further apart.
+    EXPECT_GT( finalSep, initialSep )
+        << "Hull-based translation should push SpikySphere cells apart "
+        << "(initial=" << initialSep << ", final=" << finalSep << ")";
+
+    state.Destroy( m_resourceManager.get() );
+}

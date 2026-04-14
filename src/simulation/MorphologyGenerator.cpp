@@ -256,6 +256,24 @@ namespace DigitalTwin
             }
         }
 
+        // Contact hull: 8 spike-tip points at cardinal + diagonal directions.
+        // Sub-sphere radius = R * 0.25 (same ratio as CreateCube).
+        // The checkerboard spike pattern means any axis direction hits a spike tip
+        // or comes very close to one — 8 points cover all meaningful contact directions.
+        const float R = radius * spikeScale;
+        const float r = R * 0.25f;
+        const float d = R * 0.7071f; // R / sqrt(2) for diagonal directions
+        data.contactHull = {
+            {  +R,  0.0f, 0.0f, r }, // +X
+            {  -R,  0.0f, 0.0f, r }, // -X
+            { 0.0f,  +R,  0.0f, r }, // +Y
+            { 0.0f,  -R,  0.0f, r }, // -Y
+            {  +d,   +d,  0.0f, r }, // +XY diagonal
+            {  -d,   -d,  0.0f, r }, // -XY diagonal
+            { 0.0f,  +d,   +d,  r }, // +YZ diagonal
+            { 0.0f,  -d,   -d,  r }, // -YZ diagonal
+        };
+
         return data;
     }
 
@@ -540,6 +558,79 @@ namespace DigitalTwin
             data.hullExtentZ = R_mid * sinf( halfArc ); // circumferential half-width
             data.hullExtentY = subR;                     // thickness / 2
         }
+
+        return data;
+    }
+
+    MorphologyData MorphologyGenerator::CreateEllipsoid( float radiusXZ, float radiusY,
+                                                          uint32_t sectors, uint32_t stacks )
+    {
+        MorphologyData data;
+        float sectorStep = 2.0f * glm::pi<float>() / sectors;
+        float stackStep  = glm::pi<float>() / stacks;
+        float invXZ2     = 1.0f / ( radiusXZ * radiusXZ );
+        float invY2      = 1.0f / ( radiusY * radiusY );
+
+        for( uint32_t i = 0; i <= stacks; ++i )
+        {
+            float phi = glm::pi<float>() / 2.0f - i * stackStep; // latitude: pi/2 (north) to -pi/2 (south)
+            float cp  = cosf( phi );
+            float sp  = sinf( phi );
+
+            for( uint32_t j = 0; j <= sectors; ++j )
+            {
+                float theta = j * sectorStep;
+                float x     = radiusXZ * cp * cosf( theta );
+                float y     = radiusY  * sp;
+                float z     = radiusXZ * cp * sinf( theta );
+
+                // Outward normal = gradient of the ellipsoid implicit function F = (x/a)^2 + (y/b)^2 + (z/a)^2 - 1
+                glm::vec3 n = glm::normalize( glm::vec3( x * invXZ2, y * invY2, z * invXZ2 ) );
+
+                data.vertices.push_back( { glm::vec4( x, y, z, 1.0f ), glm::vec4( n, 0.0f ) } );
+            }
+        }
+
+        // Index generation — ellipsoid uses Y as the height axis (sphere uses Z), so the
+        // vertex winding is mirrored relative to CreateSphere.  Swap the two non-pivot
+        // indices in each triangle to restore outward-facing normals.
+        for( uint32_t i = 0; i < stacks; ++i )
+        {
+            uint32_t k1 = i * ( sectors + 1 );
+            uint32_t k2 = k1 + sectors + 1;
+
+            for( uint32_t j = 0; j < sectors; ++j, ++k1, ++k2 )
+            {
+                if( i != 0 )
+                {
+                    data.indices.push_back( k1 );
+                    data.indices.push_back( k1 + 1 );
+                    data.indices.push_back( k2 );
+                }
+                if( i != ( stacks - 1 ) )
+                {
+                    data.indices.push_back( k1 + 1 );
+                    data.indices.push_back( k2 + 1 );
+                    data.indices.push_back( k2 );
+                }
+            }
+        }
+
+        // Contact hull: 8 points — 2 poles + 4 equatorial + 2 mid-latitude.
+        // Sub-sphere radius = min(rXZ, rY) / 3 so sub-spheres don't overlap at the surface.
+        const float subR = std::min( radiusXZ, radiusY ) / 3.0f;
+        const float c45  = 0.7071f; // cos(45 deg)
+        const float s45  = 0.7071f; // sin(45 deg)
+        data.contactHull = {
+            { 0.0f,       +radiusY,           0.0f,            subR }, // north pole
+            { 0.0f,       -radiusY,           0.0f,            subR }, // south pole
+            { +radiusXZ,   0.0f,              0.0f,            subR }, // equator +X
+            { -radiusXZ,   0.0f,              0.0f,            subR }, // equator -X
+            { 0.0f,        0.0f,             +radiusXZ,        subR }, // equator +Z
+            { 0.0f,        0.0f,             -radiusXZ,        subR }, // equator -Z
+            { radiusXZ * c45,  radiusY * s45, 0.0f,            subR }, // 45 deg lat, 0 deg lon
+            { 0.0f,        radiusY * s45,     radiusXZ * c45,  subR }, // 45 deg lat, 90 deg lon
+        };
 
         return data;
     }

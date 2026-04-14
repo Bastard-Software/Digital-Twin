@@ -182,11 +182,11 @@ void main() {
                     }
 
                     if (hullCount > 0) {
-                        // ── Rigid body path: multi-sphere contacts → TORQUE ONLY ──
-                        // Translation is handled by the point-particle path below.
-                        // Sub-sphere forces operate at a different scale than cell-level
-                        // JKR (sub-sphere contact dist 0.25 vs cell contact dist 1.5),
-                        // so mixing them into translation would break equilibrium.
+                        // ── Rigid body path: multi-sphere contacts → TORQUE + TRANSLATION ──
+                        // Each overlapping hull sub-sphere pair contributes a JKR force to
+                        // both translation and torque.  Only a few pairs overlap at surface
+                        // contact (sub-sphere radii are small), so forces self-scale without
+                        // an explicit normalisation factor.
                         vec4 qj = orientations[neighborAgentIdx];
 
                         for (int a = 0; a < hullCount; a++) {
@@ -202,15 +202,16 @@ void main() {
                                 float pairDist    = length(d);
 
                                 if (pairDist > 0.0001 && pairDist < contactDist) {
-                                    float overlap = contactDist - pairDist;
-                                    vec3  dir     = d / pairDist;
-                                    float adh     = adhesion * overlap * adhScale;
-                                    // Torque: adhesion only (cadherin pulls surfaces together).
-                                    // Adhesive torques are always restoring — they pull each
-                                    // hull point toward the contact, which rotates the cell to
-                                    // maximise overlap.  Repulsive torques are handled by the
-                                    // steric box (translation) and are not mixed into torque.
-                                    torque += cross(myHull[a], dir * (-adh));
+                                    float overlap    = contactDist - pairDist;
+                                    vec3  localDir   = d / pairDist;      // Pa→Pb direction (contact surface normal)
+                                    float adhF       = adhesion * overlap * adhScale;
+                                    // Hull pairs are TORQUE-ONLY: adhesion pulls each hull point
+                                    // toward the contact surface to maximise overlap (alignment).
+                                    // Translation is handled entirely by the unconditional point-
+                                    // particle block below.  Hull sub-sphere overlap is on a
+                                    // different scale to centre-to-centre overlap and would overwhelm
+                                    // the point-particle adhesion if added to translation.
+                                    torque += cross(myHull[a], localDir * (-adhF));
                                 }
                             }
                         }
@@ -242,7 +243,10 @@ void main() {
 
                     }
 
-                    // ── Point-particle translation — always (hull and non-hull alike) ──
+                    // ── Point-particle translation — base collision for ALL shapes ──
+                    // Runs unconditionally: provides omnidirectional repulsion + adhesion
+                    // that covers hull gaps (sparse sub-sphere coverage at ~5% solid angle)
+                    // and restores adhesion for hull shapes (EC tiles, tumour cells, etc.).
                     {
                         float overlap  = interactDist - dist;
                         if (overlap > 0.0) {

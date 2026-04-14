@@ -6444,3 +6444,125 @@ TEST_F( ComputeTest, RigidBody_DistributedHull_RestoresRotation )
     EXPECT_NEAR( rNoAdh.orientations[1].y, initRotatedY, 1e-4f )
         << "No torque without adhesion — Y rotation should be unchanged";
 }
+
+// =============================================================================
+// jkr_forces.comp — hull-based translation tests
+// =============================================================================
+
+// 8. Cells with overlapping hull pairs are pushed apart by point-particle translation.
+//
+// Hull pairs are torque-only; the unconditional point-particle block provides translation.
+// Cell 0 at (0,0,0), cell 1 at (0,0.5,0). Hull: 1 point at (0,0,0.5), subR=0.4.
+// Point-particle: interactDist=3.0 (maxR=1.5), dist=0.5, overlap=2.5 → large repulsion.
+// Both cells should move apart along Y.
+TEST_F( ComputeTest, RigidBody_HullTranslation_RepulsionPushesApart )
+{
+    if( !m_device )
+        GTEST_SKIP();
+
+    std::vector<glm::vec4> pos = { glm::vec4( 0.0f, 0.0f, 0.0f, 1.0f ),
+                                   glm::vec4( 0.0f, 0.5f, 0.0f, 1.0f ) };
+    std::vector<glm::vec4> ori = { glm::vec4( 0.0f, 0.0f, 0.0f, 1.0f ),
+                                   glm::vec4( 0.0f, 0.0f, 0.0f, 1.0f ) };
+    // 1 hull point at (0,0,0.5), subR=0.4.
+    std::vector<glm::vec4> hull = { glm::vec4( 0.0f, 0.0f, 0.5f, 0.4f ) };
+
+    // Zero adhesion: pure repulsion from overlapping hull pairs.
+    auto r = RunJKRRigidBody( m_device.get(), m_rm.get(), m_stream.get(),
+                               pos, ori,
+                               1u, hull,
+                               50.0f, 0.0f, 1.5f,
+                               0.0f, 1.0f );
+
+    // Cell 0 was at Y=0 and receives a -Y force from hull pair repulsion.
+    EXPECT_LT( r.positions[0].y, 0.0f )
+        << "Cell 0 should be pushed in -Y by hull sub-sphere repulsion";
+    // Cell 1 (the other agent in the dispatch — processed by its own invocation):
+    // both cells are in the same dispatch here, so cell 1 also receives +Y force.
+    EXPECT_GT( r.positions[1].y, 0.5f )
+        << "Cell 1 should be pushed in +Y by hull sub-sphere repulsion";
+}
+
+// 9. Hull adhesion partially cancels repulsion — cells separate less than with zero adhesion.
+//
+// Same geometry as test 8.  Adhesion > 0 + cadherin coupling means adhF > 0.
+// netF = repF - adhF < repF → smaller displacement than zero-adhesion run.
+TEST_F( ComputeTest, RigidBody_HullTranslation_AdhesionReducesRepulsion )
+{
+    if( !m_device )
+        GTEST_SKIP();
+
+    std::vector<glm::vec4> pos = { glm::vec4( 0.0f, 0.0f, 0.0f, 1.0f ),
+                                   glm::vec4( 0.0f, 0.5f, 0.0f, 1.0f ) };
+    std::vector<glm::vec4> ori = { glm::vec4( 0.0f, 0.0f, 0.0f, 1.0f ),
+                                   glm::vec4( 0.0f, 0.0f, 0.0f, 1.0f ) };
+    std::vector<glm::vec4> hull = { glm::vec4( 0.0f, 0.0f, 0.5f, 0.4f ) };
+
+    // No adhesion run.
+    auto rNoAdh = RunJKRRigidBody( m_device.get(), m_rm.get(), m_stream.get(),
+                                    pos, ori,
+                                    1u, hull,
+                                    50.0f, 0.0f, 1.5f,
+                                    0.0f, 1.0f );
+
+    // Adhesion run: adhesion=20, cadherin coupling=1.0 → adhScale=1.0 → adhF reduces netF.
+    auto rAdh = RunJKRRigidBody( m_device.get(), m_rm.get(), m_stream.get(),
+                                  pos, ori,
+                                  1u, hull,
+                                  50.0f, 20.0f, 1.5f,
+                                  0.0f, 1.0f,
+                                  0.0f, 0.0f, 0.0f, 1.0f );  // cadherinCoupling=1
+
+    float sepNoAdh = rNoAdh.positions[1].y - rNoAdh.positions[0].y;
+    float sepAdh   = rAdh.positions[1].y   - rAdh.positions[0].y;
+
+    EXPECT_LT( sepAdh, sepNoAdh )
+        << "Adhesion should reduce separation vs pure repulsion "
+        << "(adh=" << sepAdh << ", no-adh=" << sepNoAdh << ")";
+}
+
+// 10. Hull sub-sphere pairs are torque-only: hull contact does NOT add extra translation.
+//
+// Hull sub-sphere overlap is on a different scale to centre-to-centre overlap and would
+// overwhelm point-particle adhesion if it fed into translation forces.  Hull is alignment-
+// only; all translation comes from the unconditional point-particle block.
+//
+// Cell 0 at (0,0,0), cell 1 at (0,0,0.5). Hull: 1 point at (0,0,0.3), subR=0.4.
+// Hull pair: Pa=(0,0,0.3), Pb=(0,0,0.8). pairDist=0.5, contactDist=0.8, overlap=0.3.
+// Point-particle: interactDist=1.0, dist=0.5, overlap=0.5. Fires for both runs.
+// Expected: separation WITH hull ≈ separation WITHOUT hull (only point-particle drives translation).
+TEST_F( ComputeTest, RigidBody_HullTorqueOnly_NoTranslationBoost )
+{
+    if( !m_device )
+        GTEST_SKIP();
+
+    std::vector<glm::vec4> pos = { glm::vec4( 0.0f, 0.0f, 0.0f, 1.0f ),
+                                   glm::vec4( 0.0f, 0.0f, 0.5f, 1.0f ) };
+    std::vector<glm::vec4> ori = { glm::vec4( 0.0f, 0.0f, 0.0f, 1.0f ),
+                                   glm::vec4( 0.0f, 0.0f, 0.0f, 1.0f ) };
+    std::vector<glm::vec4> hull = { glm::vec4( 0.0f, 0.0f, 0.3f, 0.4f ) };
+
+    auto rHull = RunJKRRigidBody( m_device.get(), m_rm.get(), m_stream.get(),
+                                   pos, ori,
+                                   1u, hull,
+                                   50.0f, 0.0f, 0.5f,  // maxRadius=0.5 → interactDist=1.0
+                                   0.0f, 1.0f );
+
+    std::vector<glm::vec4> emptyHull;
+    auto rNoHull = RunJKRRigidBody( m_device.get(), m_rm.get(), m_stream.get(),
+                                     pos, ori,
+                                     0u, emptyHull,
+                                     50.0f, 0.0f, 0.5f,
+                                     0.0f, 1.0f );
+
+    float sepHull   = rHull.positions[1].z   - rHull.positions[0].z;
+    float sepNoHull = rNoHull.positions[1].z - rNoHull.positions[0].z;
+
+    // Translation must come from point-particle only — hull adds no extra displacement.
+    EXPECT_NEAR( sepHull, sepNoHull, 1e-4f )
+        << "Hull torque-only: separation should equal no-hull separation "
+        << "(hull=" << sepHull << ", no-hull=" << sepNoHull << ")";
+    // Point-particle fires unconditionally — both runs separate beyond initial 0.5.
+    EXPECT_GT( sepNoHull, 0.5f )
+        << "Point-particle should always fire regardless of hull count";
+}

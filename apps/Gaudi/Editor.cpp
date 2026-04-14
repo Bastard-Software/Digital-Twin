@@ -176,6 +176,24 @@ namespace Gaudi
               "mechanistic edge alignment morphogenesis.",
               &Demos::SetupECContactDemo },
 
+            { "Cell Mechanics Zoo",
+              "5 cell types with distinct morphologies and cadherin\n"
+              "profiles in a single tumour microenvironment scene.\n\n"
+              "Zones:\n"
+              "  Centre: Tumour (SpikySphere) - packed tight, zero\n"
+              "    adhesion -> explosion + tumbling (hull torque)\n"
+              "  +X: Epithelial (Cube) - E-cadherin lattice ->\n"
+              "    stable aggregate with face-alignment torque\n"
+              "  -X: Endothelial (Tile) - VE-cadherin, varied\n"
+              "    angles -> edge-alignment sheet formation\n"
+              "  +Z: Fibroblasts (Ellipsoid) - N-cadherin -> elongated\n"
+              "    packing with axis-alignment torque\n"
+              "  -Z: Immune (Sphere) - chemotaxis toward tumour\n"
+              "    chemokine, bounces off all other groups\n\n"
+              "Demonstrates: SpikySphere + Ellipsoid hull torque,\n"
+              "differential adhesion, steric repulsion, chemotaxis.",
+              &Demos::SetupCellMechanicsZooDemo },
+
             { "Endothelial Tube",
               "200 VE-cadherin endothelial cells start randomly\n"
               "scattered inside a solid cylinder.\n\n"

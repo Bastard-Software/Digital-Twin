@@ -46,6 +46,23 @@ layout(std430, binding = 8) readonly buffer CadherinAffinityBuf { mat4 M; } cadh
 // xyz = outward direction, w = magnitude (0=interior, 1=surface)
 layout(std430, binding = 9) readonly buffer PolarityBuf { vec4 data[]; } polarityData;
 
+// Rigid body dynamics (always bound; active only when hullMeta.x > 0)
+layout(std430, binding = 10) buffer OrientationBuf { vec4 orientations[]; };
+
+// Contact hull: model-space sample points for this morphology group.
+// hullMeta.x = point count (0 = point-particle fallback).
+// hullMeta.y = reserved (unused).
+// points[i].xyz = offset from cell centre in model space, points[i].w = sub-sphere radius.
+layout(std430, binding = 11) readonly buffer ContactHullBuf {
+    vec4 hullMeta;
+    vec4 points[16];
+} hull;
+
+// Rotate vector v by unit quaternion q.
+vec3 qrot( vec4 q, vec3 v ) {
+    return v + 2.0 * cross( q.xyz, cross( q.xyz, v ) + q.w * v );
+}
+
 uint hashPos(ivec3 cell) {
     const uint p1 = 73856093; const uint p2 = 19349663; const uint p3 = 83492791;
     return (uint(cell.x) * p1) ^ (uint(cell.y) * p2) ^ (uint(cell.z) * p3);
@@ -70,99 +87,200 @@ void main() {
     if (reqCT >= 0 && phenotypes.data[originalAgentIdx].cellType != uint(reqCT)) return;
 
     vec3 myPos = inAgents.positions[originalAgentIdx].xyz;
-    
-    vec3 force = vec3(0.0);
+
+    vec3  force         = vec3(0.0);
+    vec3  torque        = vec3(0.0);
     float totalPressure = 0.0;
-    
+
     // Extract packed parameters
-    float repulsion    = pc.repulsion;
-    float adhesion     = pc.adhesion;
-    float damping      = pc.fParam4;
-    float maxRadius    = pc.fParam5;        // interaction radius (was domainSize.w — moved here)
-    float cellSize     = pc.domainSize.w;   // hash grid cell size — must match hash build cell size
+    float repulsion       = pc.repulsion;
+    float adhesion        = pc.adhesion;
+    float damping         = pc.fParam4;
+    float maxRadius       = pc.fParam5;
+    float cellSize        = pc.domainSize.w;
     uint  offsetArraySize = pc.arrayOffset;
+
+    int   hullCount = int(hull.hullMeta.x);
+
+    // Oriented steric repulsion (box support function).
+    // hullMeta.z/w set by MorphologyGenerator for tile morphologies; 0 disables steric.
+    float stericHalfZ  = hull.hullMeta.z;
+    float stericHalfY  = hull.hullMeta.w;
+    bool  stericActive = (stericHalfZ > 0.0 || stericHalfY > 0.0);
+
+    // Pre-rotate hull points into world-space offsets (model → world via my quaternion).
+    // Done once here, reused for every neighbour.
+    vec3 myHull[16];
+    vec4 qi = vec4(0.0, 0.0, 0.0, 1.0); // identity — overwritten if hullCount > 0
+    if (hullCount > 0) {
+        qi = orientations[originalAgentIdx];
+        for (int h = 0; h < hullCount; h++)
+            myHull[h] = qrot(qi, hull.points[h].xyz);
+    }
+
+    // Derive model-X half-extent and world-space axes for the oriented steric box.
+    // Done once per invocation; reused across all neighbours.
+    float stericHalfX = 0.0;
+    vec3  myAxisX = vec3(1.0, 0.0, 0.0);
+    vec3  myAxisY = vec3(0.0, 1.0, 0.0);
+    vec3  myAxisZ = vec3(0.0, 0.0, 1.0);
+    if (stericActive && hullCount > 0) {
+        for (int h = 0; h < hullCount; h++)
+            stericHalfX = max(stericHalfX, abs(hull.points[h].x));
+        myAxisX = qrot(qi, vec3(1.0, 0.0, 0.0));
+        myAxisY = qrot(qi, vec3(0.0, 1.0, 0.0));
+        myAxisZ = qrot(qi, vec3(0.0, 0.0, 1.0));
+    }
 
     ivec3 myCell = ivec3(floor(myPos / cellSize));
 
-    // Check 27 neighboring cells (3x3x3 grid)
-    for(int z = -1; z <= 1; z++) {
-        for(int y = -1; y <= 1; y++) {
-            for(int x = -1; x <= 1; x++) {
+    for (int z = -1; z <= 1; z++) {
+        for (int y = -1; y <= 1; y++) {
+            for (int x = -1; x <= 1; x++) {
                 uint neighborHash = hashPos(myCell + ivec3(x, y, z));
-                uint offsetIdx = neighborHash % offsetArraySize;
-                
-                uint startIdx = cellOffsets.startIndices[offsetIdx];
-                if(startIdx == 0xFFFFFFFF) continue; // Empty cell
-                
-                // Iterate through agents in this neighbor cell
-                for(uint i = startIdx; i < pc.maxCapacity; i++) {
-                    // Stop if we crossed into a different cell
-                    if(sortedHashes.data[i].hash != neighborHash) break; 
-                    
+                uint offsetIdx    = neighborHash % offsetArraySize;
+                uint startIdx     = cellOffsets.startIndices[offsetIdx];
+                if (startIdx == 0xFFFFFFFF) continue;
+
+                for (uint i = startIdx; i < pc.maxCapacity; i++) {
+                    if (sortedHashes.data[i].hash != neighborHash) break;
+
                     uint neighborAgentIdx = sortedHashes.data[i].agentIndex;
-                    if(originalAgentIdx == neighborAgentIdx) continue; // Skip self
+                    if (originalAgentIdx == neighborAgentIdx) continue;
 
                     vec4 neighborData = inAgents.positions[neighborAgentIdx];
-                    if(neighborData.w == 0.0) continue;
-                    
-                    vec3 otherPos = inAgents.positions[neighborAgentIdx].xyz;
-                    vec3 diff = myPos - otherPos;
-                    float dist = length(diff);
-                    
-                    // Discarding NaN's
-                    if(dist <= 0.00001) {
-                        dist = 0.00001;
-                        diff = vec3(0.00001, 0.0, 0.0);
-                    }
+                    if (neighborData.w == 0.0) continue;
+
+                    vec3 otherPos = neighborData.xyz;
+                    vec3 diff     = myPos - otherPos;
+                    float dist    = length(diff);
+
+                    if (dist <= 0.00001) { dist = 0.00001; diff = vec3(0.00001, 0.0, 0.0); }
 
                     float interactDist = maxRadius * 2.0;
-                    
-                    if(dist > 0.0 && dist < interactDist) {
-                        float overlap = interactDist - dist;
-                        vec3 dir = diff / dist;
-                        
-                        // Hertzian Repulsion
-                        float repForce = repulsion * pow(overlap, 1.5);
-                        // JKR Adhesion — optionally scaled by cadherin affinity A(i,j)
-                        float adhForce = adhesion * overlap;
-                        if (pc.gridSize.x != 0u) {
-                            float couplingStrength = uintBitsToFloat(pc.gridSize.y);
-                            vec4  profileI = cadherinProfiles.profiles[originalAgentIdx];
-                            vec4  profileJ = cadherinProfiles.profiles[neighborAgentIdx];
-                            float A = clamp(dot(profileI, cadherinAffinity.M * profileJ), 0.0, 1.0);
-                            adhForce *= A * couplingStrength;
+                    if (dist >= interactDist) continue;
+
+                    // ── Cadherin + polarity modulation (cell-level, once per neighbour) ──
+                    float adhScale = 1.0;
+                    if (pc.gridSize.x != 0u) {
+                        float couplingStrength = uintBitsToFloat(pc.gridSize.y);
+                        vec4  profileI = cadherinProfiles.profiles[originalAgentIdx];
+                        vec4  profileJ = cadherinProfiles.profiles[neighborAgentIdx];
+                        float A = clamp(dot(profileI, cadherinAffinity.M * profileJ), 0.0, 1.0);
+                        adhScale *= A * couplingStrength;
+                    }
+                    if (pc.gridSize.z != 0u) {
+                        vec2  pp        = unpackHalf2x16(pc.gridSize.w);
+                        vec3  r_ij      = diff / dist;
+                        float dotI      = dot(polarityData.data[originalAgentIdx].xyz, -r_ij);
+                        float dotJ      = dot(polarityData.data[neighborAgentIdx].xyz,  r_ij);
+                        float alignment = clamp((dotI + dotJ) * 0.5 + 0.5, 0.0, 1.0);
+                        float scale     = mix(pp.x, pp.y, alignment);
+                        float magI      = polarityData.data[originalAgentIdx].w;
+                        float magJ      = polarityData.data[neighborAgentIdx].w;
+                        adhScale       *= mix(1.0, scale, magI * magJ);
+                    }
+
+                    if (hullCount > 0) {
+                        // ── Rigid body path: multi-sphere contacts → TORQUE + TRANSLATION ──
+                        // Each overlapping hull sub-sphere pair contributes a JKR force to
+                        // both translation and torque.  Only a few pairs overlap at surface
+                        // contact (sub-sphere radii are small), so forces self-scale without
+                        // an explicit normalisation factor.
+                        vec4 qj = orientations[neighborAgentIdx];
+
+                        for (int a = 0; a < hullCount; a++) {
+                            vec3  Pa = myPos + myHull[a];
+                            float rA = hull.points[a].w;
+
+                            for (int b = 0; b < hullCount; b++) {
+                                vec3  Pb = otherPos + qrot(qj, hull.points[b].xyz);
+                                float rB = hull.points[b].w;
+
+                                float contactDist = rA + rB;
+                                vec3  d           = Pa - Pb;
+                                float pairDist    = length(d);
+
+                                if (pairDist > 0.0001 && pairDist < contactDist) {
+                                    float overlap    = contactDist - pairDist;
+                                    vec3  localDir   = d / pairDist;      // Pa→Pb direction (contact surface normal)
+                                    float adhF       = adhesion * overlap * adhScale;
+                                    // Hull pairs are TORQUE-ONLY: adhesion pulls each hull point
+                                    // toward the contact surface to maximise overlap (alignment).
+                                    // Translation is handled entirely by the unconditional point-
+                                    // particle block below.  Hull sub-sphere overlap is on a
+                                    // different scale to centre-to-centre overlap and would overwhelm
+                                    // the point-particle adhesion if added to translation.
+                                    torque += cross(myHull[a], localDir * (-adhF));
+                                }
+                            }
                         }
 
-                        // Polarity-modulated adhesion — apical-apical contacts weaken, basal-basal strengthen
-                        if (pc.gridSize.z != 0u) {
-                            vec2  pp        = unpackHalf2x16(pc.gridSize.w); // x=apicalRepulsion, y=basalAdhesion
-                            vec3  r_ij      = diff / dist;                   // unit vector i→j (from neighbor toward me)
-                            float dotI      = dot(polarityData.data[originalAgentIdx].xyz, -r_ij); // >0 if basal faces neighbor
-                            float dotJ      = dot(polarityData.data[neighborAgentIdx].xyz,  r_ij); // >0 if basal faces neighbor
-                            float alignment = clamp((dotI + dotJ) * 0.5 + 0.5, 0.0, 1.0);
-                            float scale     = mix(pp.x, pp.y, alignment);   // apicalRepulsion → basalAdhesion
-                            float magI      = polarityData.data[originalAgentIdx].w;
-                            float magJ      = polarityData.data[neighborAgentIdx].w;
-                            float strength  = mix(1.0, scale, magI * magJ); // blend off→on by polarity magnitude
-                            adhForce *= strength;
+                        // ── Oriented steric repulsion — prevents tile corner penetration ──
+                        // Models each cell as an oriented box; the support function gives the
+                        // maximum extent in the centre-to-centre direction.  When the two boxes
+                        // overlap along that line a Hertzian force is added to translation.
+                        // Not modulated by adhScale (steric is purely geometric) and uses no
+                        // fScale (one force per neighbour, not per hull pair).
+                        if (stericActive) {
+                            vec3  d_hat = diff / dist;
+                            float myExt = stericHalfX * abs(dot(myAxisX, d_hat))
+                                        + stericHalfY * abs(dot(myAxisY, d_hat))
+                                        + stericHalfZ * abs(dot(myAxisZ, d_hat));
+
+                            vec3  nAxisX = qrot(qj, vec3(1.0, 0.0, 0.0));
+                            vec3  nAxisY = qrot(qj, vec3(0.0, 1.0, 0.0));
+                            vec3  nAxisZ = qrot(qj, vec3(0.0, 0.0, 1.0));
+                            float nExt  = stericHalfX * abs(dot(nAxisX, d_hat))
+                                        + stericHalfY * abs(dot(nAxisY, d_hat))
+                                        + stericHalfZ * abs(dot(nAxisZ, d_hat));
+
+                            float sOver = (myExt + nExt) - dist;
+                            if (sOver > 0.0) {
+                                force += d_hat * repulsion * pow(sOver, 1.5);
+                            }
                         }
 
-                        float netForce = repForce - adhForce;
-                        force += dir * netForce;
-                        totalPressure += repForce;
+                    }
+
+                    // ── Point-particle translation — base collision for ALL shapes ──
+                    // Runs unconditionally: provides omnidirectional repulsion + adhesion
+                    // that covers hull gaps (sparse sub-sphere coverage at ~5% solid angle)
+                    // and restores adhesion for hull shapes (EC tiles, tumour cells, etc.).
+                    {
+                        float overlap  = interactDist - dist;
+                        if (overlap > 0.0) {
+                            vec3  dir      = diff / dist;
+                            float repForce = repulsion * pow(overlap, 1.5);
+                            float adhForce = adhesion * overlap * adhScale;
+                            float netForce = repForce - adhForce;
+                            force         += dir * netForce;
+                            totalPressure += repForce;
+                        }
                     }
                 }
             }
         }
     }
-    
-    // Implicit Euler integration with optional velocity damping.
-    // Dividing by (1 + damping*dt) is the exact solution of F - damping*v = 0 for one step,
-    // unconditionally stable regardless of dt or damping magnitude.
+
+    // ── Implicit Euler integration — translation ──
     vec3 displacement = force * pc.dt;
     if (damping > 0.0) displacement /= (1.0 + damping * pc.dt);
-    vec4 newPos = vec4(myPos + displacement, inAgents.positions[originalAgentIdx].w);
-    
-    outAgents.positions[originalAgentIdx] = newPos;
+    outAgents.positions[originalAgentIdx] = vec4(myPos + displacement, inAgents.positions[originalAgentIdx].w);
     outPressures.pressure[originalAgentIdx] = totalPressure;
+
+    // ── Implicit Euler integration — rotation (rigid body only) ──
+    if (hullCount > 0) {
+        float rotDamping = damping * maxRadius * maxRadius;
+        vec3  theta      = torque * pc.dt;
+        if (rotDamping > 0.0) theta /= (1.0 + rotDamping * pc.dt);
+
+        vec4 q   = qi; // already loaded above
+        vec3 ht  = 0.5 * theta;
+        vec4 qNew = vec4(
+            q.xyz + q.w * ht + cross(ht, q.xyz),
+            q.w - dot(ht, q.xyz)
+        );
+        orientations[originalAgentIdx] = normalize(qNew);
+    }
 }

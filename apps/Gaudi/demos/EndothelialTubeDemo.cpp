@@ -50,17 +50,25 @@ namespace Gaudi::Demos
             glm::vec3( 0.0f ), glm::vec3( 0.0f, 1.0f, 0.0f ),
             0.0f, 42 );
 
-        // ── Per-cell outward normals from initial position ────────────────────
-        // Each tile is oriented so its outer face points radially outward from the Y axis.
-        // Cells near the axis (r < 1e-3) fall back to +X to avoid degenerate normals.
-        std::vector<glm::vec4> normals;
-        normals.reserve( count );
+        // Initial orientations: shortest-arc quaternion from model +Y to each cell's
+        // radial direction (cx,0,cz)/r.  Cells near the axis (r < 0.01) get identity.
+        // w = 1/sqrt(2) for all surface cells → quaternion mode in geometry.vert.
+        std::vector<glm::vec4> orientations;
+        orientations.reserve( count );
+        const float inv = 1.0f / std::sqrt( 2.0f );
         for( const auto& p : positions )
         {
-            glm::vec3 radial( p.x, 0.0f, p.z );
-            float     len = glm::length( radial );
-            glm::vec3 n   = ( len > 1e-3f ) ? radial / len : glm::vec3( 1.0f, 0.0f, 0.0f );
-            normals.push_back( glm::vec4( n, 0.0f ) );
+            float rx = p.x, rz = p.z;
+            float rLen = std::sqrt( rx * rx + rz * rz );
+            if( rLen > 0.01f )
+            {
+                rx /= rLen; rz /= rLen; // unit radial
+                orientations.push_back( glm::vec4( rz * inv, 0.0f, -rx * inv, inv ) );
+            }
+            else
+            {
+                orientations.push_back( glm::vec4( 0.0f, 0.0f, 0.0f, 1.0f ) ); // identity
+            }
         }
 
         // ── Biomechanics ───────────────────────────────────────────────────────
@@ -78,7 +86,7 @@ namespace Gaudi::Demos
                         .SetMorphology( DigitalTwin::MorphologyGenerator::CreateCurvedTile(
                             arcAngle, axialSpacing, 0.25f, tubeRadius ) )
                         .SetDistribution( positions )
-                        .SetOrientations( normals )
+                        .SetOrientations( orientations )
                         .SetColor( glm::vec4( 0.2f, 0.75f, 0.55f, 1.0f ) );
 
         ecs.AddBehaviour( jkr ).SetHz( 60.0f );

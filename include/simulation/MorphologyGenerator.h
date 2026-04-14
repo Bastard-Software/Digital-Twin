@@ -77,6 +77,20 @@ namespace DigitalTwin
         static MorphologyData CreateCurvedTile( float arcAngleDeg = 60.0f, float height = 1.35f,
                                                 float thickness = 0.25f, float innerRadius = 1.5f,
                                                 uint32_t sectors = 4 );
+
+        /**
+         * @brief Creates a spheroid morphology (ellipsoid of revolution).
+         *        Prolate (radiusXZ < radiusY): elongated along Y — suitable for fibroblasts,
+         *        neurons, and spindle-shaped mesenchymal cells.
+         *        Oblate (radiusXZ > radiusY): flattened — suitable for red blood cells,
+         *        squamous cells, or pancaked tumour cells.
+         * @param radiusXZ  Equatorial radius (X and Z axes — circular cross-section).
+         * @param radiusY   Polar radius (Y axis — elongation/flattening direction).
+         * @param sectors   Horizontal (azimuthal) subdivisions.
+         * @param stacks    Vertical (latitudinal) subdivisions.
+         */
+        static MorphologyData CreateEllipsoid( float radiusXZ = 0.5f, float radiusY = 1.0f,
+                                               uint32_t sectors = 24, uint32_t stacks = 12 );
     };
 
 } // namespace DigitalTwin

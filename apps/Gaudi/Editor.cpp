@@ -89,6 +89,8 @@ namespace Gaudi
             const char* name;
             const char* description;
             DemoSetupFn setupFn;
+            // Editor-side viz preset so blueprints can stay biology-pure.
+            std::optional<DigitalTwin::GridVisualizationSettings> visualization;
         };
 
         static const Demo k_demos[] = {
@@ -96,13 +98,15 @@ namespace Gaudi
               "A single cell secretes into an initially empty field.\n"
               "Watch the substance accumulate and diffuse outward.\n\n"
               "Demonstrates: SecreteField, field diffusion.",
-              &Demos::SetupSecreteDemo },
+              &Demos::SetupSecreteDemo,
+              []() { DigitalTwin::GridVisualizationSettings v; v.active = true; v.fieldIndex = 0; v.mode = DigitalTwin::GridVisualizationMode::SLICE_2D; return v; }() },
 
             { "Consume",
               "A single cell drains a Gaussian pre-seeded field.\n"
               "Watch the local depletion grow around the cell.\n\n"
               "Demonstrates: ConsumeField, field depletion.",
-              &Demos::SetupConsumeDemo },
+              &Demos::SetupConsumeDemo,
+              []() { DigitalTwin::GridVisualizationSettings v; v.active = true; v.fieldIndex = 0; v.mode = DigitalTwin::GridVisualizationMode::SLICE_2D; return v; }() },
 
             { "Chemotaxis",
               "Source cell (green) consumes O2 and goes Hypoxic\n"
@@ -124,7 +128,8 @@ namespace Gaudi
               "to equilibrium. No cells — field physics only.\n\n"
               "Demonstrates: GridField diffusion, decay rate,\n"
               "Sphere initializer.",
-              &Demos::SetupDiffusionDecayDemo },
+              &Demos::SetupDiffusionDecayDemo,
+              []() { DigitalTwin::GridVisualizationSettings v; v.active = true; v.fieldIndex = 0; v.mode = DigitalTwin::GridVisualizationMode::SLICE_2D; v.fieldVis.gamma = 0.6f; v.fieldVis.alphaCutoff = 0.0f; return v; }() },
 
             { "Brownian Motion",
               "27 particles in a 3x3x3 grid perform pure thermal\n"
@@ -285,7 +290,7 @@ namespace Gaudi
         ImGui::SetCursorPosY( ImGui::GetWindowHeight() - ImGui::GetFrameHeightWithSpacing() - 4 );
         if( ImGui::Button( "Load Demo", ImVec2( -1, 0 ) ) )
         {
-            LoadDemo( k_demos[ s_selected ].setupFn );
+            LoadDemo( k_demos[ s_selected ].setupFn, k_demos[ s_selected ].visualization );
             m_showDemoBrowser = false;
         }
 
@@ -296,13 +301,17 @@ namespace Gaudi
 
     // Stops the running simulation (if any), resets the blueprint, calls fn to populate it,
     // then notifies the engine so it picks up the new blueprint on the next Play().
-    void Editor::LoadDemo( DemoSetupFn fn )
+    void Editor::LoadDemo( DemoSetupFn fn,
+                           const std::optional<DigitalTwin::GridVisualizationSettings>& vizPreset )
     {
         if( m_engine.GetState() != DigitalTwin::EngineState::RESET )
             m_engine.Stop();
         m_blueprint = DigitalTwin::SimulationBlueprint{};
         fn( m_blueprint );
         m_engine.SetBlueprint( m_blueprint );
+
+        if( vizPreset.has_value() )
+            m_engine.SetGridVisualization( *vizPreset );
 
         if( m_consolePanel )
             m_consolePanel->Clear();

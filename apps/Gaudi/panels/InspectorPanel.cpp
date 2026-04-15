@@ -575,6 +575,13 @@ namespace Gaudi
 
         DigitalTwin::GridFieldVisualization&   fieldVis = m_fieldVisCache[ fieldIndex ];
         DigitalTwin::GridVisualizationSettings vis      = m_engine.GetGridVisualization();
+
+        // If the engine is currently visualising this field (e.g. from a demo preset),
+        // the engine's live state is the source of truth — sync the cache so the
+        // write-back below doesn't clobber the preset with stale defaults.
+        if( vis.active && vis.fieldIndex == fieldIndex )
+            fieldVis = vis.fieldVis;
+
         bool isActive = vis.active && ( vis.fieldIndex == fieldIndex );
 
         if( ImGui::Checkbox( "Show this field", &isActive ) )

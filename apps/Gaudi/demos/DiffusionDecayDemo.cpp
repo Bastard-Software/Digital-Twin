@@ -15,12 +15,21 @@ namespace Gaudi::Demos
             .SetMaxDensity( 64 )
             .SetComputeHz( 60.0f );
 
-        // Gaussian peak at origin: smooth gradient from 100 at center to 0 at edges.
-        // High diffusion spreads it visibly; strong decay pulls it back to zero.
+        // Multiple Gaussian sources scattered asymmetrically through the domain: distinct
+        // peaks diffuse outward, overlap and brighten where they meet, then decay to zero.
+        const std::vector<glm::vec3> sources = {
+            { -6.0f, -4.0f,  2.0f },
+            {  5.0f,  5.0f, -3.0f },
+            { -3.0f,  6.0f,  4.0f },
+            {  4.0f, -5.0f, -4.0f },
+            {  0.0f,  0.0f,  0.0f },
+            { -7.0f,  1.0f, -6.0f },
+            {  6.0f, -2.0f,  5.0f },
+        };
         blueprint.AddGridField( "Substance" )
-            .SetInitializer( DigitalTwin::GridInitializer::Gaussian( glm::vec3( 0.0f ), 3.0f, 100.0f ) )
-            .SetDiffusionCoefficient( 3.0f )
-            .SetDecayRate( 0.5f )
+            .SetInitializer( DigitalTwin::GridInitializer::MultiGaussian( sources, 1.5f, 100.0f ) )
+            .SetDiffusionCoefficient( 8.0f )
+            .SetDecayRate( 1.5f )
             .SetComputeHz( 60.0f );
     }
 } // namespace Gaudi::Demos

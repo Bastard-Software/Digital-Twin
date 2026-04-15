@@ -5,6 +5,7 @@
 #include "simulation/GridField.h"
 #include "simulation/SimulationBlueprint.h"
 
+#include <algorithm>
 #include <glm/glm.hpp>
 #include <unordered_set>
 
@@ -15,11 +16,20 @@ namespace DigitalTwin
     static constexpr uint32_t k_MaxRequiredState = 4;
     static constexpr uint32_t k_MaxCellType      = 3; // PhalanxCell
 
+    // Format a float to 2 decimal places for error messages.
+    static std::string Fmt2f( float v )
+    {
+        char buf[ 32 ];
+        snprintf( buf, sizeof( buf ), "%.2f", v );
+        return buf;
+    }
+
     ValidationResult SimulationValidator::Validate( const SimulationBlueprint& blueprint )
     {
         ValidationResult result;
 
         CheckDomain( blueprint, result );
+        CheckDomainBounds( blueprint, result );
         CheckNames( blueprint, result );
         CheckFieldReferences( blueprint, result );
         CheckBehaviourParams( blueprint, result );
@@ -36,18 +46,218 @@ namespace DigitalTwin
         const glm::vec3& size = blueprint.GetDomainSize();
 
         if( size.x <= 0.0f )
-            result.AddError( "Domain size X axis must be > 0 (got: " + std::to_string( size.x ) + ")" );
+            result.AddError( "Domain size X axis must be > 0 (got: " + Fmt2f( size.x ) + ")" );
         if( size.y <= 0.0f )
-            result.AddError( "Domain size Y axis must be > 0 (got: " + std::to_string( size.y ) + ")" );
+            result.AddError( "Domain size Y axis must be > 0 (got: " + Fmt2f( size.y ) + ")" );
         if( size.z <= 0.0f )
-            result.AddError( "Domain size Z axis must be > 0 (got: " + std::to_string( size.z ) + ")" );
+            result.AddError( "Domain size Z axis must be > 0 (got: " + Fmt2f( size.z ) + ")" );
 
         if( blueprint.GetVoxelSize() <= 0.0f )
-            result.AddError( "Voxel size must be > 0 (got: " + std::to_string( blueprint.GetVoxelSize() ) + ")" );
+            result.AddError( "Voxel size must be > 0 (got: " + Fmt2f( blueprint.GetVoxelSize() ) + ")" );
 
         if( blueprint.GetSpatialPartitioning().cellSize <= 0.0f )
             result.AddError( "SpatialPartitioning cell size must be > 0 (got: " +
-                             std::to_string( blueprint.GetSpatialPartitioning().cellSize ) + ")" );
+                             Fmt2f( blueprint.GetSpatialPartitioning().cellSize ) + ")" );
+    }
+
+    // Domain is centred at origin — a point p is inside iff |p.xyz| <= domainSize / 2.
+    // Returns the first axis ('X'/'Y'/'Z') on which an AABB min..max leaks outside ±half.
+    // Returns 0 if fully inside. Writes the offending coordinate and the relevant half-extent
+    // into out_reached / out_halfExtent for error messages.
+    static char FindDomainOverflowAxis( const glm::vec3& aabbMin, const glm::vec3& aabbMax,
+                                        const glm::vec3& half, float& out_reached, float& out_halfExtent )
+    {
+        const float ax[ 3 ] = { aabbMin.x, aabbMin.y, aabbMin.z };
+        const float bx[ 3 ] = { aabbMax.x, aabbMax.y, aabbMax.z };
+        const float hv[ 3 ] = { half.x, half.y, half.z };
+        const char  names[ 3 ] = { 'X', 'Y', 'Z' };
+        for( int i = 0; i < 3; ++i )
+        {
+            if( ax[ i ] < -hv[ i ] )
+            {
+                out_reached    = ax[ i ];
+                out_halfExtent = hv[ i ];
+                return names[ i ];
+            }
+            if( bx[ i ] > hv[ i ] )
+            {
+                out_reached    = bx[ i ];
+                out_halfExtent = hv[ i ];
+                return names[ i ];
+            }
+        }
+        return 0;
+    }
+
+    void SimulationValidator::CheckDomainBounds( const SimulationBlueprint& blueprint, ValidationResult& result )
+    {
+        const glm::vec3 size = blueprint.GetDomainSize();
+        // If any axis of domain is non-positive, CheckDomain already errored — skip bounds checks
+        // to avoid cascading confusing messages against a broken domain.
+        if( size.x <= 0.0f || size.y <= 0.0f || size.z <= 0.0f )
+            return;
+
+        const glm::vec3 half = size * 0.5f;
+
+        // ── Agent group distributions ───────────────────────────────────────────
+        for( const auto& group : blueprint.GetGroups() )
+        {
+            const DistributionSpec& d    = group.GetDistributionSpec();
+            glm::vec3               mn   = glm::vec3( 0.0f );
+            glm::vec3               mx   = glm::vec3( 0.0f );
+            bool                    hasBox = false;
+
+            // If raw positions are already populated (e.g. via SetDistribution()), they are the
+            // ground truth regardless of the spec (spec is only consulted by the compile step
+            // when positions are empty). Iterate actual positions.
+            if( !group.GetPositions().empty() )
+            {
+                for( const auto& p : group.GetPositions() )
+                {
+                    const glm::vec3 v( p.x, p.y, p.z );
+                    float           reached = 0.0f, he = 0.0f;
+                    char            axis = FindDomainOverflowAxis( v, v, half, reached, he );
+                    if( axis )
+                    {
+                        result.AddError( "AgentGroup '" + group.GetName() + "' has a position outside domain on " +
+                                         std::string( 1, axis ) + " (reached " + Fmt2f( reached ) +
+                                         ", domain half-extent " + Fmt2f( he ) + ")" );
+                        break;
+                    }
+                }
+                continue;
+            }
+
+            switch( d.type )
+            {
+            case DistributionType::Point:
+                // Point type with no positions set — nothing to check.
+                break;
+            case DistributionType::UniformInSphere:
+                mn     = d.center - glm::vec3( d.radius );
+                mx     = d.center + glm::vec3( d.radius );
+                hasBox = true;
+                break;
+            case DistributionType::UniformInBox:
+                mn     = d.center - d.halfExtents;
+                mx     = d.center + d.halfExtents;
+                hasBox = true;
+                break;
+            case DistributionType::UniformInCylinder:
+            {
+                // Axis-agnostic conservative AABB: max(radius, halfLength) in every axis.
+                const float r = std::max( d.radius, d.halfLength );
+                mn            = d.center - glm::vec3( r );
+                mx            = d.center + glm::vec3( r );
+                hasBox        = true;
+                break;
+            }
+            }
+
+            if( hasBox )
+            {
+                float reached = 0.0f, he = 0.0f;
+                char  axis = FindDomainOverflowAxis( mn, mx, half, reached, he );
+                if( axis )
+                    result.AddError( "AgentGroup '" + group.GetName() + "' distribution extends outside domain on " +
+                                     std::string( 1, axis ) + " (reaches " + Fmt2f( reached ) +
+                                     ", domain half-extent " + Fmt2f( he ) + ")" );
+            }
+        }
+
+        // ── Grid field initializers ─────────────────────────────────────────────
+        for( const auto& field : blueprint.GetGridFields() )
+        {
+            const InitializerSpec& s = field.GetInitializerSpec();
+            glm::vec3              mn = glm::vec3( 0.0f );
+            glm::vec3              mx = glm::vec3( 0.0f );
+            bool                   hasBox = false;
+
+            switch( s.type )
+            {
+            case InitializerType::Constant:
+                continue; // uniform fill — never extends outside
+            case InitializerType::Sphere:
+                mn     = s.center - glm::vec3( s.radius );
+                mx     = s.center + glm::vec3( s.radius );
+                hasBox = true;
+                break;
+            case InitializerType::BoxWall:
+                mn     = s.center - s.halfExtents;
+                mx     = s.center + s.halfExtents;
+                hasBox = true;
+                break;
+            case InitializerType::Gaussian:
+            {
+                // Centre must be in-domain (error); 3σ tail leaking is warning-worthy.
+                float reached = 0.0f, he = 0.0f;
+                char  axis = FindDomainOverflowAxis( s.center, s.center, half, reached, he );
+                if( axis )
+                {
+                    result.AddError( "GridField '" + field.GetName() + "' Gaussian centre is outside domain on " +
+                                     std::string( 1, axis ) + " (reached " + Fmt2f( reached ) +
+                                     ", domain half-extent " + Fmt2f( he ) + ")" );
+                }
+                else
+                {
+                    const glm::vec3 tmn = s.center - glm::vec3( 3.0f * s.sigma );
+                    const glm::vec3 tmx = s.center + glm::vec3( 3.0f * s.sigma );
+                    char            tAxis = FindDomainOverflowAxis( tmn, tmx, half, reached, he );
+                    if( tAxis )
+                        result.AddWarning( "GridField '" + field.GetName() + "' Gaussian 3-sigma tail is truncated at domain edge on " +
+                                           std::string( 1, tAxis ) + " (reaches " + Fmt2f( reached ) +
+                                           ", domain half-extent " + Fmt2f( he ) + ")" );
+                }
+                continue;
+            }
+            case InitializerType::MultiGaussian:
+            {
+                bool anyCentreError = false;
+                for( const auto& c : s.centers )
+                {
+                    float reached = 0.0f, he = 0.0f;
+                    char  axis = FindDomainOverflowAxis( c, c, half, reached, he );
+                    if( axis )
+                    {
+                        result.AddError( "GridField '" + field.GetName() + "' MultiGaussian centre is outside domain on " +
+                                         std::string( 1, axis ) + " (reached " + Fmt2f( reached ) +
+                                         ", domain half-extent " + Fmt2f( he ) + ")" );
+                        anyCentreError = true;
+                        break;
+                    }
+                }
+                if( !anyCentreError )
+                {
+                    // Warn once if any 3σ tail leaks.
+                    for( const auto& c : s.centers )
+                    {
+                        const glm::vec3 tmn = c - glm::vec3( 3.0f * s.sigma );
+                        const glm::vec3 tmx = c + glm::vec3( 3.0f * s.sigma );
+                        float           reached = 0.0f, he = 0.0f;
+                        char            tAxis = FindDomainOverflowAxis( tmn, tmx, half, reached, he );
+                        if( tAxis )
+                        {
+                            result.AddWarning( "GridField '" + field.GetName() + "' MultiGaussian 3-sigma tail is truncated at domain edge on " +
+                                               std::string( 1, tAxis ) + " (reaches " + Fmt2f( reached ) +
+                                               ", domain half-extent " + Fmt2f( he ) + ")" );
+                            break;
+                        }
+                    }
+                }
+                continue;
+            }
+            }
+
+            if( hasBox )
+            {
+                float reached = 0.0f, he = 0.0f;
+                char  axis = FindDomainOverflowAxis( mn, mx, half, reached, he );
+                if( axis )
+                    result.AddError( "GridField '" + field.GetName() + "' initializer extends outside domain on " +
+                                     std::string( 1, axis ) + " (reaches " + Fmt2f( reached ) +
+                                     ", domain half-extent " + Fmt2f( he ) + ")" );
+            }
+        }
     }
 
     void SimulationValidator::CheckNames( const SimulationBlueprint& blueprint, ValidationResult& result )

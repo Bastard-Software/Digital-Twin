@@ -4,7 +4,9 @@
 #include "demos/Demos.h"
 #include <core/FileSystem.h>
 #include <core/Log.h>
+#include <filesystem>
 #include <imgui.h>
+#include <spdlog/sinks/ringbuffer_sink.h>
 #include <random>
 #include <simulation/BiologyGenerator.h>
 #include <simulation/BiomechanicsGenerator.h>
@@ -25,6 +27,29 @@ namespace Gaudi
         ImGui::SetCurrentContext( static_cast<ImGuiContext*>( m_engine.GetImGuiContext() ) );
         ImGuiIO&    io      = ImGui::GetIO();
         auto*       fs      = m_engine.GetFileSystem();
+
+        // ── ImGui ini: override auto-persistence with an explicit path pair.
+        // User copy  (writable, adjacent to exe):  imgui.ini
+        // Shipped default (read-only, in assets/): default_imgui.ini
+        // New clone: no user copy → load shipped default.
+        // After any drag: user copy is written on shutdown; shipped default untouched.
+        io.IniFilename = nullptr; // disable ImGui's own auto-save
+        {
+            const std::filesystem::path userIni =
+                std::filesystem::current_path() / "imgui.ini";
+            if( std::filesystem::exists( userIni ) )
+            {
+                ImGui::LoadIniSettingsFromDisk( userIni.string().c_str() );
+            }
+            else
+            {
+                std::filesystem::path defIni = fs->ResolvePath( "default_imgui.ini" );
+                if( std::filesystem::exists( defIni ) )
+                    ImGui::LoadIniSettingsFromDisk( defIni.string().c_str() );
+            }
+            m_userIniPath = userIni.string();
+        }
+
         std::string roboto  = fs->ResolvePath( "fonts/Roboto-Medium.ttf" ).string();
         std::string faSolid = fs->ResolvePath( "fonts/fa-solid-900.ttf" ).string();
         io.Fonts->AddFontFromFileTTF( roboto.c_str(), 16.0f );
@@ -34,6 +59,13 @@ namespace Gaudi
         iconCfg.PixelSnapH                = true;
         static const ImWchar iconRanges[] = { ICON_MIN_FA, ICON_MAX_FA, 0 };
         io.Fonts->AddFontFromFileTTF( faSolid.c_str(), 16.0f, &iconCfg, iconRanges );
+
+        // Attach a ringbuffer sink to both spdlog loggers so the Console panel can display
+        // engine and app log output without needing stdout.
+        m_logSink = std::make_shared<spdlog::sinks::ringbuffer_sink_mt>( 2048 );
+        m_logSink->set_pattern( "[%T] [%l] %n: %v" );
+        DigitalTwin::Log::GetCoreLogger()->sinks().push_back( m_logSink );
+        DigitalTwin::Log::GetClientLogger()->sinks().push_back( m_logSink );
 
         // Clear the default name so the Hierarchy shows an empty placeholder
         // until the user creates a new simulation or loads a demo.
@@ -271,6 +303,9 @@ namespace Gaudi
         m_blueprint = DigitalTwin::SimulationBlueprint{};
         fn( m_blueprint );
         m_engine.SetBlueprint( m_blueprint );
+
+        if( m_consolePanel )
+            m_consolePanel->Clear();
     }
 
     void Editor::RenderMainMenuBar()
@@ -312,6 +347,14 @@ namespace Gaudi
                 bool showOverlay = m_engine.IsShowingStatsOverlay();
                 if( ImGui::MenuItem( "Stats Overlay", nullptr, &showOverlay ) )
                     m_engine.SetShowStatsOverlay( showOverlay );
+
+                if( m_consolePanel )
+                {
+                    bool showConsole = m_consolePanel->IsVisible();
+                    if( ImGui::MenuItem( "Console", nullptr, &showConsole ) )
+                        m_consolePanel->SetVisible( showConsole );
+                }
+
                 ImGui::EndMenu();
             }
 
@@ -381,6 +424,10 @@ namespace Gaudi
             panel->OnDetach();
         }
         m_panels.clear();
+
+        // Persist the current docking layout so it survives restart.
+        if( !m_userIniPath.empty() )
+            ImGui::SaveIniSettingsToDisk( m_userIniPath.c_str() );
 
         DT_INFO( "Gaudi Editor closing..." );
         m_engine.Shutdown();

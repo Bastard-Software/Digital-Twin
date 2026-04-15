@@ -3168,20 +3168,25 @@ TEST_F( ComputeTest, Shader_BuildIndirect_ClassifyCellTypes )
     std::vector<uint32_t> reorderInit( reorderSize, 0xDEADBEEF );
 
     // Create GPU buffers
-    auto countBuf     = m_rm->CreateBuffer( { sizeof( uint32_t ), BufferType::STORAGE, "BI_Counts" } );
-    auto indirectBuf  = m_rm->CreateBuffer( { cmds.size() * sizeof( DrawCommand ), BufferType::STORAGE, "BI_Indirect" } );
-    auto phenoBuf     = m_rm->CreateBuffer( { phenotypes.size() * sizeof( PhenotypeData ), BufferType::STORAGE, "BI_Pheno" } );
-    auto reorderBuf   = m_rm->CreateBuffer( { reorderSize * sizeof( uint32_t ), BufferType::STORAGE, "BI_Reorder" } );
-    auto metaBuf      = m_rm->CreateBuffer( { metaData.size() * sizeof( DrawMeta ), BufferType::STORAGE, "BI_Meta" } );
-    auto agentBuf     = m_rm->CreateBuffer( { positions.size() * sizeof( glm::vec4 ), BufferType::STORAGE, "BI_Agents" } );
+    // Visibility buffer: 1 group, all visible
+    std::vector<uint32_t> visibility = { 1u };
+
+    auto countBuf      = m_rm->CreateBuffer( { sizeof( uint32_t ), BufferType::STORAGE, "BI_Counts" } );
+    auto indirectBuf   = m_rm->CreateBuffer( { cmds.size() * sizeof( DrawCommand ), BufferType::STORAGE, "BI_Indirect" } );
+    auto phenoBuf      = m_rm->CreateBuffer( { phenotypes.size() * sizeof( PhenotypeData ), BufferType::STORAGE, "BI_Pheno" } );
+    auto reorderBuf    = m_rm->CreateBuffer( { reorderSize * sizeof( uint32_t ), BufferType::STORAGE, "BI_Reorder" } );
+    auto metaBuf       = m_rm->CreateBuffer( { metaData.size() * sizeof( DrawMeta ), BufferType::STORAGE, "BI_Meta" } );
+    auto agentBuf      = m_rm->CreateBuffer( { positions.size() * sizeof( glm::vec4 ), BufferType::STORAGE, "BI_Agents" } );
+    auto visibilityBuf = m_rm->CreateBuffer( { visibility.size() * sizeof( uint32_t ), BufferType::STORAGE, "BI_Visibility" } );
 
     m_stream->UploadBufferImmediate( {
-        { countBuf,    counts.data(),      counts.size() * sizeof( uint32_t ) },
-        { indirectBuf, cmds.data(),        cmds.size() * sizeof( DrawCommand ) },
-        { phenoBuf,    phenotypes.data(),  phenotypes.size() * sizeof( PhenotypeData ) },
-        { reorderBuf,  reorderInit.data(), reorderInit.size() * sizeof( uint32_t ) },
-        { metaBuf,     metaData.data(),    metaData.size() * sizeof( DrawMeta ) },
-        { agentBuf,    positions.data(),   positions.size() * sizeof( glm::vec4 ) },
+        { countBuf,      counts.data(),      counts.size() * sizeof( uint32_t ) },
+        { indirectBuf,   cmds.data(),        cmds.size() * sizeof( DrawCommand ) },
+        { phenoBuf,      phenotypes.data(),  phenotypes.size() * sizeof( PhenotypeData ) },
+        { reorderBuf,    reorderInit.data(), reorderInit.size() * sizeof( uint32_t ) },
+        { metaBuf,       metaData.data(),    metaData.size() * sizeof( DrawMeta ) },
+        { agentBuf,      positions.data(),   positions.size() * sizeof( glm::vec4 ) },
+        { visibilityBuf, visibility.data(),  visibility.size() * sizeof( uint32_t ) },
     } );
 
     // Bind
@@ -3192,6 +3197,7 @@ TEST_F( ComputeTest, Shader_BuildIndirect_ClassifyCellTypes )
     bg->Bind( 3, m_rm->GetBuffer( reorderBuf ) );
     bg->Bind( 4, m_rm->GetBuffer( metaBuf ) );
     bg->Bind( 5, m_rm->GetBuffer( agentBuf ) );
+    bg->Bind( 6, m_rm->GetBuffer( visibilityBuf ) );
     bg->Build();
 
     // Record command buffer: dispatch RESET then CLASSIFY

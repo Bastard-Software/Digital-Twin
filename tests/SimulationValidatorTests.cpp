@@ -755,3 +755,153 @@ TEST( SimulationValidatorTest, CellPolarity_NegativeBasalAdhesion_Fails )
 
     EXPECT_FALSE( SimulationValidator::Validate( bp ).IsValid() );
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Domain-bounds checks (agent distributions + grid field initializers)
+// ─────────────────────────────────────────────────────────────────────────────
+
+#include "simulation/GridField.h"
+
+TEST( SimulationValidatorTest, DomainBounds_AgentSphere_ExceedsDomain_Fails )
+{
+    SimulationBlueprint bp;
+    bp.SetDomainSize( { 100.f, 100.f, 100.f }, 2.f );
+    bp.AddGridField( "Oxygen" ).SetDiffusionCoefficient( 0.1f ).SetDecayRate( 0.01f );
+
+    DistributionSpec d;
+    d.type   = DistributionType::UniformInSphere;
+    d.center = { 0.f, 0.f, 0.f };
+    d.radius = 200.f; // domain half = 50, radius 200 obviously overflows
+    bp.AddAgentGroup( "Tumor" ).SetCount( 10 ).SetDistributionSpec( d );
+
+    EXPECT_FALSE( SimulationValidator::Validate( bp ).IsValid() );
+}
+
+TEST( SimulationValidatorTest, DomainBounds_AgentBox_ExceedsDomain_Fails )
+{
+    SimulationBlueprint bp;
+    bp.SetDomainSize( { 100.f, 100.f, 100.f }, 2.f );
+    bp.AddGridField( "Oxygen" ).SetDiffusionCoefficient( 0.1f ).SetDecayRate( 0.01f );
+
+    DistributionSpec d;
+    d.type        = DistributionType::UniformInBox;
+    d.center      = { 40.f, 0.f, 0.f };
+    d.halfExtents = { 30.f, 10.f, 10.f }; // reaches x=70, half=50 → overflow on X
+    bp.AddAgentGroup( "Cells" ).SetCount( 10 ).SetDistributionSpec( d );
+
+    EXPECT_FALSE( SimulationValidator::Validate( bp ).IsValid() );
+}
+
+TEST( SimulationValidatorTest, DomainBounds_AgentSphere_AtBoundary_Passes )
+{
+    SimulationBlueprint bp;
+    bp.SetDomainSize( { 100.f, 100.f, 100.f }, 2.f );
+    bp.AddGridField( "Oxygen" ).SetDiffusionCoefficient( 0.1f ).SetDecayRate( 0.01f );
+
+    DistributionSpec d;
+    d.type   = DistributionType::UniformInSphere;
+    d.center = { 0.f, 0.f, 0.f };
+    d.radius = 50.f; // exactly at domain half-extent — not an overflow
+    bp.AddAgentGroup( "Cells" ).SetCount( 10 ).SetDistributionSpec( d );
+
+    EXPECT_TRUE( SimulationValidator::Validate( bp ).IsValid() );
+}
+
+TEST( SimulationValidatorTest, DomainBounds_GridSphere_ExceedsDomain_Fails )
+{
+    SimulationBlueprint bp;
+    bp.SetDomainSize( { 100.f, 100.f, 100.f }, 2.f );
+
+    InitializerSpec init;
+    init.type        = InitializerType::Sphere;
+    init.center      = { 0.f, 0.f, 0.f };
+    init.radius      = 120.f; // domain half = 50 → overflow
+    init.value       = 0.f;
+    init.insideValue = 100.f;
+    bp.AddGridField( "Oxygen" )
+        .SetDiffusionCoefficient( 0.1f )
+        .SetDecayRate( 0.01f )
+        .SetInitializerSpec( init );
+
+    EXPECT_FALSE( SimulationValidator::Validate( bp ).IsValid() );
+}
+
+TEST( SimulationValidatorTest, DomainBounds_GridBoxWall_ExceedsDomain_Fails )
+{
+    SimulationBlueprint bp;
+    bp.SetDomainSize( { 100.f, 100.f, 100.f }, 2.f );
+
+    InitializerSpec init;
+    init.type        = InitializerType::BoxWall;
+    init.center      = { 0.f, 0.f, 0.f };
+    init.halfExtents = { 60.f, 10.f, 10.f }; // x reaches ±60, half=50 → overflow
+    bp.AddGridField( "Oxygen" )
+        .SetDiffusionCoefficient( 0.1f )
+        .SetDecayRate( 0.01f )
+        .SetInitializerSpec( init );
+
+    EXPECT_FALSE( SimulationValidator::Validate( bp ).IsValid() );
+}
+
+TEST( SimulationValidatorTest, DomainBounds_GridGaussian_CentreOutside_Fails )
+{
+    SimulationBlueprint bp;
+    bp.SetDomainSize( { 100.f, 100.f, 100.f }, 2.f );
+
+    InitializerSpec init;
+    init.type   = InitializerType::Gaussian;
+    init.center = { 80.f, 0.f, 0.f }; // half = 50, centre at 80 → overflow on X
+    init.sigma  = 10.f;
+    bp.AddGridField( "VEGF" )
+        .SetDiffusionCoefficient( 0.1f )
+        .SetDecayRate( 0.01f )
+        .SetInitializerSpec( init );
+
+    EXPECT_FALSE( SimulationValidator::Validate( bp ).IsValid() );
+}
+
+TEST( SimulationValidatorTest, DomainBounds_GridGaussian_TailTruncated_WarnsButValid )
+{
+    SimulationBlueprint bp;
+    bp.SetDomainSize( { 100.f, 100.f, 100.f }, 2.f );
+
+    InitializerSpec init;
+    init.type   = InitializerType::Gaussian;
+    init.center = { 0.f, 0.f, 0.f };
+    init.sigma  = 40.f; // 3σ = 120 > 50 → warning only
+    bp.AddGridField( "VEGF" )
+        .SetDiffusionCoefficient( 0.1f )
+        .SetDecayRate( 0.01f )
+        .SetInitializerSpec( init );
+
+    // Need at least one group for the blueprint to be fully valid otherwise
+    bp.AddAgentGroup( "Cells" ).SetCount( 10 );
+
+    ValidationResult r = SimulationValidator::Validate( bp );
+    EXPECT_TRUE( r.IsValid() );
+    bool foundWarning = false;
+    for( const auto& i : r.issues )
+        if( i.severity == ValidationIssue::Severity::Warning &&
+            i.message.find( "3-sigma" ) != std::string::npos )
+            foundWarning = true;
+    EXPECT_TRUE( foundWarning );
+}
+
+TEST( SimulationValidatorTest, DomainBounds_GridConstant_NeverOverflows )
+{
+    SimulationBlueprint bp;
+    bp.SetDomainSize( { 10.f, 10.f, 10.f }, 1.f );
+
+    InitializerSpec init;
+    init.type  = InitializerType::Constant;
+    init.value = 100.f;
+    bp.AddGridField( "Oxygen" )
+        .SetDiffusionCoefficient( 0.1f )
+        .SetDecayRate( 0.01f )
+        .SetInitializerSpec( init );
+    bp.AddAgentGroup( "Cells" )
+        .SetCount( 10 )
+        .SetDistributionSpec( { DistributionType::UniformInSphere, { 0, 0, 0 }, 3.f, { 3, 3, 3 }, 3.f, { 0, 1, 0 }, 42 } );
+
+    EXPECT_TRUE( SimulationValidator::Validate( bp ).IsValid() );
+}

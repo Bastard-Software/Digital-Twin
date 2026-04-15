@@ -1616,7 +1616,7 @@ namespace DigitalTwin
                         task.SetPhaseName( groupPhase );
                         task.SetChainFlip( true );
                         outState.computeGraph.AddTask( task );
-                        DT_INFO( "[SimulationBuilder] Compiled Chemotaxis for '{}' → '{}' at {}Hz",
+                        DT_INFO( "[SimulationBuilder] Compiled Chemotaxis for '{}' -> '{}' at {}Hz",
                                  group.GetName(), chemo.fieldName, record.targetHz );
                     }
                     else

@@ -5,6 +5,8 @@
 #include "platform/Window.h"
 #include "simulation/SimulationBlueprint.h"
 #include "simulation/SimulationValidator.h"
+#include <glm/glm.hpp>
+#include <glm/gtc/quaternion.hpp>
 #include <string>
 
 namespace DigitalTwin
@@ -56,6 +58,21 @@ namespace DigitalTwin
         void*                            GetSceneTextureID() const;
         void*                            GetImGuiTextureID( TextureHandle handle );
         void*                            GetImGuiContext();
+
+        // --- Group Visibility ---
+        void SetGroupVisible( int groupIndex, bool visible );
+
+        // --- Camera API ---
+        // Relative (interactive editor input from mouse deltas):
+        void OrbitCamera( float pixelDX, float pixelDY );
+        void PanCamera( float pixelDX, float pixelDY );
+        void ZoomCamera( float scrollAmount );
+        // Absolute (scripted demos / Python cinematic sequences):
+        void        SetCameraFocus( const glm::vec3& point );
+        void        SetCameraDistance( float distance );
+        void        SetCameraOrientation( const glm::quat& orientation );
+        void        FocusCameraOnDomain();
+        CameraState GetCameraState() const;
 
     public:
         FileSystem* GetFileSystem() const;

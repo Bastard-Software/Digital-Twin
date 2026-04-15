@@ -76,6 +76,9 @@ namespace DigitalTwin
         // Agent positions (binding 5) — for alive check
         bg->Bind( 5, m_resourceManager->GetBuffer( scene->GetAgentReadBuffer() ) );
 
+        // Visibility flags (binding 6) — per-group, CPU-writable UPLOAD buffer
+        bg->Bind( 6, m_resourceManager->GetBuffer( scene->visibilityBuffer ) );
+
         bg->Build();
 
         ComputePipeline* pipeline = m_resourceManager->GetPipeline( m_pipeline );

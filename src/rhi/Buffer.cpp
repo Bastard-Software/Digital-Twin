@@ -123,6 +123,15 @@ namespace DigitalTwin
                                    VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT;
                 allocInfo.usage = VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE;
                 break;
+
+            case BufferType::HOST_STORAGE:
+                // CPU-writable SSBO: host-coherent + STORAGE_BUFFER_BIT.
+                // Use for small buffers that the CPU updates every frame (e.g. visibility flags).
+                bufferInfo.usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT |
+                                   VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT;
+                allocInfo.usage  = VMA_MEMORY_USAGE_CPU_TO_GPU;
+                allocInfo.flags  = VMA_ALLOCATION_CREATE_MAPPED_BIT;
+                break;
         }
 
         VmaAllocationInfo resultInfo;
@@ -153,7 +162,7 @@ namespace DigitalTwin
 
     void* Buffer::Map()
     {
-        DT_ASSERT( m_type == BufferType::UPLOAD || m_type == BufferType::READBACK || m_type == BufferType::UNIFORM,
+        DT_ASSERT( m_type == BufferType::UPLOAD || m_type == BufferType::READBACK || m_type == BufferType::UNIFORM || m_type == BufferType::HOST_STORAGE,
                    "Mapping is only allowed for UNIFORM, UPLOAD and READBACK buffers!" );
 
         if( m_mappedData )
@@ -170,7 +179,7 @@ namespace DigitalTwin
 
     void Buffer::Unmap()
     {
-        DT_ASSERT( m_type == BufferType::UPLOAD || m_type == BufferType::READBACK || m_type == BufferType::UNIFORM,
+        DT_ASSERT( m_type == BufferType::UPLOAD || m_type == BufferType::READBACK || m_type == BufferType::UNIFORM || m_type == BufferType::HOST_STORAGE,
                    "Mapping is only allowed for UNIFORM, UPLOAD and READBACK buffers!" );
 
         if( !m_mappedData )
@@ -181,7 +190,7 @@ namespace DigitalTwin
 
     void Buffer::Write( const void* data, size_t size, size_t offset )
     {
-        DT_ASSERT( m_type == BufferType::UPLOAD || m_type == BufferType::READBACK || m_type == BufferType::UNIFORM,
+        DT_ASSERT( m_type == BufferType::UPLOAD || m_type == BufferType::READBACK || m_type == BufferType::UNIFORM || m_type == BufferType::HOST_STORAGE,
                    "Host writting is only allowed for UNIFORM, UPLOAD and READBACK buffers!" );
 
         void* ptr = Map();
@@ -194,7 +203,7 @@ namespace DigitalTwin
 
     void Buffer::Read( void* outData, size_t size, size_t offset )
     {
-        DT_ASSERT( m_type == BufferType::UPLOAD || m_type == BufferType::READBACK || m_type == BufferType::UNIFORM,
+        DT_ASSERT( m_type == BufferType::UPLOAD || m_type == BufferType::READBACK || m_type == BufferType::UNIFORM || m_type == BufferType::HOST_STORAGE,
                    "Host reading is only allowed for UNIFORM, UPLOAD and READBACK buffers!" );
 
         void* ptr = Map();

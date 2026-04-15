@@ -54,6 +54,7 @@ namespace DigitalTwin
 
     private:
         static void CheckDomain( const SimulationBlueprint&, ValidationResult& );
+        static void CheckDomainBounds( const SimulationBlueprint&, ValidationResult& );
         static void CheckNames( const SimulationBlueprint&, ValidationResult& );
         static void CheckFieldReferences( const SimulationBlueprint&, ValidationResult& );
         static void CheckBehaviourParams( const SimulationBlueprint&, ValidationResult& );

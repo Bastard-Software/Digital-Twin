@@ -3,6 +3,7 @@
 #include <glm/glm.hpp>
 #include <string>
 #include <functional>
+#include <vector>
 
 #if defined( min )
 #    undef min
@@ -89,6 +90,31 @@ namespace DigitalTwin
     };
 
     /**
+     * @brief Editor-visible, round-trippable description of a field initializer.
+     * Kept alongside the compiled GridInitFunction so UIs can display/edit current choice.
+     */
+    enum class InitializerType
+    {
+        Constant,
+        Sphere,
+        Gaussian,
+        BoxWall,
+        MultiGaussian
+    };
+
+    struct InitializerSpec
+    {
+        InitializerType        type         = InitializerType::Constant;
+        float                  value        = 0.0f;                 // Constant value / outside value for Sphere & BoxWall
+        float                  insideValue  = 100.0f;               // Sphere / BoxWall inside / Gaussian peak / MultiGaussian peak
+        glm::vec3              center       = { 0.0f, 0.0f, 0.0f }; // Sphere / Gaussian
+        float                  radius       = 50.0f;                // Sphere
+        float                  sigma        = 25.0f;                // Gaussian / MultiGaussian
+        glm::vec3              halfExtents  = { 50.0f, 50.0f, 50.0f }; // BoxWall
+        std::vector<glm::vec3> centers;                             // MultiGaussian
+    };
+
+    /**
      * @brief Defines a continuous physical field (e.g., Oxygen, VEGF) solved via PDEs on a 3D grid.
      * Uses a fluent interface for configuration.
      */
@@ -109,6 +135,36 @@ namespace DigitalTwin
             m_initializer = fn;
             return *this;
         }
+
+        /**
+         * @brief Editor-friendly initializer setter. Stores the spec and rebuilds the
+         * underlying GridInitFunction via the existing GridInitializer helpers so the
+         * choice round-trips through the UI.
+         */
+        GridField& SetInitializerSpec( const InitializerSpec& spec )
+        {
+            m_initSpec = spec;
+            switch( spec.type )
+            {
+                case InitializerType::Constant:
+                    m_initializer = GridInitializer::Constant( spec.value );
+                    break;
+                case InitializerType::Sphere:
+                    m_initializer = GridInitializer::Sphere( spec.center, spec.radius, spec.insideValue, spec.value );
+                    break;
+                case InitializerType::Gaussian:
+                    m_initializer = GridInitializer::Gaussian( spec.center, spec.sigma, spec.insideValue );
+                    break;
+                case InitializerType::BoxWall:
+                    m_initializer = GridInitializer::BoxWall( spec.halfExtents, spec.insideValue, spec.value );
+                    break;
+                case InitializerType::MultiGaussian:
+                    m_initializer = GridInitializer::MultiGaussian( spec.centers, spec.sigma, spec.insideValue );
+                    break;
+            }
+            return *this;
+        }
+
         GridField& SetDiffusionCoefficient( float v )
         {
             m_diffusionCoefficient = v;
@@ -128,6 +184,7 @@ namespace DigitalTwin
         // --- Getters ---
         const std::string&      GetName() const { return m_name; }
         const GridInitFunction& GetInitializer() const { return m_initializer; }
+        const InitializerSpec&  GetInitializerSpec() const { return m_initSpec; }
         float                   GetDiffusionCoefficient() const { return m_diffusionCoefficient; }
         float                   GetDecayRate() const { return m_decayRate; }
         float                   GetComputeHz() const { return m_computeHz; }
@@ -135,6 +192,7 @@ namespace DigitalTwin
     private:
         std::string      m_name;
         GridInitFunction m_initializer;
+        InitializerSpec  m_initSpec;
         float            m_diffusionCoefficient = 0.0f;
         float            m_decayRate            = 0.0f;
         float            m_computeHz            = 60.0f;

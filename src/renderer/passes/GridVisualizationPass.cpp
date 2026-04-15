@@ -102,23 +102,39 @@ namespace DigitalTwin
         cmd->SetPipeline( pipeline );
         cmd->SetBindingGroup( bg, pipeline->GetLayout(), VK_PIPELINE_BIND_POINT_GRAPHICS );
 
-        // Setup Push Constants mapped exactly to the PC struct in shader
+        // Setup Push Constants — layout must match PC block in grid_overlay.frag exactly.
+        // vec4 is used for custom color stops to satisfy std430 16-byte alignment for vec4.
         struct VisPushConstants
         {
-            int       mode;
-            float     sliceZ;
-            float     opacitySlice;
-            float     opacityCloud;
-            glm::vec3 domainSize;
-            float     normalizationScale;
-        } pc;
+            int       mode;          // 0
+            float     sliceZ;        // 4
+            float     opacitySlice;  // 8
+            float     opacityCloud;  // 12
+            glm::vec3 domainSize;    // 16  (lands at 16 because 4 floats precede it)
+            float     minValue;      // 28
+            float     maxValue;      // 32
+            float     alphaCutoff;   // 36
+            int       colormap;      // 40
+            float     gamma;         // 44
+            glm::vec4 customLow;     // 48  (vec4 align=16; 48 is multiple of 16)
+            glm::vec4 customMid;     // 64
+            glm::vec4 customHigh;    // 80
+        } pc;                        // total: 96 bytes
 
-        pc.mode               = static_cast<int>( settings.mode );
-        pc.sliceZ             = settings.sliceZ;
-        pc.opacitySlice       = settings.opacitySlice;
-        pc.opacityCloud       = settings.opacityCloud;
-        pc.domainSize         = domainSize;
-        pc.normalizationScale = settings.normalizationScale;
+        const auto& fv   = settings.fieldVis;
+        pc.mode          = static_cast<int>( settings.mode );
+        pc.sliceZ        = settings.sliceZ;
+        pc.opacitySlice  = settings.opacitySlice;
+        pc.opacityCloud  = settings.opacityCloud;
+        pc.domainSize    = domainSize;
+        pc.minValue      = fv.minValue;
+        pc.maxValue      = fv.maxValue;
+        pc.alphaCutoff   = fv.alphaCutoff;
+        pc.colormap      = static_cast<int>( fv.colormap );
+        pc.gamma         = fv.gamma;
+        pc.customLow     = glm::vec4( fv.customLow,  0.0f );
+        pc.customMid     = glm::vec4( fv.customMid,  0.0f );
+        pc.customHigh    = glm::vec4( fv.customHigh, 0.0f );
 
         cmd->PushConstants( pipeline->GetLayout(), VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof( VisPushConstants ), &pc );
 

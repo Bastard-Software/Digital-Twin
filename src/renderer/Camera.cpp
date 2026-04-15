@@ -1,23 +1,33 @@
 #include "renderer/Camera.h"
 
 #include "core/Log.h"
-#include "platform/Input.h" // Assuming this path based on provided files
 
-// GLM definitions for quaternion and matrix math
 #define GLM_ENABLE_EXPERIMENTAL
 #include <glm/gtx/quaternion.hpp>
 
 namespace DigitalTwin
 {
+    namespace
+    {
+        constexpr glm::vec3 kWorldUp    = { 0.0f, 1.0f, 0.0f };
+        constexpr float     kOrbitSens  = 0.006f; // radians per pixel
+        constexpr float     kPanSens    = 0.0015f;
+        constexpr float     kZoomSens   = 0.1f;
+        constexpr float     kMinDistance = 0.1f;
+    } // namespace
+
     Camera::Camera( float fov, float aspectRatio, float nearClip, float farClip )
         : m_fov( fov )
         , m_aspectRatio( aspectRatio )
         , m_nearClip( nearClip )
         , m_farClip( farClip )
     {
-        // Default orientation
-        m_yaw   = glm::radians( 45.0f );
-        m_pitch = glm::radians( -30.0f ); // Slight look down
+        // Default orientation: 45° yaw around world-Y, 30° pitch around local X.
+        // Matches the previous pitch/yaw defaults roughly — a slight overhead angle
+        // looking toward the focal point.
+        glm::quat qYaw   = glm::angleAxis( glm::radians( 45.0f ), kWorldUp );
+        glm::quat qPitch = glm::angleAxis( glm::radians( 30.0f ), glm::vec3( 1.0f, 0.0f, 0.0f ) );
+        m_orientation    = qYaw * qPitch;
 
         RecalculateProjection();
         RecalculateView();
@@ -31,7 +41,20 @@ namespace DigitalTwin
 
     void Camera::SetDistance( float distance )
     {
-        m_distance = std::max( distance, 0.1f ); // Prevent zero/negative distance
+        m_distance = std::max( distance, kMinDistance );
+        RecalculateView();
+    }
+
+    void Camera::SetOrientation( const glm::quat& q )
+    {
+        m_orientation = glm::normalize( q );
+        RecalculateView();
+    }
+
+    void Camera::FocusOn( const glm::vec3& point, float distance )
+    {
+        m_focalPoint = point;
+        m_distance   = std::max( distance, kMinDistance );
         RecalculateView();
     }
 
@@ -44,12 +67,48 @@ namespace DigitalTwin
         RecalculateProjection();
     }
 
+    void Camera::Orbit( const glm::vec2& pixelDelta )
+    {
+        float yawDelta   = -pixelDelta.x * kOrbitSens;
+        float pitchDelta = -pixelDelta.y * kOrbitSens;
+
+        // Yaw around world-up (keeps the horizon horizontal).
+        glm::quat qYaw = glm::angleAxis( yawDelta, kWorldUp );
+
+        // Pitch around the camera's current local-right axis, expressed in world space.
+        glm::vec3 localRight = m_orientation * glm::vec3( 1.0f, 0.0f, 0.0f );
+        glm::quat qPitch     = glm::angleAxis( pitchDelta, localRight );
+
+        m_orientation = glm::normalize( qYaw * qPitch * m_orientation );
+        RecalculateView();
+    }
+
+    void Camera::Pan( const glm::vec2& pixelDelta )
+    {
+        glm::vec3 right = m_orientation * glm::vec3( 1.0f, 0.0f, 0.0f );
+        glm::vec3 up    = m_orientation * glm::vec3( 0.0f, 1.0f, 0.0f );
+
+        float panSpeed = m_distance * kPanSens;
+
+        // Drag-the-world feel: cursor right → world pans right → focal moves left.
+        m_focalPoint -= right * pixelDelta.x * panSpeed;
+        m_focalPoint += up * pixelDelta.y * panSpeed;
+        RecalculateView();
+    }
+
+    void Camera::Zoom( float scrollAmount )
+    {
+        m_distance -= scrollAmount * m_distance * kZoomSens * 5.0f;
+        if( m_distance < kMinDistance )
+            m_distance = kMinDistance;
+        RecalculateView();
+    }
+
     void Camera::RecalculateProjection()
     {
         m_projectionMatrix = glm::perspective( glm::radians( m_fov ), m_aspectRatio, m_nearClip, m_farClip );
 
         // Vulkan clip space has inverted Y compared to OpenGL.
-        // GLM is designed for OpenGL, so we flip the Y axis manually.
         m_projectionMatrix[ 1 ][ 1 ] *= -1.0f;
 
         m_viewProjection = m_projectionMatrix * m_viewMatrix;
@@ -57,104 +116,17 @@ namespace DigitalTwin
 
     void Camera::RecalculateView()
     {
-        // Sphere coordinates to Cartesian conversion
-        // This calculates the camera position on a sphere around the focal point.
-        float x = m_distance * cos( m_pitch ) * cos( m_yaw );
-        float y = m_distance * sin( m_pitch );
-        float z = m_distance * cos( m_pitch ) * sin( m_yaw );
+        // Camera sits at focalPoint + orientation * (0, 0, distance).
+        // Orientation's Z axis points from focal toward camera.
+        glm::vec3 offset = m_orientation * glm::vec3( 0.0f, 0.0f, m_distance );
+        m_position       = m_focalPoint + offset;
 
-        m_position = m_focalPoint + glm::vec3( x, y, z );
-
-        // Look at the focal point from the calculated position
-        // Up vector is always global Y (0,1,0) to keep the horizon stable
-        m_viewMatrix = glm::lookAt( m_position, m_focalPoint, glm::vec3( 0.0f, 1.0f, 0.0f ) );
+        // Up vector derived from orientation — never parallel to view direction,
+        // so lookAt stays non-degenerate for any rotation including past ±90° pitch.
+        glm::vec3 up = m_orientation * glm::vec3( 0.0f, 1.0f, 0.0f );
+        m_viewMatrix = glm::lookAt( m_position, m_focalPoint, up );
 
         m_viewProjection = m_projectionMatrix * m_viewMatrix;
-    }
-
-    void Camera::OnUpdate( float dt, const Input* input )
-    {
-        if( !input )
-            return;
-
-        auto [ mouseX, mouseY ] = input->GetMousePosition();
-        glm::vec2 mouse         = { mouseX, mouseY };
-
-        if( m_firstUpdate )
-        {
-            m_lastMousePos = mouse;
-            m_firstUpdate  = false;
-        }
-
-        glm::vec2 delta = ( mouse - m_lastMousePos ) * 0.003f; // Sensitivity
-        m_lastMousePos  = mouse;
-
-        // --- MOUSE INPUT ---
-        bool isMiddleDown = input->IsMouseButtonPressed( Mouse::Middle );
-        bool isShiftDown  = input->IsKeyPressed( Key::LeftShift ) || input->IsKeyPressed( Key::RightShift );
-
-        if( isMiddleDown )
-        {
-            if( isShiftDown )
-            {
-                // --- PAN (Shift + MMB) ---
-                // Move the focal point along the camera's local Right and Up vectors.
-
-                // 1. Get Camera Basis Vectors
-                glm::vec3 forward = glm::normalize( m_focalPoint - m_position );
-                glm::vec3 right   = glm::normalize( glm::cross( forward, glm::vec3( 0, 1, 0 ) ) );
-                glm::vec3 up      = glm::normalize( glm::cross( right, forward ) );
-
-                // 2. Calculate Pan Speed
-                // Speed increases with distance to keep panning feeling natural at different zooms.
-                float panSpeed = m_distance * 0.5f;
-
-                // 3. Apply movement (invert delta logic for "drag the world" feel)
-                m_focalPoint -= right * delta.x * panSpeed;
-                m_focalPoint += up * delta.y * panSpeed; // Y is inverted in 2D space vs 3D Up
-            }
-            else
-            {
-                // --- ORBIT (MMB) ---
-                // Rotate around the focal point.
-
-                float rotationSpeed = 2.0f;
-                m_yaw += delta.x * rotationSpeed;
-                m_pitch += delta.y * rotationSpeed;
-
-                // Clamp pitch to avoid gimbal lock (camera flipping over at the poles)
-                // Limit slightly less than 90 degrees (1.57 radians)
-                constexpr float PITCH_LIMIT = 1.56f;
-                if( m_pitch > PITCH_LIMIT )
-                    m_pitch = PITCH_LIMIT;
-                if( m_pitch < -PITCH_LIMIT )
-                    m_pitch = -PITCH_LIMIT;
-            }
-
-            // Rebuild view if we moved
-            RecalculateView();
-        }
-
-        // --- ZOOM (Scroll) ---
-        float scroll = input->GetScrollY();
-        if( scroll != 0.0f )
-        {
-            float zoomSpeed = 0.5f;
-            float zoomLevel = scroll * m_distance * zoomSpeed;
-
-            m_distance -= zoomLevel;
-
-            // Prevent zooming through the target or into negative distance
-            if( m_distance < 0.1f )
-            {
-                m_distance = 0.1f;
-
-                // Optional: You could push the focal point forward here to create a "dolly" effect
-                // instead of stopping, but for a strict orbit camera, clamping is safer.
-            }
-
-            RecalculateView();
-        }
     }
 
 } // namespace DigitalTwin

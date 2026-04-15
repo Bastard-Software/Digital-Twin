@@ -3,6 +3,7 @@
 #include <DigitalTwin.h>
 #include <imgui.h>
 #include <simulation/Behaviours.h>
+#include "../IconsFontAwesome5.h"
 
 namespace Gaudi
 {
@@ -92,8 +93,18 @@ namespace Gaudi
         const bool isReset = ( m_engine.GetState() == DigitalTwin::EngineState::RESET );
 
         // ── Top-level simulation node ─────────────────────────────────────────
-        ImGuiTreeNodeFlags simFlags = ImGuiTreeNodeFlags_DefaultOpen | ImGuiTreeNodeFlags_SpanAvailWidth | ImGuiTreeNodeFlags_OpenOnArrow;
-        bool simOpen = ImGui::TreeNodeEx( "##sim", simFlags, "%s", m_blueprint.GetName().c_str() );
+        ImGuiTreeNodeFlags simFlags = ImGuiTreeNodeFlags_DefaultOpen | ImGuiTreeNodeFlags_OpenOnArrow;
+        if( m_selection.simRootSelected )
+            simFlags |= ImGuiTreeNodeFlags_Selected;
+
+        bool simOpen       = ImGui::TreeNodeEx( "##sim", simFlags, "%s", m_blueprint.GetName().c_str() );
+        bool simRootClicked = ImGui::IsItemClicked() && !ImGui::IsItemToggledOpen();
+
+        if( simRootClicked )
+        {
+            m_selection.ClearAll();
+            m_selection.simRootSelected = true;
+        }
 
         if( ImGui::BeginPopupContextItem( "##simCtx" ) )
         {
@@ -134,30 +145,36 @@ namespace Gaudi
                 {
                     auto& group = groups[ i ];
 
-                    ImGuiTreeNodeFlags groupFlags = ImGuiTreeNodeFlags_OpenOnArrow | ImGuiTreeNodeFlags_SpanAvailWidth | ImGuiTreeNodeFlags_DefaultOpen;
+                    ImGuiTreeNodeFlags groupFlags = ImGuiTreeNodeFlags_OpenOnArrow | ImGuiTreeNodeFlags_DefaultOpen;
                     if( m_selection.groupIndex == i && m_selection.behaviourIndex == -1 )
                         groupFlags |= ImGuiTreeNodeFlags_Selected;
 
                     ImGui::PushID( i );
                     bool open = ImGui::TreeNodeEx( "##group", groupFlags, "%s", group.GetName().c_str() );
 
-                    if( ImGui::IsItemClicked() && !ImGui::IsItemToggledOpen() )
-                    {
-                        m_selection.groupIndex     = i;
-                        m_selection.behaviourIndex = -1;
-                        m_selection.gridFieldIndex = -1;
-                    }
+                    // Capture tree node click BEFORE the eye button changes the last item.
+                    bool groupClicked = ImGui::IsItemClicked() && !ImGui::IsItemToggledOpen();
 
+                    // Context menu must be registered on the tree node item, before the eye
+                    // button SmallButton call changes what ImGui considers the "last item".
                     if( ImGui::BeginPopupContextItem( "##groupCtx" ) )
                     {
                         ImGui::BeginDisabled( !isReset );
 
                         if( ImGui::BeginMenu( "Add Behaviour" ) )
                         {
+                            // After any add: select the new behaviour in the inspector.
+                            auto selectAdded = [&]() {
+                                m_selection.ClearAll();
+                                m_selection.groupIndex     = i;
+                                m_selection.behaviourIndex = static_cast<int>( group.GetBehavioursMutable().size() ) - 1;
+                            };
+
                             if( ImGui::MenuItem( "Brownian Motion" ) )
                             {
                                 group.AddBehaviour( DigitalTwin::Behaviours::BrownianMotion{} ).SetHz( 60 );
                                 m_engine.SetBlueprint( m_blueprint );
+                                selectAdded();
                             }
                             if( ImGui::BeginMenu( "Consume Field" ) )
                             {
@@ -170,6 +187,7 @@ namespace Gaudi
                                     {
                                         group.AddBehaviour( DigitalTwin::Behaviours::ConsumeField{ f.GetName(), 1.0f } ).SetHz( 60 );
                                         m_engine.SetBlueprint( m_blueprint );
+                                        selectAdded();
                                     }
                                 }
                                 ImGui::EndMenu();
@@ -185,6 +203,7 @@ namespace Gaudi
                                     {
                                         group.AddBehaviour( DigitalTwin::Behaviours::SecreteField{ f.GetName(), 1.0f } ).SetHz( 60 );
                                         m_engine.SetBlueprint( m_blueprint );
+                                        selectAdded();
                                     }
                                 }
                                 ImGui::EndMenu();
@@ -193,11 +212,13 @@ namespace Gaudi
                             {
                                 group.AddBehaviour( DigitalTwin::Behaviours::Biomechanics{} ).SetHz( 60 );
                                 m_engine.SetBlueprint( m_blueprint );
+                                selectAdded();
                             }
                             if( ImGui::MenuItem( "Cell Cycle" ) )
                             {
                                 group.AddBehaviour( DigitalTwin::Behaviours::CellCycle{ 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f } ).SetHz( 60 );
                                 m_engine.SetBlueprint( m_blueprint );
+                                selectAdded();
                             }
                             if( ImGui::BeginMenu( "Chemotaxis" ) )
                             {
@@ -210,6 +231,7 @@ namespace Gaudi
                                     {
                                         group.AddBehaviour( DigitalTwin::Behaviours::Chemotaxis{ f.GetName() } ).SetHz( 60 );
                                         m_engine.SetBlueprint( m_blueprint );
+                                        selectAdded();
                                     }
                                 }
                                 ImGui::EndMenu();
@@ -218,21 +240,25 @@ namespace Gaudi
                             {
                                 group.AddBehaviour( DigitalTwin::Behaviours::NotchDll4{} ).SetHz( 60 );
                                 m_engine.SetBlueprint( m_blueprint );
+                                selectAdded();
                             }
                             if( ImGui::MenuItem( "Anastomosis" ) )
                             {
                                 group.AddBehaviour( DigitalTwin::Behaviours::Anastomosis{} ).SetHz( 60 );
                                 m_engine.SetBlueprint( m_blueprint );
+                                selectAdded();
                             }
                             if( ImGui::MenuItem( "Cadherin Adhesion" ) )
                             {
                                 group.AddBehaviour( DigitalTwin::Behaviours::CadherinAdhesion{} ).SetHz( 60 );
                                 m_engine.SetBlueprint( m_blueprint );
+                                selectAdded();
                             }
                             if( ImGui::MenuItem( "Cell Polarity" ) )
                             {
                                 group.AddBehaviour( DigitalTwin::Behaviours::CellPolarity{} ).SetHz( 60 );
                                 m_engine.SetBlueprint( m_blueprint );
+                                selectAdded();
                             }
                             if( ImGui::BeginMenu( "Perfusion" ) )
                             {
@@ -245,6 +271,7 @@ namespace Gaudi
                                     {
                                         group.AddBehaviour( DigitalTwin::Behaviours::Perfusion{ f.GetName() } ).SetHz( 60 );
                                         m_engine.SetBlueprint( m_blueprint );
+                                        selectAdded();
                                     }
                                 }
                                 ImGui::EndMenu();
@@ -260,6 +287,7 @@ namespace Gaudi
                                     {
                                         group.AddBehaviour( DigitalTwin::Behaviours::Drain{ f.GetName() } ).SetHz( 60 );
                                         m_engine.SetBlueprint( m_blueprint );
+                                        selectAdded();
                                     }
                                 }
                                 ImGui::EndMenu();
@@ -275,6 +303,8 @@ namespace Gaudi
                             copy.SetName( group.GetName() + "_Copy" );
                             groups.push_back( std::move( copy ) );
                             m_engine.SetBlueprint( m_blueprint );
+                            m_selection.ClearAll();
+                            m_selection.groupIndex = static_cast<int>( groups.size() ) - 1;
                         }
 
                         if( ImGui::MenuItem( "Rename" ) )
@@ -311,6 +341,40 @@ namespace Gaudi
                         ImGui::EndPopup();
                     }
 
+                    // Eye icon — right-aligned on the same row, after the group name.
+                    {
+                        bool        visible   = group.IsVisible();
+                        const char* icon      = visible ? ICON_FA_EYE : ICON_FA_EYE_SLASH;
+                        float       iconWidth = ImGui::CalcTextSize( icon ).x + ImGui::GetStyle().FramePadding.x * 2.0f;
+
+                        ImGui::SameLine( ImGui::GetContentRegionMax().x - iconWidth );
+
+                        ImGui::PushStyleColor( ImGuiCol_Button, ImVec4( 0, 0, 0, 0 ) );
+                        ImGui::PushStyleColor( ImGuiCol_ButtonHovered, ImVec4( 1, 1, 1, 0.1f ) );
+                        ImGui::PushStyleColor( ImGuiCol_ButtonActive, ImVec4( 1, 1, 1, 0.2f ) );
+                        if( !visible )
+                            ImGui::PushStyleColor( ImGuiCol_Text, ImGui::GetStyleColorVec4( ImGuiCol_TextDisabled ) );
+
+                        if( ImGui::SmallButton( icon ) )
+                        {
+                            group.SetVisible( !visible );
+                            m_engine.SetGroupVisible( i, !visible );
+                            groupClicked = false; // eye click must not also select the group
+                        }
+
+                        if( !visible )
+                            ImGui::PopStyleColor();
+                        ImGui::PopStyleColor( 3 );
+                    }
+
+                    if( groupClicked )
+                    {
+                        m_selection.simRootSelected = false;
+                        m_selection.groupIndex      = i;
+                        m_selection.behaviourIndex  = -1;
+                        m_selection.gridFieldIndex  = -1;
+                    }
+
                     if( open )
                     {
                         auto& behaviours = group.GetBehavioursMutable();
@@ -324,9 +388,10 @@ namespace Gaudi
 
                             if( ImGui::IsItemClicked() )
                             {
-                                m_selection.groupIndex     = i;
-                                m_selection.behaviourIndex = j;
-                                m_selection.gridFieldIndex = -1;
+                                m_selection.simRootSelected = false;
+                                m_selection.groupIndex      = i;
+                                m_selection.behaviourIndex  = j;
+                                m_selection.gridFieldIndex  = -1;
                             }
 
                             if( ImGui::BeginPopupContextItem( "##behaviourCtx" ) )
@@ -392,9 +457,10 @@ namespace Gaudi
 
                     if( ImGui::IsItemClicked() )
                     {
-                        m_selection.gridFieldIndex = i;
-                        m_selection.groupIndex     = -1;
-                        m_selection.behaviourIndex = -1;
+                        m_selection.simRootSelected = false;
+                        m_selection.gridFieldIndex  = i;
+                        m_selection.groupIndex      = -1;
+                        m_selection.behaviourIndex  = -1;
                     }
 
                     if( ImGui::BeginPopupContextItem( "##fieldCtx" ) )
@@ -410,6 +476,8 @@ namespace Gaudi
                                 .SetInitializer( field.GetInitializer() );
                             fields.push_back( std::move( copy ) );
                             m_engine.SetBlueprint( m_blueprint );
+                            m_selection.ClearAll();
+                            m_selection.gridFieldIndex = static_cast<int>( fields.size() ) - 1;
                         }
 
                         if( ImGui::MenuItem( "Rename" ) )
@@ -486,6 +554,8 @@ namespace Gaudi
                     case PendingOp::AddGroup:
                         m_blueprint.AddAgentGroup( name );
                         m_engine.SetBlueprint( m_blueprint );
+                        m_selection.ClearAll();
+                        m_selection.groupIndex = static_cast<int>( m_blueprint.GetGroups().size() ) - 1;
                         break;
 
                     case PendingOp::RenameGroup:
@@ -499,6 +569,8 @@ namespace Gaudi
                     case PendingOp::AddField:
                         m_blueprint.AddGridField( name );
                         m_engine.SetBlueprint( m_blueprint );
+                        m_selection.ClearAll();
+                        m_selection.gridFieldIndex = static_cast<int>( m_blueprint.GetGridFields().size() ) - 1;
                         break;
 
                     case PendingOp::RenameField:

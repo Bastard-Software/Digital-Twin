@@ -45,6 +45,9 @@ layout(std430, binding = 4) readonly buffer DrawMetaBuffer { DrawMeta meta[]; } 
 // Binding 5: Agent positions (check alive: w > 0)
 layout(std430, binding = 5) readonly buffer AgentBuffer { vec4 positions[]; } agents;
 
+// Binding 6: Per-group visibility flags (1 = visible, 0 = hidden)
+layout(std430, binding = 6) readonly buffer VisibilityBuffer { uint visible[]; } visibility;
+
 // pc.uParam0: 0 = RESET mode (one thread per draw command), 1 = CLASSIFY mode (one thread per agent)
 // pc.grpNdx:  total draw command count (RESET mode) or total draw command count (CLASSIFY mode)
 // pc.maxCapacity: total padded agent count (CLASSIFY mode only)
@@ -82,6 +85,9 @@ void main() {
         }
     }
     if (foundGroup == 0xFFFFFFFFu) return;
+
+    // Skip hidden groups — instanceCount stays 0 so nothing is drawn.
+    if (visibility.visible[foundGroup] == 0u) return;
 
     // Check against live count for this group
     if (localIdx >= counters.counts[foundGroup]) return;

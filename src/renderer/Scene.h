@@ -20,6 +20,7 @@ namespace DigitalTwin
         BufferHandle orientationBuffer; // per-agent outward normals for mesh rotation (may be invalid)
         BufferHandle agentReorderBuffer;
         BufferHandle drawMetaBuffer;
+        BufferHandle visibilityBuffer; // per-group uint32: 1=visible, 0=hidden (UPLOAD, CPU-writable)
         uint32_t     drawCount        = 0;
         uint32_t     totalPaddedAgents = 0;
         uint32_t     readIndex        = 0; // Which ping-pong buffer holds the latest valid agent positions

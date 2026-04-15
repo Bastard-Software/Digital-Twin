@@ -108,6 +108,7 @@ namespace DigitalTwin
         INDEX,
         INDIRECT,
         ATOMIC_COUNTER,
+        HOST_STORAGE, // CPU-writable SSBO: host-coherent + STORAGE_BUFFER_BIT
         _MAX_ENUM
     };
 

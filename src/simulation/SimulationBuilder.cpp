@@ -5,6 +5,8 @@
 #include "resources/ResourceManager.h"
 #include "resources/StreamingManager.h"
 #include "rhi/BindingGroup.h"
+#define NOMINMAX
+#include "rhi/Buffer.h"
 #include "simulation/SimulationBlueprint.h"
 #include "simulation/SimulationValidator.h"
 #include "simulation/Phenotype.h"
@@ -70,6 +72,8 @@ namespace DigitalTwin
             resourceManager->DestroyBuffer( agentReorderBuffer );
         if( drawMetaBuffer.IsValid() )
             resourceManager->DestroyBuffer( drawMetaBuffer );
+        if( visibilityBuffer.IsValid() )
+            resourceManager->DestroyBuffer( visibilityBuffer );
 
         for( auto& field: gridFields )
         {
@@ -104,6 +108,7 @@ namespace DigitalTwin
         vesselComponentBuffer  = {};
         agentReorderBuffer     = {};
         drawMetaBuffer         = {};
+        visibilityBuffer       = {};
     }
 
     SimulationState SimulationBuilder::Build( const SimulationBlueprint& blueprint )
@@ -346,6 +351,18 @@ namespace DigitalTwin
         // Draw meta buffer: per-draw-command metadata for build_indirect.comp
         outState.drawMetaBuffer = m_resourceManager->CreateBuffer(
             { drawMetaEntries.size() * sizeof( DrawMeta ), BufferType::STORAGE, "DrawMetaBuffer" } );
+
+        // Visibility buffer: one uint32 per group, 1=visible 0=hidden.
+        // UPLOAD so the CPU can write it every frame without a staging copy.
+        {
+            uint32_t numGroups = static_cast<uint32_t>( blueprint.GetGroups().size() );
+            outState.visibilityBuffer = m_resourceManager->CreateBuffer(
+                { numGroups * sizeof( uint32_t ), BufferType::HOST_STORAGE, "VisibilityBuffer" } );
+            // Initialize all groups visible.
+            std::vector<uint32_t> initVis( numGroups, 1u );
+            Buffer* vb = m_resourceManager->GetBuffer( outState.visibilityBuffer );
+            vb->Write( initVis.data(), initVis.size() * sizeof( uint32_t ), 0 );
+        }
 
         // 5. Upload Data to VRAM synchronously
         std::vector<BufferUploadRequest> uploads;

@@ -3,6 +3,7 @@
 #include <DigitalTwin.h>
 #include <imgui.h>
 #include <simulation/Behaviours.h>
+#include "../IconsFontAwesome5.h"
 
 namespace Gaudi
 {
@@ -134,14 +135,43 @@ namespace Gaudi
                 {
                     auto& group = groups[ i ];
 
-                    ImGuiTreeNodeFlags groupFlags = ImGuiTreeNodeFlags_OpenOnArrow | ImGuiTreeNodeFlags_SpanAvailWidth | ImGuiTreeNodeFlags_DefaultOpen;
+                    ImGuiTreeNodeFlags groupFlags = ImGuiTreeNodeFlags_OpenOnArrow | ImGuiTreeNodeFlags_DefaultOpen;
                     if( m_selection.groupIndex == i && m_selection.behaviourIndex == -1 )
                         groupFlags |= ImGuiTreeNodeFlags_Selected;
 
                     ImGui::PushID( i );
                     bool open = ImGui::TreeNodeEx( "##group", groupFlags, "%s", group.GetName().c_str() );
 
-                    if( ImGui::IsItemClicked() && !ImGui::IsItemToggledOpen() )
+                    // Capture tree node click BEFORE the eye button changes the last item.
+                    bool groupClicked = ImGui::IsItemClicked() && !ImGui::IsItemToggledOpen();
+
+                    // Eye icon — right-aligned on the same row, after the group name.
+                    {
+                        bool        visible   = group.IsVisible();
+                        const char* icon      = visible ? ICON_FA_EYE : ICON_FA_EYE_SLASH;
+                        float       iconWidth = ImGui::CalcTextSize( icon ).x + ImGui::GetStyle().FramePadding.x * 2.0f;
+
+                        ImGui::SameLine( ImGui::GetContentRegionMax().x - iconWidth );
+
+                        ImGui::PushStyleColor( ImGuiCol_Button, ImVec4( 0, 0, 0, 0 ) );
+                        ImGui::PushStyleColor( ImGuiCol_ButtonHovered, ImVec4( 1, 1, 1, 0.1f ) );
+                        ImGui::PushStyleColor( ImGuiCol_ButtonActive, ImVec4( 1, 1, 1, 0.2f ) );
+                        if( !visible )
+                            ImGui::PushStyleColor( ImGuiCol_Text, ImGui::GetStyleColorVec4( ImGuiCol_TextDisabled ) );
+
+                        if( ImGui::SmallButton( icon ) )
+                        {
+                            group.SetVisible( !visible );
+                            m_engine.SetGroupVisible( i, !visible );
+                            groupClicked = false; // eye click must not also select the group
+                        }
+
+                        if( !visible )
+                            ImGui::PopStyleColor();
+                        ImGui::PopStyleColor( 3 );
+                    }
+
+                    if( groupClicked )
                     {
                         m_selection.groupIndex     = i;
                         m_selection.behaviourIndex = -1;

@@ -70,6 +70,11 @@ namespace DigitalTwin
             m_initialCellType = cellType;
             return *this;
         }
+        AgentGroup& SetVisible( bool visible )
+        {
+            m_visible = visible;
+            return *this;
+        }
 
         template<typename T>
         BehaviourRecord& AddBehaviour( T behaviour )
@@ -97,6 +102,7 @@ namespace DigitalTwin
         const std::vector<glm::vec4>&        GetOrientations() const { return m_orientations; }
         const glm::vec4&                     GetColor() const { return m_color; }
         int                                  GetInitialCellType() const { return m_initialCellType; }
+        bool                                 IsVisible() const { return m_visible; }
         const std::vector<BehaviourRecord>&  GetBehaviours() const { return m_behaviours; }
         std::vector<BehaviourRecord>&        GetBehavioursMutable() { return m_behaviours; }
         const std::vector<MorphologyEntry>&  GetCellTypeMorphologies() const { return m_cellTypeMorphologies; }
@@ -109,6 +115,7 @@ namespace DigitalTwin
         std::vector<glm::vec4>        m_orientations; // per-cell normals (empty = use default +Y)
         glm::vec4                     m_color = glm::vec4( 1.0f );
         int                           m_initialCellType = 0;
+        bool                          m_visible         = true;
         std::vector<BehaviourRecord>  m_behaviours;
         std::vector<MorphologyEntry>  m_cellTypeMorphologies;
     };

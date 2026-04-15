@@ -78,6 +78,7 @@ namespace DigitalTwin
         // Multi-mesh rendering — per-cellType draw commands
         BufferHandle agentReorderBuffer;  // uint32_t per reorder slot: maps instance → agent index
         BufferHandle drawMetaBuffer;      // DrawMeta per draw command: {groupIndex, targetCellType, groupOffset, groupCapacity}
+        BufferHandle visibilityBuffer;    // uint32_t per group: 1=visible, 0=hidden (UPLOAD, CPU-writable)
         uint32_t     drawCommandCount = 0;
         uint32_t     totalPaddedAgents = 0;
 

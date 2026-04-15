@@ -59,6 +59,9 @@ namespace DigitalTwin
         void*                            GetImGuiTextureID( TextureHandle handle );
         void*                            GetImGuiContext();
 
+        // --- Group Visibility ---
+        void SetGroupVisible( int groupIndex, bool visible );
+
         // --- Camera API ---
         // Relative (interactive editor input from mouse deltas):
         void OrbitCamera( float pixelDX, float pixelDY );

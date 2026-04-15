@@ -930,6 +930,22 @@ namespace DigitalTwin
             SimulationBuilder builder( m_impl->m_resourceManager.get(), m_impl->m_streamingManager.get() );
             m_impl->m_simulationState = builder.Build( m_impl->m_blueprint );
 
+            // Re-apply visibility flags from blueprint (groups default visible=true in the buffer,
+            // but blueprint may have been configured otherwise).
+            if( m_impl->m_simulationState.visibilityBuffer.IsValid() )
+            {
+                const auto& groups = m_impl->m_blueprint.GetGroups();
+                for( int i = 0; i < static_cast<int>( groups.size() ); ++i )
+                {
+                    if( !groups[ i ].IsVisible() )
+                    {
+                        uint32_t flag = 0u;
+                        Buffer* buf = m_impl->m_resourceManager->GetBuffer( m_impl->m_simulationState.visibilityBuffer );
+                        buf->Write( &flag, sizeof( uint32_t ), static_cast<size_t>( i ) * sizeof( uint32_t ) );
+                    }
+                }
+            }
+
             // Frame the whole domain on build so large simulations aren't invisible.
             if( m_impl->m_camera )
             {
@@ -1046,6 +1062,19 @@ namespace DigitalTwin
 
     void DigitalTwin::SetShowStatsOverlay( bool show ) { m_impl->m_showStatsOverlay = show; }
     bool DigitalTwin::IsShowingStatsOverlay() const { return m_impl->m_showStatsOverlay; }
+
+    // --- Group Visibility ---------------------------------------------------
+    void DigitalTwin::SetGroupVisible( int groupIndex, bool visible )
+    {
+        if( !m_impl->m_simulationState.visibilityBuffer.IsValid() )
+            return;
+        if( groupIndex < 0 || static_cast<uint32_t>( groupIndex ) >= m_impl->m_simulationState.groupCount )
+            return;
+
+        uint32_t flag = visible ? 1u : 0u;
+        Buffer* buf = m_impl->m_resourceManager->GetBuffer( m_impl->m_simulationState.visibilityBuffer );
+        buf->Write( &flag, sizeof( uint32_t ), static_cast<size_t>( groupIndex ) * sizeof( uint32_t ) );
+    }
 
     // --- Camera API ---------------------------------------------------------
     void DigitalTwin::OrbitCamera( float dx, float dy )

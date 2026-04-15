@@ -275,20 +275,27 @@ namespace Gaudi
         ImGui::Spacing();
         ImGui::SeparatorText( "Visualization" );
 
-        DigitalTwin::GridVisualizationSettings vis = m_engine.GetGridVisualization();
+        // Grow the cache to cover the current number of fields.
+        const int numFields = static_cast<int>( m_blueprint.GetGridFields().size() );
+        if( static_cast<int>( m_fieldVisCache.size() ) < numFields )
+            m_fieldVisCache.resize( numFields );
+
+        DigitalTwin::GridFieldVisualization&   fieldVis = m_fieldVisCache[ fieldIndex ];
+        DigitalTwin::GridVisualizationSettings vis      = m_engine.GetGridVisualization();
         bool isActive = vis.active && ( vis.fieldIndex == fieldIndex );
 
         if( ImGui::Checkbox( "Show this field", &isActive ) )
         {
             vis.active     = isActive;
             vis.fieldIndex = fieldIndex;
+            vis.fieldVis   = fieldVis;
             m_engine.SetGridVisualization( vis );
         }
 
         if( isActive )
         {
-            // Sync fieldIndex in case we just turned it on
             vis.fieldIndex = fieldIndex;
+            vis.fieldVis   = fieldVis;
 
             int mode = static_cast<int>( vis.mode );
             ImGui::RadioButton( "2D Slice", &mode, static_cast<int>( DigitalTwin::GridVisualizationMode::SLICE_2D ) );
@@ -306,11 +313,85 @@ namespace Gaudi
                 ImGui::SliderFloat( "Opacity", &vis.opacityCloud, 0.0f, 0.2f, "%.4f" );
             }
 
-            ImGui::SliderFloat( "Normalization", &vis.normalizationScale, 0.1f, 1000.0f, "%.1f", ImGuiSliderFlags_Logarithmic );
-            ImGui::SetItemTooltip( "Divide concentration by this to map to [0,1]. Lower = more sensitive." );
+            ImGui::Spacing();
+            ImGui::SeparatorText( "Colormap" );
 
-            ImGui::ColorEdit4( "Color", &vis.colorMap.x );
+            ImGui::DragFloat( "Min", &fieldVis.minValue, 1.0f );
+            ImGui::DragFloat( "Max", &fieldVis.maxValue, 1.0f );
+            if( fieldVis.maxValue <= fieldVis.minValue )
+                fieldVis.maxValue = fieldVis.minValue + 1.0f;
 
+            ImGui::SliderFloat( "Alpha Cutoff", &fieldVis.alphaCutoff, 0.0f, 0.5f, "%.3f" );
+            ImGui::SetItemTooltip( "Normalized values below this are fully transparent." );
+
+            ImGui::SliderFloat( "Gamma", &fieldVis.gamma, 0.1f, 3.0f, "%.2f" );
+            ImGui::SetItemTooltip( "< 1: lifts weak gradients into view\n> 1: focuses colour on concentration peaks" );
+
+            static const char* colormapNames[] = { "JET", "OXYGEN", "HOT", "PLASMA", "VEGF", "CUSTOM" };
+            int cmIdx = static_cast<int>( fieldVis.colormap );
+            if( ImGui::Combo( "Colormap", &cmIdx, colormapNames, 6 ) )
+                fieldVis.colormap = static_cast<DigitalTwin::Colormap>( cmIdx );
+
+            if( fieldVis.colormap == DigitalTwin::Colormap::CUSTOM )
+            {
+                ImGui::ColorEdit3( "Low  (t=0.0)", &fieldVis.customLow.x );
+                ImGui::ColorEdit3( "Mid  (t=0.5)", &fieldVis.customMid.x );
+                ImGui::ColorEdit3( "High (t=1.0)", &fieldVis.customHigh.x );
+            }
+
+            // Gradient preview strip — samples the same math as the shader
+            {
+                auto sampleColormap = [ & ]( float t ) -> glm::vec3 {
+                    // Apply gamma before sampling (matches shader behaviour)
+                    float tg = glm::pow( t, glm::max( fieldVis.gamma, 0.01f ) );
+                    auto threeStop = [ ]( glm::vec3 a, glm::vec3 b, glm::vec3 c, float s ) -> glm::vec3 {
+                        return ( s < 0.5f ) ? glm::mix( a, b, s * 2.0f ) : glm::mix( b, c, ( s - 0.5f ) * 2.0f );
+                    };
+                    auto fourStop = [ ]( glm::vec3 c0, glm::vec3 c1, glm::vec3 c2, glm::vec3 c3, float s ) -> glm::vec3 {
+                        if( s < 0.333f )      return glm::mix( c0, c1, s / 0.333f );
+                        else if( s < 0.667f ) return glm::mix( c1, c2, ( s - 0.333f ) / 0.334f );
+                        else                  return glm::mix( c2, c3, ( s - 0.667f ) / 0.333f );
+                    };
+                    switch( fieldVis.colormap )
+                    {
+                        case DigitalTwin::Colormap::OXYGEN:
+                            return fourStop( { 0.0f, 0.0f, 0.4f }, { 0.0f, 0.8f, 0.8f }, { 0.9f, 0.9f, 0.0f }, { 0.8f, 0.0f, 0.0f }, tg );
+                        case DigitalTwin::Colormap::HOT:
+                            return fourStop( { 0.0f, 0.0f, 0.0f }, { 1.0f, 0.0f, 0.0f }, { 1.0f, 1.0f, 0.0f }, { 1.0f, 1.0f, 1.0f }, tg );
+                        case DigitalTwin::Colormap::PLASMA:
+                            return fourStop( { 0.05f, 0.03f, 0.53f }, { 0.49f, 0.01f, 0.66f }, { 0.88f, 0.31f, 0.30f }, { 0.99f, 0.91f, 0.14f }, tg );
+                        case DigitalTwin::Colormap::VEGF:
+                            return fourStop( { 0.05f, 0.0f, 0.1f }, { 0.8f, 0.8f, 0.0f }, { 0.9f, 0.4f, 0.0f }, { 0.9f, 0.0f, 0.7f }, tg );
+                        case DigitalTwin::Colormap::CUSTOM:
+                            return threeStop( fieldVis.customLow, fieldVis.customMid, fieldVis.customHigh, tg );
+                        default: // JET
+                        {
+                            float r = glm::clamp( 1.5f - glm::abs( 4.0f * tg - 3.0f ), 0.0f, 1.0f );
+                            float g = glm::clamp( 1.5f - glm::abs( 4.0f * tg - 2.0f ), 0.0f, 1.0f );
+                            float b = glm::clamp( 1.5f - glm::abs( 4.0f * tg - 1.0f ), 0.0f, 1.0f );
+                            return { r, g, b };
+                        }
+                    }
+                };
+
+                ImDrawList* dl    = ImGui::GetWindowDrawList();
+                ImVec2      pos   = ImGui::GetCursorScreenPos();
+                float       width = ImGui::GetContentRegionAvail().x;
+                const float h     = 12.0f;
+                const int   N     = 64;
+                for( int k = 0; k < N; ++k )
+                {
+                    float     t   = static_cast<float>( k ) / static_cast<float>( N - 1 );
+                    glm::vec3 c   = sampleColormap( t );
+                    ImU32     col = IM_COL32( static_cast<int>( c.r * 255 ), static_cast<int>( c.g * 255 ), static_cast<int>( c.b * 255 ), 255 );
+                    float     x0  = pos.x + ( static_cast<float>( k ) / N ) * width;
+                    float     x1  = pos.x + ( static_cast<float>( k + 1 ) / N ) * width;
+                    dl->AddRectFilled( ImVec2( x0, pos.y ), ImVec2( x1, pos.y + h ), col );
+                }
+                ImGui::Dummy( ImVec2( width, h ) );
+            }
+
+            vis.fieldVis = fieldVis;
             m_engine.SetGridVisualization( vis );
         }
     }

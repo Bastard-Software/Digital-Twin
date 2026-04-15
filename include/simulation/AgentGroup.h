@@ -9,6 +9,44 @@
 
 namespace DigitalTwin
 {
+    // ── Distribution spec ────────────────────────────────────────────────────
+    // Editor-visible, round-trippable description of an agent spatial distribution.
+    // Kept alongside the compiled position list so the UI can display/edit the choice.
+
+    enum class DistributionType
+    {
+        Point,             // no auto-generation; uses raw SetDistribution() positions
+        UniformInSphere,
+        UniformInBox,
+        UniformInCylinder,
+    };
+
+    struct DistributionSpec
+    {
+        DistributionType type       = DistributionType::UniformInSphere;
+        glm::vec3        center     = { 0.0f, 0.0f, 0.0f };
+        float            radius     = 50.0f;                    // Sphere / Cylinder outer radius
+        glm::vec3        halfExtents = { 50.0f, 50.0f, 50.0f }; // Box
+        float            halfLength = 50.0f;                    // Cylinder
+        glm::vec3        axis       = { 0.0f, 1.0f, 0.0f };    // Cylinder
+        uint32_t         seed       = 42;
+    };
+
+    // ── Morphology preset spec ────────────────────────────────────────────────
+    // Editor-visible shorthand for agent shape. More presets (Cylinder, Disc, Ellipsoid)
+    // can be added later without changing the UI structure.
+
+    enum class MorphologyPreset
+    {
+        Sphere,
+    };
+
+    struct MorphologyPresetSpec
+    {
+        MorphologyPreset preset = MorphologyPreset::Sphere;
+        float            radius = 0.5f;
+    };
+
     /**
      * @brief Associates a mesh with a specific cell type index for multi-mesh rendering.
      */
@@ -50,6 +88,16 @@ namespace DigitalTwin
         AgentGroup& SetDistribution( const std::vector<glm::vec4>& positions )
         {
             m_positions = positions;
+            return *this;
+        }
+        AgentGroup& SetDistributionSpec( const DistributionSpec& spec )
+        {
+            m_distSpec = spec;
+            return *this;
+        }
+        AgentGroup& SetMorphologyPreset( const MorphologyPresetSpec& spec )
+        {
+            m_morphSpec = spec;
             return *this;
         }
         // Per-cell outward orientation normal (xyz=normal, w=0). When provided, the renderer
@@ -106,6 +154,8 @@ namespace DigitalTwin
         const std::vector<BehaviourRecord>&  GetBehaviours() const { return m_behaviours; }
         std::vector<BehaviourRecord>&        GetBehavioursMutable() { return m_behaviours; }
         const std::vector<MorphologyEntry>&  GetCellTypeMorphologies() const { return m_cellTypeMorphologies; }
+        const DistributionSpec&              GetDistributionSpec() const { return m_distSpec; }
+        const MorphologyPresetSpec&          GetMorphologyPresetSpec() const { return m_morphSpec; }
 
     private:
         std::string                   m_name;
@@ -118,5 +168,7 @@ namespace DigitalTwin
         bool                          m_visible         = true;
         std::vector<BehaviourRecord>  m_behaviours;
         std::vector<MorphologyEntry>  m_cellTypeMorphologies;
+        DistributionSpec              m_distSpec;
+        MorphologyPresetSpec          m_morphSpec;
     };
 } // namespace DigitalTwin

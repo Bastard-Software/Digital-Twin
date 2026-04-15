@@ -21,6 +21,7 @@ namespace Gaudi
         void OnUIRender() override;
 
     private:
+        void RenderSimulationInspector();
         void RenderGroupInspector( DigitalTwin::AgentGroup& group );
         void RenderBehaviourInspector( DigitalTwin::BehaviourRecord& record );
         void RenderGridFieldInspector( DigitalTwin::GridField& field, int fieldIndex );

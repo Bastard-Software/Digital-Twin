@@ -82,7 +82,7 @@ namespace DigitalTwin
         float    m_currentFps = 0.0f;
         float    m_totalTime  = 0.0f;
 
-        bool m_showStatsOverlay = true;
+        bool m_showStatsOverlay = false;
 
         Impl()
             : m_initialized( false )

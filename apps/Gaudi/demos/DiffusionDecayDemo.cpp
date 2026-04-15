@@ -28,8 +28,8 @@ namespace Gaudi::Demos
         };
         blueprint.AddGridField( "Substance" )
             .SetInitializer( DigitalTwin::GridInitializer::MultiGaussian( sources, 1.5f, 100.0f ) )
-            .SetDiffusionCoefficient( 3.0f )
-            .SetDecayRate( 0.5f )
+            .SetDiffusionCoefficient( 8.0f )
+            .SetDecayRate( 1.5f )
             .SetComputeHz( 60.0f );
     }
 } // namespace Gaudi::Demos

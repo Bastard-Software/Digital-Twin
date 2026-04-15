@@ -4,6 +4,7 @@
 #include "panels/EditorPanel.h"
 #include <DigitalTwin.h>
 #include <memory>
+#include <optional>
 #include <spdlog/sinks/ringbuffer_sink.h>
 #include <string>
 #include <vector>
@@ -35,7 +36,8 @@ namespace Gaudi
         void RenderDemoBrowser();
 
     private:
-        void LoadDemo( DemoSetupFn fn );
+        void LoadDemo( DemoSetupFn fn,
+                       const std::optional<DigitalTwin::GridVisualizationSettings>& vizPreset = std::nullopt );
 
     private:
         DigitalTwin::DigitalTwin                  m_engine;

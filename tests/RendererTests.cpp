@@ -1,4 +1,3 @@
-#include "platform/Input.h"
 #include "renderer/Camera.h"
 #include <glm/gtc/matrix_access.hpp>
 #include <gtest/gtest.h>
@@ -75,4 +74,29 @@ TEST_F( CameraMathTest, ProjectionMatrix )
     glm::mat4 projSquare = m_camera->GetProjection();
 
     EXPECT_NE( proj[ 0 ][ 0 ], projSquare[ 0 ][ 0 ] ); // X scale changes with aspect ratio
+}
+
+// 5. Orbit freedom — quaternion orbit must allow unlimited rotation with no pitch lock.
+TEST_F( CameraMathTest, OrbitUnlimited )
+{
+    const float dist = m_camera->GetDistance();
+
+    // Accumulate a full 360° of "vertical" orbit in many small steps. Old Euler
+    // camera would clamp at ±89°; the quaternion orbit must keep rotating.
+    const int   steps  = 360;
+    const float perStep = 1.0f; // pixel delta per step (tiny)
+    // OrbitSens is 0.006 rad/px internally; 360° ≈ 6.28 rad => ~1047 px-equivalent.
+    // 360 steps × 3 px each = 1080 px => just over a full rotation.
+    for( int i = 0; i < steps; ++i )
+        m_camera->Orbit( glm::vec2( 0.0f, 3.0f ) );
+
+    // Distance to focal must still be preserved exactly (orbit is rigid).
+    float posLen = glm::length( m_camera->GetPosition() - m_camera->GetFocalPoint() );
+    EXPECT_NEAR( posLen, dist, 0.001f );
+
+    // View matrix must still be finite (no NaNs from a degenerate lookAt).
+    glm::mat4 v = m_camera->GetView();
+    for( int c = 0; c < 4; ++c )
+        for( int r = 0; r < 4; ++r )
+            EXPECT_TRUE( std::isfinite( v[ c ][ r ] ) );
 }

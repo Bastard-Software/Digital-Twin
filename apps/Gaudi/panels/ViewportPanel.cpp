@@ -34,9 +34,38 @@ namespace Gaudi
             if( texID )
             {
                 ImGui::Image( texID, size );
+
+                // Only forward mouse input to the camera when the viewport image
+                // is the hovered widget. This is how the editor routes scroll/MMB
+                // to the camera without conflicting with other panels.
+                const bool hovered = ImGui::IsItemHovered();
+                if( hovered )
+                    DriveCamera();
             }
         }
         ImGui::End();
         ImGui::PopStyleVar();
+    }
+
+    void ViewportPanel::DriveCamera()
+    {
+        ImGuiIO& io = ImGui::GetIO();
+
+        // Scroll → zoom.
+        if( io.MouseWheel != 0.0f )
+            m_engine.ZoomCamera( io.MouseWheel );
+
+        // Middle-mouse drag → orbit (or pan with Shift).
+        if( ImGui::IsMouseDragging( ImGuiMouseButton_Middle, 0.0f ) )
+        {
+            const ImVec2 d = io.MouseDelta;
+            if( d.x != 0.0f || d.y != 0.0f )
+            {
+                if( io.KeyShift )
+                    m_engine.PanCamera( d.x, d.y );
+                else
+                    m_engine.OrbitCamera( d.x, d.y );
+            }
+        }
     }
 } // namespace Gaudi

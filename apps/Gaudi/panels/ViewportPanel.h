@@ -17,6 +17,8 @@ namespace Gaudi
         void OnUIRender() override;
 
     private:
+        void DriveCamera();
+
         DigitalTwin::DigitalTwin& m_engine;
     };
 } // namespace Gaudi

@@ -4,6 +4,7 @@
 #include "core/Handle.h"
 #include "platform/Window.h"
 #include <glm/glm.hpp>
+#include <glm/gtc/quaternion.hpp>
 
 namespace DigitalTwin
 {
@@ -80,6 +81,15 @@ namespace DigitalTwin
     {
         bool      active    = false;
         glm::vec4 lineColor = glm::vec4( 1.0f, 0.85f, 0.0f, 1.0f ); // Gold
+    };
+
+    struct CameraState
+    {
+        glm::vec3 position;
+        glm::vec3 focalPoint;
+        glm::quat orientation;
+        float     distance;
+        float     fov;
     };
 
 } // namespace DigitalTwin

@@ -380,8 +380,7 @@ namespace DigitalTwin
                     return Result::FAIL;
                 }
 
-                // Temp code - set up a basic camera for testing. This will be replaced with a more robust system later.
-                m_camera = CreateScope<Camera>( 45.0f, 800.0f / 600.0f, 0.1f, 1000.0f );
+                m_camera = CreateScope<Camera>( 45.0f, 800.0f / 600.0f, 0.5f, 50000.0f );
                 m_camera->SetFocalPoint( { 0.0f, 0.0f, 0.0f } );
                 m_camera->SetDistance( 250.0f );
 
@@ -511,10 +510,8 @@ namespace DigitalTwin
                 m_fpsTimer -= 1.0f;
             }
 
-            if( m_camera )
-            {
-                m_camera->OnUpdate( dt, m_platformSystem->GetInput() );
-            }
+            // Camera is driven by the editor (ViewportPanel) or scripted API —
+            // no input polling here.
 
             // 2. Check for Resize
             if( m_window && m_window->WasResized() )
@@ -933,6 +930,15 @@ namespace DigitalTwin
             SimulationBuilder builder( m_impl->m_resourceManager.get(), m_impl->m_streamingManager.get() );
             m_impl->m_simulationState = builder.Build( m_impl->m_blueprint );
 
+            // Frame the whole domain on build so large simulations aren't invisible.
+            if( m_impl->m_camera )
+            {
+                const glm::vec3& dom  = m_impl->m_blueprint.GetDomainSize();
+                float            r    = glm::length( dom ) * 0.8f;
+                float            dist = ( r > 10.0f ) ? r : 10.0f;
+                m_impl->m_camera->FocusOn( glm::vec3( 0.0f ), dist );
+            }
+
             m_impl->m_state = EngineState::PLAYING;
             DT_INFO( "Simulation State: PLAYING (Allocated)" );
         }
@@ -1040,6 +1046,67 @@ namespace DigitalTwin
 
     void DigitalTwin::SetShowStatsOverlay( bool show ) { m_impl->m_showStatsOverlay = show; }
     bool DigitalTwin::IsShowingStatsOverlay() const { return m_impl->m_showStatsOverlay; }
+
+    // --- Camera API ---------------------------------------------------------
+    void DigitalTwin::OrbitCamera( float dx, float dy )
+    {
+        if( m_impl->m_camera )
+            m_impl->m_camera->Orbit( glm::vec2( dx, dy ) );
+    }
+
+    void DigitalTwin::PanCamera( float dx, float dy )
+    {
+        if( m_impl->m_camera )
+            m_impl->m_camera->Pan( glm::vec2( dx, dy ) );
+    }
+
+    void DigitalTwin::ZoomCamera( float scroll )
+    {
+        if( m_impl->m_camera )
+            m_impl->m_camera->Zoom( scroll );
+    }
+
+    void DigitalTwin::SetCameraFocus( const glm::vec3& point )
+    {
+        if( m_impl->m_camera )
+            m_impl->m_camera->SetFocalPoint( point );
+    }
+
+    void DigitalTwin::SetCameraDistance( float distance )
+    {
+        if( m_impl->m_camera )
+            m_impl->m_camera->SetDistance( distance );
+    }
+
+    void DigitalTwin::SetCameraOrientation( const glm::quat& orientation )
+    {
+        if( m_impl->m_camera )
+            m_impl->m_camera->SetOrientation( orientation );
+    }
+
+    void DigitalTwin::FocusCameraOnDomain()
+    {
+        if( !m_impl->m_camera )
+            return;
+        const glm::vec3& dom  = m_impl->m_blueprint.GetDomainSize();
+        float            r    = glm::length( dom ) * 0.8f;
+        float            dist = ( r > 10.0f ) ? r : 10.0f;
+        m_impl->m_camera->FocusOn( glm::vec3( 0.0f ), dist );
+    }
+
+    CameraState DigitalTwin::GetCameraState() const
+    {
+        CameraState s{};
+        if( m_impl->m_camera )
+        {
+            s.position    = m_impl->m_camera->GetPosition();
+            s.focalPoint  = m_impl->m_camera->GetFocalPoint();
+            s.orientation = m_impl->m_camera->GetOrientation();
+            s.distance    = m_impl->m_camera->GetDistance();
+            s.fov         = m_impl->m_camera->GetFov();
+        }
+        return s;
+    }
 
     void DigitalTwin::RenderUI( std::function<void()> uiCallback )
     {

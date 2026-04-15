@@ -79,6 +79,7 @@ namespace DigitalTwin
     struct GPUProfileData
     {
         float    timeMs                    = 0.0f;
+        float    timeMsSmoothed            = 0.0f; // exponential moving average (alpha=0.1)
         uint64_t vertexShaderInvocations   = 0;
         uint64_t clippingInvocations       = 0;
         uint64_t fragmentShaderInvocations = 0;

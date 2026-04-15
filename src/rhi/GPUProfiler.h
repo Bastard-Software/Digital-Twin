@@ -24,13 +24,25 @@ namespace DigitalTwin
         void   Shutdown();
 
         /**
-         * @brief Must be called at the start of rendering/compute for this flight index.
-         * Fetches results from the previous frame and resets the pools.
+         * @brief Reads results from the previous frame's query pools (host-side, no command buffer needed).
+         * Call once per frame after the CPU-GPU synchronization wait.
          */
-        void BeginFrame( CommandBuffer* cmd, uint32_t flightIndex );
+        void CollectResults( uint32_t flightIndex );
 
-        void BeginZone( CommandBuffer* cmd, uint32_t flightIndex, const std::string& name );
-        void EndZone( CommandBuffer* cmd, uint32_t flightIndex, const std::string& name );
+        /**
+         * @brief Records query pool resets into the given command buffer.
+         * Must be called on a command buffer that executes before any profiling zones this frame.
+         * No-op when profiling is disabled.
+         */
+        void ResetQueries( CommandBuffer* cmd, uint32_t flightIndex );
+
+        // recordStats=false skips pipeline statistics queries (required for compute-only command buffers,
+        // which cannot use stats pools that include graphics-only statistic bits).
+        void BeginZone( CommandBuffer* cmd, uint32_t flightIndex, const std::string& name, bool recordStats = true );
+        void EndZone( CommandBuffer* cmd, uint32_t flightIndex, const std::string& name, bool recordStats = true );
+
+        void SetEnabled( bool e ) { m_enabled = e; }
+        bool IsEnabled() const { return m_enabled; }
 
         const std::unordered_map<std::string, GPUProfileData>& GetResults() const { return m_results; }
 
@@ -51,5 +63,6 @@ namespace DigitalTwin
 
         uint32_t m_currentZoneCount            = 0;
         bool     m_hasData[ FRAMES_IN_FLIGHT ] = { false, false };
+        bool     m_enabled                     = true;
     };
 } // namespace DigitalTwin

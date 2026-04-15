@@ -480,8 +480,10 @@ namespace DigitalTwin
         // --- TASK A: HASH AGENTS ---
         ComputePushConstants hashPC = basePC;
         hashPC.fParam0              = cellSize;
-        glm::uvec3 hashDispatch( ( paddedCount + 255 ) / 256, 1, 1 );
-        outState.computeGraph.AddTask( ComputeTask( hashPipe, bgHash0, bgHash1, computeHz, hashPC, hashDispatch ) );
+        glm::uvec3  hashDispatch( ( paddedCount + 255 ) / 256, 1, 1 );
+        ComputeTask hashTask( hashPipe, bgHash0, bgHash1, computeHz, hashPC, hashDispatch );
+        hashTask.SetPhaseName( "Spatial Grid" );
+        outState.computeGraph.AddTask( hashTask );
 
         // --- TASK B: BITONIC SORT (The Magic GPU Loop) ---
         glm::uvec3 sortDispatch( ( paddedCount + 255 ) / 256, 1, 1 );
@@ -493,15 +495,19 @@ namespace DigitalTwin
                 sortPC.maxCapacity          = paddedCount; // Sort operates on the padded size
                 sortPC.uParam0              = j;
                 sortPC.uParam1              = k;
-                outState.computeGraph.AddTask( ComputeTask( sortPipe, bgSort, bgSort, computeHz, sortPC, sortDispatch ) );
+                ComputeTask sortTask( sortPipe, bgSort, bgSort, computeHz, sortPC, sortDispatch );
+                sortTask.SetPhaseName( "Spatial Grid" );
+                outState.computeGraph.AddTask( sortTask );
             }
         }
 
         // --- TASK C: BUILD OFFSETS ---
         ComputePushConstants offsetPC = basePC;
         offsetPC.maxCapacity          = paddedCount;
-        glm::uvec3 offsetDispatch( ( paddedCount + 255 ) / 256, 1, 1 );
-        outState.computeGraph.AddTask( ComputeTask( offsetPipe, bgOffset, bgOffset, computeHz, offsetPC, offsetDispatch ) );
+        glm::uvec3  offsetDispatch( ( paddedCount + 255 ) / 256, 1, 1 );
+        ComputeTask offsetTask( offsetPipe, bgOffset, bgOffset, computeHz, offsetPC, offsetDispatch );
+        offsetTask.SetPhaseName( "Spatial Grid" );
+        outState.computeGraph.AddTask( offsetTask );
 
         DT_INFO( "[SimulationBuilder] Compiled Global Spatial Grid. Total Agents: {}, Frequency: {}Hz", paddedCount, computeHz );
     }
@@ -625,6 +631,7 @@ namespace DigitalTwin
             glm::uvec3  dispatchSize( ( gridWidth + 7 ) / 8, ( gridHeight + 7 ) / 8, ( gridDepth + 7 ) / 8 );
             ComputeTask diffTask( pipe, bg0, bg1, fieldDef.GetComputeHz(), pc, dispatchSize );
             diffTask.SetTag( "diffusion_" + std::to_string( fieldIndex ) );
+            diffTask.SetPhaseName( "Diffusion" );
             outState.computeGraph.AddTask( diffTask );
             DT_INFO( "SimulationBuilder: Compiled PDE task for '{}' at {}Hz", fieldDef.GetName(), fieldDef.GetComputeHz() );
             fieldIndex++;
@@ -884,6 +891,7 @@ namespace DigitalTwin
                         glm::uvec3  dispatch( ( grpPaddedCount + 255 ) / 256, 1, 1 );
                         ComputeTask polTask( polarityPipe, bg0, bg1, record.targetHz, polPC, dispatch );
                         polTask.SetTag( tag );
+                        polTask.SetPhaseName( "Polarity Pre-pass" );
                         // No ChainFlip — writes to polarityBuffer, not agent positions
                         outState.computeGraph.AddTask( polTask );
 
@@ -903,6 +911,8 @@ namespace DigitalTwin
         {
             if( group.GetCount() == 0 )
                 continue;
+
+            const std::string groupPhase = "Behaviours: " + group.GetName();
 
             behaviourIndex = 0;
             for( const auto& record: group.GetBehaviours() )
@@ -976,6 +986,7 @@ namespace DigitalTwin
                     glm::uvec3 agentDispatch( ( paddedCount + 255 ) / 256, 1, 1 );
                     ComputeTask brownianTask( pipe, bg0, bg1, record.targetHz, pc, agentDispatch );
                     brownianTask.SetTag( "brownian" + tagBase );
+                    brownianTask.SetPhaseName( groupPhase );
                     brownianTask.SetChainFlip( true );
                     outState.computeGraph.AddTask( brownianTask );
                     DT_INFO( "SimulationBuilder: Compiled BrownianMotion for group '{}' at {}Hz", group.GetName(), record.targetHz );
@@ -1098,6 +1109,7 @@ namespace DigitalTwin
 
                     ComputeTask jkrTask( jkrPipe, bgJkr0, bgJkr1, record.targetHz, jkrPC, jkrDispatch );
                     jkrTask.SetTag( "jkr" + tagBase );
+                    jkrTask.SetPhaseName( groupPhase );
                     jkrTask.SetChainFlip( true );
                     outState.computeGraph.AddTask( jkrTask );
 
@@ -1163,6 +1175,7 @@ namespace DigitalTwin
                     glm::uvec3 dispatch( ( paddedCount + 255 ) / 256, 1, 1 );
                     ComputeTask cadTask( pipe, bg0, bg1, record.targetHz, cadPC, dispatch );
                     cadTask.SetTag( "cadherin_expr" + tagBase );
+                    cadTask.SetPhaseName( groupPhase );
                     // No ChainFlip: this shader writes to cadherinProfileBuffer, not agent positions.
                     outState.computeGraph.AddTask( cadTask );
 
@@ -1310,10 +1323,12 @@ namespace DigitalTwin
 
                     ComputeTask phenoTask( phenoPipe, bgPheno0, bgPheno1, record.targetHz, phenoPC, maxDispatch );
                     phenoTask.SetTag( "phenotype" + tagBase );
+                    phenoTask.SetPhaseName( groupPhase );
                     outState.computeGraph.AddTask( phenoTask );
 
                     ComputeTask mitosisTask( mitosisPipe, bgMitosis0, bgMitosis1, record.targetHz, mitosisPC, maxDispatch );
                     mitosisTask.SetTag( "mitosis" + tagBase );
+                    mitosisTask.SetPhaseName( groupPhase );
                     mitosisTask.SetChainFlip( true );
                     outState.computeGraph.AddTask( mitosisTask );
 
@@ -1409,6 +1424,7 @@ namespace DigitalTwin
                         glm::uvec3 agentDispatch( ( paddedCount + 255 ) / 256, 1, 1 );
                         ComputeTask chemTask( pipe, bg0, bg1, record.targetHz, pc, agentDispatch );
                         chemTask.SetTag( "chemfield" + tagBase );
+                        chemTask.SetPhaseName( groupPhase );
                         outState.computeGraph.AddTask( chemTask );
 
                         DT_INFO( "SimulationBuilder: Compiled {} for '{}' at {}Hz", isConsume ? "Consumption" : "Secretion", targetName,
@@ -1487,6 +1503,7 @@ namespace DigitalTwin
                         glm::uvec3  agentDispatch( ( paddedCount + 255 ) / 256, 1, 1 );
                         ComputeTask perfTask( pipe, bg0, bg1, record.targetHz, pc, agentDispatch );
                         perfTask.SetTag( ( isPerfusion ? "perfusion" : "drain" ) + tagBase );
+                        perfTask.SetPhaseName( groupPhase );
                         outState.computeGraph.AddTask( perfTask );
 
                         DT_INFO( "[SimulationBuilder] Compiled {} for field '{}' at {}Hz",
@@ -1579,6 +1596,7 @@ namespace DigitalTwin
                         glm::uvec3  dispatch( ( paddedCount + 255 ) / 256, 1, 1 );
                         ComputeTask task( pipePtr, bg0, bg1, record.targetHz, pc, dispatch );
                         task.SetTag( "chemotaxis" + tagBase );
+                        task.SetPhaseName( groupPhase );
                         task.SetChainFlip( true );
                         outState.computeGraph.AddTask( task );
                         DT_INFO( "[SimulationBuilder] Compiled Chemotaxis for '{}' → '{}' at {}Hz",
@@ -1678,6 +1696,7 @@ namespace DigitalTwin
                     glm::uvec3  phalanxDispatch( ( paddedCount + 255 ) / 256, 1, 1 );
                     ComputeTask phalanxTask( phalanxPipe, bgPhalanx0, bgPhalanx1, record.targetHz, phalanxPC, phalanxDispatch );
                     phalanxTask.SetTag( "phalanx" + tagBase );
+                    phalanxTask.SetPhaseName( groupPhase );
                     outState.computeGraph.AddTask( phalanxTask );
 
                     DT_INFO( "[SimulationBuilder] Compiled PhalanxActivation for '{}' at {}Hz", group.GetName(), record.targetHz );
@@ -1839,6 +1858,7 @@ namespace DigitalTwin
                         ComputeTask notchTask( notchPipe, bgNotch0, bgNotch1, record.targetHz, notchPC, notchDispatch );
                         notchTask.SetDtScale( 1.0f / static_cast<float>( notch.subSteps ) );
                         notchTask.SetTag( "notch_" + std::to_string( step ) + tagBase );
+                        notchTask.SetPhaseName( groupPhase );
                         outState.computeGraph.AddTask( notchTask );
                     }
 
@@ -1961,6 +1981,7 @@ namespace DigitalTwin
                     ComputeTask anastomosisTask( anastomosisPipe, bgAnastomosis0, bgAnastomosis1, record.targetHz, anastomosisPC,
                                                 anastomosisDispatch );
                     anastomosisTask.SetTag( "anastomosis" + tagBase );
+                    anastomosisTask.SetPhaseName( groupPhase );
                     // No ChainFlip — reads positions only, writes phenotype and edge buffers
                     outState.computeGraph.AddTask( anastomosisTask );
 
@@ -1990,6 +2011,7 @@ namespace DigitalTwin
                         {
                             ComputeTask vcTask( vcPipe, bgVC, bgVC, record.targetHz, vcPC, vcDispatch );
                             vcTask.SetTag( "vessel_components_" + std::to_string( pass ) + tagBase );
+                            vcTask.SetPhaseName( groupPhase );
                             outState.computeGraph.AddTask( vcTask );
                         }
 
@@ -2125,6 +2147,7 @@ namespace DigitalTwin
                     glm::uvec3  dispatch( ( paddedCount + 255 ) / 256, 1, 1 );
                     ComputeTask springTask( springPipe, bgSpring0, bgSpring1, record.targetHz, springPC, dispatch );
                     springTask.SetTag( "spring" + tagBase );
+                    springTask.SetPhaseName( groupPhase );
                     springTask.SetChainFlip( true );
                     outState.computeGraph.AddTask( springTask );
 

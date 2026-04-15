@@ -17,5 +17,8 @@ external/*
 CLAUDE.md
 reports/
 
+# profiling traces
+traces/
+
 # helper files
 merged.txt

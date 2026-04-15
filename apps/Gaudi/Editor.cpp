@@ -205,6 +205,20 @@ namespace Gaudi
               "Demonstrates: CellPolarity + CadherinAdhesion,\n"
               "lumen morphogenesis (Nakamura 2026).",
               &Demos::SetupEndothelialTubeDemo },
+
+            { "Stress Test",
+              "100,000 agents across 3 groups in a 250-unit domain.\n"
+              "Designed to drive GPU compute into the ms range\n"
+              "for meaningful profiler data.\n\n"
+              "Groups:\n"
+              "  Tumour  (50,000) — JKR + Cadherin + Brownian\n"
+              "    + VEGF secretion + O2 consumption\n"
+              "  Stromal (45,000) — JKR + Brownian + O2 consumption\n"
+              "  Immune   (5,000) — JKR + slow Chemotaxis (VEGF)\n"
+              "    + Brownian + O2 consumption\n\n"
+              "Target: ~30 FPS. Use this scene for TraceCapture\n"
+              "and performance profiling.",
+              &Demos::SetupStressTestDemo },
         };
 
         ImGuiIO& io = ImGui::GetIO();
@@ -292,6 +306,14 @@ namespace Gaudi
 
             if( ImGui::MenuItem( "Demos" ) )
                 m_showDemoBrowser = true;
+
+            if( ImGui::BeginMenu( "View" ) )
+            {
+                bool showOverlay = m_engine.IsShowingStatsOverlay();
+                if( ImGui::MenuItem( "Stats Overlay", nullptr, &showOverlay ) )
+                    m_engine.SetShowStatsOverlay( showOverlay );
+                ImGui::EndMenu();
+            }
 
             ImGui::EndMainMenuBar();
         }

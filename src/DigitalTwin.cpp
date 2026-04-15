@@ -23,7 +23,9 @@
 #include "simulation/SimulationBuilder.h"
 #include "simulation/SimulationState.h"
 #include "simulation/SpatialDistribution.h"
+#include <algorithm>
 #include <imgui.h>
+#include <imgui_internal.h>
 #include <iostream>
 
 #if defined( CreateWindow )
@@ -79,6 +81,8 @@ namespace DigitalTwin
         uint32_t m_fpsFrames  = 0;
         float    m_currentFps = 0.0f;
         float    m_totalTime  = 0.0f;
+
+        bool m_showStatsOverlay = true;
 
         Impl()
             : m_initialized( false )
@@ -578,6 +582,10 @@ namespace DigitalTwin
                 m_device->WaitForSemaphores( waitSemas, waitValues );
             }
 
+            // GPU is done with this flight slot — safe to read profiling results
+            if( GPUProfiler* profiler = m_device->GetProfiler() )
+                profiler->CollectResults( m_flightIndex );
+
             // 3. Acquire Image (Windowed Only)
             if( !m_config.headless )
             {
@@ -641,19 +649,24 @@ namespace DigitalTwin
             // =========================================================
             // PHASE 1: SIMULATION PASS (Async Dispatch)
             // =========================================================
+            // Always begin compCmd so we can reset profiling query pools before any zone writes.
+            // This ensures the reset happens on the compute queue, which the render queue
+            // waits on via timeline semaphore before recording its own profiling zones.
+            compCmd->Begin();
+            if( GPUProfiler* profiler = m_device->GetProfiler() )
+                profiler->ResetQueries( compCmd, m_flightIndex );
+
             if( m_state == EngineState::PLAYING && m_simulationState.IsValid() )
             {
                 float dt = m_timer->GetDeltaTime();
                 m_totalTime += dt;
 
-                // Record computational work onto BOTH queues simultaneously
-                compCmd->Begin();
                 gfxSimCmd->Begin();
 
-                uint32_t finalActive = GraphDispatcher::Dispatch( &m_simulationState.computeGraph, compCmd, gfxSimCmd, dt, m_totalTime, m_simulationState.currentReadIndex );
+                uint32_t finalActive = GraphDispatcher::Dispatch( &m_simulationState.computeGraph, compCmd, gfxSimCmd, dt, m_totalTime,
+                                                                   m_simulationState.currentReadIndex, m_device->GetProfiler(), m_flightIndex );
 
                 gfxSimCmd->End();
-                compCmd->End();
 
                 // latestAgentBuffer: the side that received the last position write this frame,
                 // determined by the chain-flip mechanism. Used by the renderer so it always
@@ -664,23 +677,6 @@ namespace DigitalTwin
                 // next frame. It must alternate every frame so the field ping-pong evolves correctly
                 // (diffusion always needs to read from the side it previously wrote to).
                 m_simulationState.currentReadIndex = ( m_simulationState.currentReadIndex + 1 ) % 2;
-
-                // 1A. Submit to COMPUTE queue
-                {
-                    std::vector<CommandBuffer*> cmdBuffers = { compCmd };
-                    std::vector<VkSemaphore>    waitSemas;
-                    std::vector<uint64_t>       waitVals;
-
-                    // Simulation must wait for any pending memory transfers to finish
-                    if( transferSyncValue > 0 )
-                    {
-                        waitSemas.push_back( m_device->GetTransferQueue()->GetTimelineSemaphore() );
-                        waitVals.push_back( transferSyncValue );
-                    }
-
-                    computeQueue->Submit( cmdBuffers, waitSemas, waitVals );
-                    computeSimSyncValue = computeQueue->GetLastSubmittedValue();
-                }
 
                 // 1B. Submit to GRAPHICS queue (Simulation workload only)
                 {
@@ -698,6 +694,26 @@ namespace DigitalTwin
                     graphicsQueue->Submit( cmdBuffers, waitSemas, waitVals );
                     graphicsSimSyncValue = graphicsQueue->GetLastSubmittedValue();
                 }
+            }
+
+            compCmd->End();
+
+            // 1A. Submit compCmd to COMPUTE queue (always — contains at minimum the query pool reset).
+            // The render pass waits on this via timeline semaphore before writing its own timestamps.
+            {
+                std::vector<CommandBuffer*> cmdBuffers = { compCmd };
+                std::vector<VkSemaphore>    waitSemas;
+                std::vector<uint64_t>       waitVals;
+
+                if( transferSyncValue > 0 )
+                {
+                    waitSemas.push_back( m_device->GetTransferQueue()->GetTimelineSemaphore() );
+                    waitVals.push_back( transferSyncValue );
+                }
+
+                computeQueue->Submit( cmdBuffers, waitSemas, waitVals );
+                computeSimSyncValue           = computeQueue->GetLastSubmittedValue();
+                currFrame.computeFinishedValue = computeSimSyncValue;
             }
 
             // =========================================================
@@ -1022,79 +1038,152 @@ namespace DigitalTwin
         return def;
     }
 
+    void DigitalTwin::SetShowStatsOverlay( bool show ) { m_impl->m_showStatsOverlay = show; }
+    bool DigitalTwin::IsShowingStatsOverlay() const { return m_impl->m_showStatsOverlay; }
+
     void DigitalTwin::RenderUI( std::function<void()> uiCallback )
     {
         if( m_impl->m_renderer )
         {
             m_impl->m_renderer->RenderUI( [ & ]() {
-                // Engine stats rendering
-                ImGuiIO&    io               = ImGui::GetIO();
-                const float PAD              = 30.0f;
-                ImVec2      window_pos       = ImVec2( io.DisplaySize.x - PAD, PAD );
-                ImVec2      window_pos_pivot = ImVec2( 1.0f, 0.0f );
-
-                ImGui::SetNextWindowPos( window_pos, ImGuiCond_Always, window_pos_pivot );
-                ImGui::SetNextWindowBgAlpha( 0.3f );
-                if( ImGui::Begin( "Engine Stats", nullptr,
-                                  ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoSavedSettings |
-                                      ImGuiWindowFlags_NoFocusOnAppearing | ImGuiWindowFlags_NoNav | ImGuiWindowFlags_NoMove ) )
+                // ── Stats overlay ──────────────────────────────────────────────
+                if( m_impl->m_showStatsOverlay )
                 {
-                    ImGui::Text( "FPS: %.1f", m_impl->m_currentFps );
-                    ImGui::Text( "Frame Time: %.2f ms", 1000.0f / ( m_impl->m_currentFps > 0.01f ? m_impl->m_currentFps : 1.0f ) );
+                    const float PAD = 10.0f;
 
-                    if( GPUProfiler* profiler = m_impl->m_device->GetProfiler() )
+                    // Anchor to the content area of "Scene Viewport" (InnerRect excludes the title bar).
+                    // Uses previous frame's rect — stable and correct for overlay placement.
+                    // Falls back to full display on the very first frame before the panel exists.
+                    ImVec2 anchorPos;
+                    if( ImGuiWindow* vp = ImGui::FindWindowByName( "Scene Viewport" ) )
+                        anchorPos = ImVec2( vp->InnerRect.Max.x - PAD, vp->InnerRect.Min.y + PAD );
+                    else
                     {
+                        ImGuiIO& io = ImGui::GetIO();
+                        anchorPos   = ImVec2( io.DisplaySize.x - PAD, PAD );
+                    }
+                    ImVec2 pivotPos = ImVec2( 1.0f, 0.0f );
+
+                    ImGui::SetNextWindowPos( anchorPos, ImGuiCond_Always, pivotPos );
+                    ImGui::SetNextWindowBgAlpha( 0.35f );
+                    ImGui::SetNextWindowSizeConstraints( ImVec2( 270.0f, 0.0f ), ImVec2( 400.0f, FLT_MAX ) );
+                    if( ImGui::Begin( "Engine Stats", nullptr,
+                                      ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_AlwaysAutoResize |
+                                          ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoFocusOnAppearing |
+                                          ImGuiWindowFlags_NoNav | ImGuiWindowFlags_NoMove ) )
+                    {
+                        // FPS
+                        ImGui::Text( "FPS: %.1f", m_impl->m_currentFps );
+                        ImGui::Text( "Frame: %.2f ms", 1000.0f / ( m_impl->m_currentFps > 0.01f ? m_impl->m_currentFps : 1.0f ) );
+
+                        // Both compute and graphics: always ms, 3 decimal places
+                        auto fmtMs = []( float ms ) -> const char* {
+                            static char buf[ 32 ];
+                            snprintf( buf, sizeof( buf ), "%.3f ms", ms );
+                            return buf;
+                        };
+                        auto& fmtCompute  = fmtMs;
+                        auto& fmtGraphics = fmtMs;
+
+                        if( GPUProfiler* profiler = m_impl->m_device->GetProfiler() )
                         {
-                            // Memory usage
+                            // ── Memory ──────────────────────────────────────────
                             ImGui::Separator();
-                            ImGui::TextColored( ImVec4( 1.0f, 0.8f, 0.2f, 1.0f ), "GPU Memory" );
                             const auto memStats = profiler->GetMemoryStats();
                             double     usedMB   = static_cast<double>( memStats.currentUsage ) / ( 1024.0 * 1024.0 );
                             double     totalMB  = static_cast<double>( memStats.totalBudget ) / ( 1024.0 * 1024.0 );
-                            ImGui::TextColored( ImVec4( 0.4f, 0.8f, 1.0f, 1.0f ), "VRAM: %.1f MB / %.1f MB", usedMB, totalMB );
+                            ImGui::TextColored( ImVec4( 1.0f, 0.8f, 0.2f, 1.0f ), "GPU Memory" );
+                            ImGui::TextColored( ImVec4( 0.4f, 0.8f, 1.0f, 1.0f ), "VRAM: %.1f / %.1f MB", usedMB, totalMB );
                             float fraction = ( memStats.totalBudget > 0 )
                                                  ? static_cast<float>( memStats.currentUsage ) / static_cast<float>( memStats.totalBudget )
                                                  : 0.0f;
-
-                            if( fraction > 0.85f )
-                            {
-                                ImGui::PushStyleColor( ImGuiCol_PlotHistogram, ImVec4( 0.8f, 0.2f, 0.2f, 1.0f ) );
-                            }
-                            else if( fraction > 0.65f )
-                            {
-                                ImGui::PushStyleColor( ImGuiCol_PlotHistogram, ImVec4( 0.8f, 0.8f, 0.2f, 1.0f ) );
-                            }
-                            else
-                            {
-                                ImGui::PushStyleColor( ImGuiCol_PlotHistogram, ImVec4( 0.2f, 0.8f, 0.2f, 1.0f ) );
-                            }
-
+                            ImVec4 barColor = fraction > 0.85f ? ImVec4( 0.8f, 0.2f, 0.2f, 1.0f )
+                                            : fraction > 0.65f ? ImVec4( 0.8f, 0.8f, 0.2f, 1.0f )
+                                                               : ImVec4( 0.2f, 0.8f, 0.2f, 1.0f );
+                            ImGui::PushStyleColor( ImGuiCol_PlotHistogram, barColor );
                             ImGui::ProgressBar( fraction, ImVec2( -FLT_MIN, 0.0f ) );
                             ImGui::PopStyleColor();
-                        }
 
-                        {
-                            // Pipeline stats
-                            ImGui::Separator();
-                            ImGui::TextColored( ImVec4( 1.0f, 0.8f, 0.2f, 1.0f ), "GPU Stats" );
-                            const auto& results = profiler->GetResults();
-                            for( const auto& [ zoneName, data ]: results )
+                            // ── Classify zones ──────────────────────────────────
+                            using ZoneRef = std::pair<std::string, const GPUProfileData*>;
+                            std::vector<ZoneRef> computeZones, graphicsZones;
+                            for( const auto& [ name, data ]: profiler->GetResults() )
                             {
-                                ImGui::Text( "- [%s] -", zoneName.c_str() );
-                                ImGui::Text( "  Time: %.3f ms", data.timeMs );
+                                bool isCompute = ( name == "Spatial Grid" || name == "Diffusion" ||
+                                                   name == "Polarity Pre-pass" || name.rfind( "Behaviours:", 0 ) == 0 );
+                                ( isCompute ? computeZones : graphicsZones ).emplace_back( name, &data );
+                            }
 
-                                // Output in Millions (M) for readability
-                                ImGui::TextColored( ImVec4( 0.5f, 1.0f, 0.5f, 1.0f ), "  Verts: %.3f M",
-                                                    ( float )data.vertexShaderInvocations / 1000000.0f );
-                                ImGui::TextColored( ImVec4( 1.0f, 0.5f, 0.5f, 1.0f ), "  Frags: %.3f M",
-                                                    ( float )data.fragmentShaderInvocations / 1000000.0f );
-                                ImGui::TextColored( ImVec4( 0.8f, 0.8f, 0.8f, 1.0f ), "  Clip : %.3f M",
-                                                    ( float )data.clippingInvocations / 1000000.0f );
+                            // Sort compute: Spatial Grid → Diffusion → Polarity Pre-pass → Behaviours:* (alpha)
+                            auto computeRank = []( const std::string& n ) -> int {
+                                if( n == "Spatial Grid" ) return 0;
+                                if( n == "Diffusion" ) return 1;
+                                if( n == "Polarity Pre-pass" ) return 2;
+                                return 3;
+                            };
+                            std::sort( computeZones.begin(), computeZones.end(), [ & ]( const ZoneRef& a, const ZoneRef& b ) {
+                                int ra = computeRank( a.first ), rb = computeRank( b.first );
+                                return ra != rb ? ra < rb : a.first < b.first;
+                            } );
+                            std::sort( graphicsZones.begin(), graphicsZones.end(),
+                                       []( const ZoneRef& a, const ZoneRef& b ) { return a.first < b.first; } );
+
+                            // ── Compute section ─────────────────────────────────
+                            if( !computeZones.empty() )
+                            {
+                                ImGui::Separator();
+                                float computeTotal = 0.0f;
+                                for( const auto& [ name, data ]: computeZones )
+                                    computeTotal += data->timeMsSmoothed;
+
+                                char computeHeader[ 64 ];
+                                snprintf( computeHeader, sizeof( computeHeader ), "Compute  %s###ComputeSection", fmtCompute( computeTotal ) );
+                                if( ImGui::CollapsingHeader( computeHeader, ImGuiTreeNodeFlags_DefaultOpen ) )
+                                {
+                                    for( const auto& [ name, data ]: computeZones )
+                                    {
+                                        ImGui::TextColored( ImVec4( 0.6f, 0.9f, 1.0f, 1.0f ), "  %s", name.c_str() );
+                                        ImGui::SameLine( 0.0f, 4.0f );
+                                        ImGui::Text( "%s", fmtCompute( data->timeMsSmoothed ) );
+                                    }
+                                }
+                            }
+
+                            // ── Graphics section ────────────────────────────────
+                            if( !graphicsZones.empty() )
+                            {
+                                ImGui::Separator();
+                                float graphicsTotal = 0.0f;
+                                for( const auto& [ name, data ]: graphicsZones )
+                                    graphicsTotal += data->timeMsSmoothed;
+
+                                char graphicsHeader[ 64 ];
+                                snprintf( graphicsHeader, sizeof( graphicsHeader ), "Graphics  %s###GraphicsSection", fmtGraphics( graphicsTotal ) );
+                                if( ImGui::CollapsingHeader( graphicsHeader, ImGuiTreeNodeFlags_DefaultOpen ) )
+                                {
+                                    for( const auto& [ name, data ]: graphicsZones )
+                                    {
+                                        ImGui::TextColored( ImVec4( 1.0f, 0.85f, 0.5f, 1.0f ), "  %s", name.c_str() );
+                                        ImGui::SameLine( 0.0f, 4.0f );
+                                        ImGui::Text( "%s", fmtGraphics( data->timeMsSmoothed ) );
+                                        if( data->vertexShaderInvocations > 0 || data->fragmentShaderInvocations > 0 )
+                                        {
+                                            ImGui::TextColored( ImVec4( 0.5f, 1.0f, 0.5f, 1.0f ), "    V: %.3fM",
+                                                                data->vertexShaderInvocations / 1e6f );
+                                            ImGui::SameLine();
+                                            ImGui::TextColored( ImVec4( 0.8f, 0.8f, 0.8f, 1.0f ), "C: %.3fM",
+                                                                data->clippingInvocations / 1e6f );
+                                            ImGui::SameLine();
+                                            ImGui::TextColored( ImVec4( 1.0f, 0.5f, 0.5f, 1.0f ), "F: %.3fM",
+                                                                data->fragmentShaderInvocations / 1e6f );
+                                        }
+                                    }
+                                }
                             }
                         }
                     }
+                    ImGui::End();
                 }
-                ImGui::End();
 
                 if( uiCallback )
                     uiCallback();

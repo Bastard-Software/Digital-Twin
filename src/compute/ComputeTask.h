@@ -54,6 +54,9 @@ namespace DigitalTwin
         void               SetTag( const std::string& tag ) { m_tag = tag; }
         const std::string& GetTag() const { return m_tag; }
 
+        void               SetPhaseName( const std::string& phase ) { m_phaseName = phase; }
+        const std::string& GetPhaseName() const { return m_phaseName; }
+
         // When true, this task writes agent positions. ComputeGraph flips the active
         // buffer index after it runs so the next task in the chain reads the updated positions.
         void SetChainFlip( bool v ) { m_chainFlip = v; }
@@ -75,6 +78,7 @@ namespace DigitalTwin
         float            m_timeAccumulator = 0.0f;
 
         std::string          m_tag;
+        std::string          m_phaseName;
         ComputePushConstants m_pc;
         glm::uvec3           m_dispatchSize;
         bool                 m_chainFlip = false;

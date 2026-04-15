@@ -49,6 +49,8 @@ namespace DigitalTwin
         void                               SetVesselVisualization( const VesselVisualizationSettings& settings );
         const VesselVisualizationSettings& GetVesselVisualization() const;
         void                             RenderUI( std::function<void()> uiCallback );
+        void                             SetShowStatsOverlay( bool show );
+        bool                             IsShowingStatsOverlay() const;
         void                             SetViewportSize( uint32_t width, uint32_t height );
         void                             GetViewportSize( uint32_t& outWidth, uint32_t& outHeight ) const;
         void*                            GetSceneTextureID() const;

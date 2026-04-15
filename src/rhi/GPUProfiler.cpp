@@ -65,48 +65,73 @@ namespace DigitalTwin
         }
     }
 
-    void GPUProfiler::BeginFrame( CommandBuffer* cmd, uint32_t flightIndex )
+    void GPUProfiler::CollectResults( uint32_t flightIndex )
     {
-        const auto& api = m_device->GetAPI();
-
-        // Reset pools using the command buffer for this frame
-        cmd->ResetQueryPool( m_timestampPools[ flightIndex ], 0, m_maxZones * 2 );
-        cmd->ResetQueryPool( m_statPools[ flightIndex ], 0, m_maxZones );
-
         if( m_currentZoneCount == 0 )
+        {
+            m_hasData[ flightIndex ] = false;
             return;
+        }
 
-        // If previous frame finished recording, read results into host memory
+        // Always read results regardless of m_enabled, so data is available when profiling is re-enabled
         if( m_hasData[ flightIndex ] )
         {
-            std::vector<uint64_t> timestamps( m_currentZoneCount * 2 );
-            api.vkGetQueryPoolResults( m_device->GetHandle(), m_timestampPools[ flightIndex ], 0, m_currentZoneCount * 2,
-                                       timestamps.size() * sizeof( uint64_t ), timestamps.data(), sizeof( uint64_t ), VK_QUERY_RESULT_64_BIT );
+            const auto& api = m_device->GetAPI();
 
-            std::vector<uint64_t> stats( m_currentZoneCount * 4 );
+            // No WAIT_BIT: some zones may skip execution on a given frame (ShouldExecute=false),
+            // leaving their queries reset-but-unwritten. WAIT_BIT would hang forever on those.
+            // Instead, check the return value: VK_NOT_READY means results aren't ready yet —
+            // skip the update and let the EMA retain the last valid reading.
+            std::vector<uint64_t> timestamps( m_currentZoneCount * 2, 0 );
+            VkResult tsResult =
+                api.vkGetQueryPoolResults( m_device->GetHandle(), m_timestampPools[ flightIndex ], 0, m_currentZoneCount * 2,
+                                           timestamps.size() * sizeof( uint64_t ), timestamps.data(), sizeof( uint64_t ),
+                                           VK_QUERY_RESULT_64_BIT );
+
+            std::vector<uint64_t> stats( m_currentZoneCount * 4, 0 );
             api.vkGetQueryPoolResults( m_device->GetHandle(), m_statPools[ flightIndex ], 0, m_currentZoneCount, stats.size() * sizeof( uint64_t ),
-                                       stats.data(), sizeof( uint64_t ) * 4, VK_QUERY_RESULT_64_BIT );
+                                       stats.data(), sizeof( uint64_t ) * 4,
+                                       VK_QUERY_RESULT_64_BIT );
 
-            for( const auto& [ name, index ]: m_zoneToIndex )
+            // Only update EMA when GPU returned valid timestamp data.
+            // VK_NOT_READY leaves m_results unchanged so the overlay shows the last known value.
+            if( tsResult == VK_SUCCESS )
             {
-                uint64_t startT = timestamps[ index * 2 ];
-                uint64_t endT   = timestamps[ index * 2 + 1 ];
+                static constexpr float EMA_ALPHA = 0.1f;
 
-                GPUProfileData& data = m_results[ name ];
-                data.timeMs          = ( endT > startT ) ? static_cast<float>( endT - startT ) * m_timestampPeriod * 1e-6f : 0.0f;
+                for( const auto& [ name, index ]: m_zoneToIndex )
+                {
+                    uint64_t startT = timestamps[ index * 2 ];
+                    uint64_t endT   = timestamps[ index * 2 + 1 ];
 
-                data.vertexShaderInvocations   = stats[ index * 4 + 0 ];
-                data.clippingInvocations       = stats[ index * 4 + 1 ];
-                data.fragmentShaderInvocations = stats[ index * 4 + 2 ];
-                data.computeShaderInvocations  = stats[ index * 4 + 3 ];
+                    GPUProfileData& data = m_results[ name ];
+                    data.timeMs          = ( endT > startT ) ? static_cast<float>( endT - startT ) * m_timestampPeriod * 1e-6f : 0.0f;
+                    data.timeMsSmoothed  = EMA_ALPHA * data.timeMs + ( 1.0f - EMA_ALPHA ) * data.timeMsSmoothed;
+
+                    data.vertexShaderInvocations   = stats[ index * 4 + 0 ];
+                    data.clippingInvocations       = stats[ index * 4 + 1 ];
+                    data.fragmentShaderInvocations = stats[ index * 4 + 2 ];
+                    data.computeShaderInvocations  = stats[ index * 4 + 3 ];
+                }
             }
         }
 
         m_hasData[ flightIndex ] = false;
     }
 
-    void GPUProfiler::BeginZone( CommandBuffer* cmd, uint32_t flightIndex, const std::string& name )
+    void GPUProfiler::ResetQueries( CommandBuffer* cmd, uint32_t flightIndex )
     {
+        if( !m_enabled )
+            return;
+        cmd->ResetQueryPool( m_timestampPools[ flightIndex ], 0, m_maxZones * 2 );
+        cmd->ResetQueryPool( m_statPools[ flightIndex ], 0, m_maxZones );
+    }
+
+    void GPUProfiler::BeginZone( CommandBuffer* cmd, uint32_t flightIndex, const std::string& name, bool recordStats )
+    {
+        if( !m_enabled )
+            return;
+
         if( m_zoneToIndex.find( name ) == m_zoneToIndex.end() )
         {
             if( m_currentZoneCount >= m_maxZones )
@@ -119,17 +144,22 @@ namespace DigitalTwin
 
         uint32_t idx = m_zoneToIndex[ name ];
         cmd->WriteTimestamp( VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, m_timestampPools[ flightIndex ], idx * 2 );
-        cmd->BeginQuery( m_statPools[ flightIndex ], idx );
+        if( recordStats )
+            cmd->BeginQuery( m_statPools[ flightIndex ], idx );
     }
 
-    void GPUProfiler::EndZone( CommandBuffer* cmd, uint32_t flightIndex, const std::string& name )
+    void GPUProfiler::EndZone( CommandBuffer* cmd, uint32_t flightIndex, const std::string& name, bool recordStats )
     {
+        if( !m_enabled )
+            return;
+
         auto it = m_zoneToIndex.find( name );
         if( it == m_zoneToIndex.end() )
             return;
 
         uint32_t idx = it->second;
-        cmd->EndQuery( m_statPools[ flightIndex ], idx );
+        if( recordStats )
+            cmd->EndQuery( m_statPools[ flightIndex ], idx );
         cmd->WriteTimestamp( VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, m_timestampPools[ flightIndex ], idx * 2 + 1 );
 
         m_hasData[ flightIndex ] = true;

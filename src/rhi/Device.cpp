@@ -199,7 +199,7 @@ namespace DigitalTwin
             return Result::FAIL;
         }
 
-        m_profiler = CreateScope<GPUProfiler>( this, 16 ); // Maximum 16 profiled zones
+        m_profiler = CreateScope<GPUProfiler>( this, 32 ); // Maximum 32 profiled zones
         if( m_profiler->Initialize() != Result::SUCCESS )
         {
             DT_ERROR( "Failed to initialize GPU Profiler" );

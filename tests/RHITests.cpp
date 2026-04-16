@@ -532,6 +532,30 @@ TEST_F( DeviceResourceTest, CreateTexture_Storage_Transfer )
     m_device->DestroyTexture( &texture );
 }
 
+// 6. Create 2D MSAA colour attachment (4x) — no SAMPLED usage, multisampled images cannot be sampled directly
+TEST_F( DeviceResourceTest, CreateTexture_2D_MSAA_4x )
+{
+    if( !m_device )
+        GTEST_SKIP();
+
+    TextureDesc desc;
+    desc.type        = TextureType::Texture2D;
+    desc.width       = 1080;
+    desc.height      = 720;
+    desc.format      = VK_FORMAT_R8G8B8A8_UNORM;
+    desc.usage       = TextureUsage::RENDER_TARGET;
+    desc.sampleCount = VK_SAMPLE_COUNT_4_BIT;
+
+    Texture texture( m_device->GetAllocator(), m_device->GetHandle(), &m_device->GetAPI() );
+
+    auto res = m_device->CreateTexture( desc, &texture );
+    ASSERT_EQ( res, Result::SUCCESS );
+    EXPECT_NE( texture.GetHandle(), VK_NULL_HANDLE );
+    EXPECT_NE( texture.GetView(), VK_NULL_HANDLE );
+
+    m_device->DestroyTexture( &texture );
+}
+
 // ==================================================================================================
 // Sampler Creation Tests
 // ==================================================================================================
@@ -930,6 +954,25 @@ TEST_F( PipelineTest, CreateGraphicsPipeline )
 
     // Check Reflection Merge: FS has binding=1 at Set 0. Layout 0 should exist.
     EXPECT_NE( pipeline.GetDescriptorSetLayout( 0 ), VK_NULL_HANDLE );
+
+    m_device->DestroyGraphicsPipeline( &pipeline );
+}
+
+// 3. Graphics pipeline creation with 4x MSAA sample count
+TEST_F( PipelineTest, CreateGraphicsPipeline_MSAA_4x )
+{
+    if( !m_device )
+        GTEST_SKIP() << "No GPU found, skipping test";
+
+    GraphicsPipelineNativeDesc desc;
+    desc.vertexShader   = m_vert.get();
+    desc.fragmentShader = m_frag.get();
+    desc.sampleCount    = VK_SAMPLE_COUNT_4_BIT;
+
+    GraphicsPipeline pipeline( m_device->GetHandle(), &m_device->GetAPI() );
+    auto             res = m_device->CreateGraphicsPipeline( desc, &pipeline );
+    ASSERT_EQ( res, Result::SUCCESS );
+    EXPECT_NE( pipeline.GetHandle(), VK_NULL_HANDLE );
 
     m_device->DestroyGraphicsPipeline( &pipeline );
 }

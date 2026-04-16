@@ -173,8 +173,9 @@ namespace DigitalTwin
         uint32_t     depth     = 1;
         TextureType  type      = TextureType::Texture2D;
         VkFormat     format    = VK_FORMAT_R8G8B8A8_UNORM;
-        TextureUsage usage     = TextureUsage::SAMPLED | TextureUsage::STORAGE | TextureUsage::TRANSFER_SRC | TextureUsage::TRANSFER_DST;
-        std::string  debugName = "";
+        TextureUsage          usage       = TextureUsage::SAMPLED | TextureUsage::STORAGE | TextureUsage::TRANSFER_SRC | TextureUsage::TRANSFER_DST;
+        VkSampleCountFlagBits sampleCount = VK_SAMPLE_COUNT_1_BIT;
+        std::string           debugName   = "";
     };
 
     /**
@@ -281,6 +282,9 @@ namespace DigitalTwin
         std::vector<VkFormat> colorAttachmentFormats = { VK_FORMAT_R8G8B8A8_UNORM };
         VkFormat              depthAttachmentFormat  = VK_FORMAT_D32_SFLOAT;
 
+        // Multisampling
+        VkSampleCountFlagBits sampleCount = VK_SAMPLE_COUNT_1_BIT;
+
         std::string debugName = "";
     };
 
@@ -319,6 +323,9 @@ namespace DigitalTwin
         // Pipeline must know what it is rendering into
         std::vector<VkFormat> colorAttachmentFormats = { VK_FORMAT_R8G8B8A8_UNORM };
         VkFormat              depthAttachmentFormat  = VK_FORMAT_D32_SFLOAT;
+
+        // Multisampling
+        VkSampleCountFlagBits sampleCount = VK_SAMPLE_COUNT_1_BIT;
 
         std::string debugName = "";
     };

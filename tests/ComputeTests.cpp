@@ -1100,7 +1100,7 @@ TEST_F( ComputeTest, Shader_Biology_ConditionalSecretion )
     BufferHandle  countBuf     = m_rm->CreateBuffer( { countSize, BufferType::STORAGE, "TestCount" } );
     BufferHandle  deltaBuf     = m_rm->CreateBuffer( { deltaSize, BufferType::STORAGE, "TestDelta" } );
     BufferHandle  pressuresBuf = m_rm->CreateBuffer( { pressures.size() * sizeof( float ), BufferType::STORAGE, "TestPressures" } );
-    TextureHandle dummyTex     = m_rm->CreateTexture( { 1, 1, 1, TextureType::Texture3D, VK_FORMAT_R32_SFLOAT, TextureUsage::STORAGE, "Dummy" } );
+    TextureHandle dummyTex     = m_rm->CreateTexture( { 1, 1, 1, TextureType::Texture3D, VK_FORMAT_R32_SFLOAT, TextureUsage::STORAGE, VK_SAMPLE_COUNT_1_BIT, "Dummy" } );
 
     m_stream->UploadBufferImmediate( { { agentsBuf, agents.data(), agentsSize, 0 },
                                        { phenoBuf, phenoInit.data(), phenoSize, 0 },
@@ -1479,7 +1479,7 @@ TEST_F( ComputeTest, Shader_NotchDll4_IsolatedAgent_ODE )
     BufferHandle  edgeCountBuf= m_rm->CreateBuffer( { sizeof( uint32_t ),    BufferType::STORAGE,  "NotchEdgeCount" } );
     BufferHandle  countBuf    = m_rm->CreateBuffer( { countSize,             BufferType::INDIRECT, "NotchCount"     } );
     // Dummy 1×1×1 VEGF texture (binding 6, VEGF disabled: gridSize.w=0 → shader uses localVEGF=1.0)
-    TextureHandle vegfDummy   = m_rm->CreateTexture( { 1, 1, 1, TextureType::Texture3D, VK_FORMAT_R32_SFLOAT, TextureUsage::STORAGE | TextureUsage::TRANSFER_DST, "NotchVEGFDummy" } );
+    TextureHandle vegfDummy   = m_rm->CreateTexture( { 1, 1, 1, TextureType::Texture3D, VK_FORMAT_R32_SFLOAT, TextureUsage::STORAGE | TextureUsage::TRANSFER_DST, VK_SAMPLE_COUNT_1_BIT, "NotchVEGFDummy" } );
     float         one         = 1.0f;
     m_stream->UploadTextureImmediate( vegfDummy, &one, sizeof( float ) );
 
@@ -1591,7 +1591,7 @@ TEST_F( ComputeTest, Shader_NotchDll4_DeadSlot_Skipped )
     BufferHandle  edgeBuf      = m_rm->CreateBuffer( { sizeof( VesselEdge ), BufferType::STORAGE,  "DeadNotchEdges"      } );
     BufferHandle  edgeCountBuf = m_rm->CreateBuffer( { sizeof( uint32_t ),   BufferType::STORAGE,  "DeadNotchEdgeCount"  } );
     BufferHandle  countBuf     = m_rm->CreateBuffer( { countSize,            BufferType::INDIRECT, "DeadNotchCount"      } );
-    TextureHandle vegfDummy    = m_rm->CreateTexture( { 1, 1, 1, TextureType::Texture3D, VK_FORMAT_R32_SFLOAT, TextureUsage::STORAGE | TextureUsage::TRANSFER_DST, "DeadNotchVEGFDummy" } );
+    TextureHandle vegfDummy    = m_rm->CreateTexture( { 1, 1, 1, TextureType::Texture3D, VK_FORMAT_R32_SFLOAT, TextureUsage::STORAGE | TextureUsage::TRANSFER_DST, VK_SAMPLE_COUNT_1_BIT, "DeadNotchVEGFDummy" } );
     float         one          = 1.0f;
     m_stream->UploadTextureImmediate( vegfDummy, &one, sizeof( float ) );
 
@@ -1710,7 +1710,7 @@ TEST_F( ComputeTest, Shader_NotchDll4_LateralInhibition_Asymmetric )
     BufferHandle  edgeBuf      = m_rm->CreateBuffer( { sizeof( VesselEdge ), BufferType::STORAGE,  "LIEdges"      } );
     BufferHandle  edgeCountBuf = m_rm->CreateBuffer( { sizeof( uint32_t ),   BufferType::STORAGE,  "LIEdgeCount"  } );
     BufferHandle  countBuf     = m_rm->CreateBuffer( { countSize,            BufferType::INDIRECT, "LICount"      } );
-    TextureHandle vegfDummy    = m_rm->CreateTexture( { 1, 1, 1, TextureType::Texture3D, VK_FORMAT_R32_SFLOAT, TextureUsage::STORAGE | TextureUsage::TRANSFER_DST, "LIVEGFDummy" } );
+    TextureHandle vegfDummy    = m_rm->CreateTexture( { 1, 1, 1, TextureType::Texture3D, VK_FORMAT_R32_SFLOAT, TextureUsage::STORAGE | TextureUsage::TRANSFER_DST, VK_SAMPLE_COUNT_1_BIT, "LIVEGFDummy" } );
     float         one          = 1.0f;
     m_stream->UploadTextureImmediate( vegfDummy, &one, sizeof( float ) );
 
@@ -1821,7 +1821,7 @@ TEST_F( ComputeTest, Shader_NotchDll4_VEGFGating_HighVEGF_PromotesTipCell )
     TextureHandle vegfTex = m_rm->CreateTexture( { vegfW, vegfH, vegfD, TextureType::Texture3D,
                                                    VK_FORMAT_R32_SFLOAT,
                                                    TextureUsage::STORAGE | TextureUsage::TRANSFER_DST,
-                                                   "VEGFGatingTex" } );
+                                                   VK_SAMPLE_COUNT_1_BIT, "VEGFGatingTex" } );
     m_stream->UploadTextureImmediate( vegfTex, vegfData.data(), vegfData.size() * sizeof( float ) );
 
     // ── 2 isolated agents — no hash neighbors ─────────────────────────────────
@@ -1958,7 +1958,7 @@ static uint32_t RunPhalanxShader(
     // 1×1×1 VEGF texture — agent at origin in 10-unit domain always hits voxel (0,0,0)
     TextureHandle vegfTex = rm->CreateTexture(
         { 1, 1, 1, TextureType::Texture3D, VK_FORMAT_R32_SFLOAT,
-          TextureUsage::STORAGE | TextureUsage::TRANSFER_DST, "PhalanxVEGF" } );
+          TextureUsage::STORAGE | TextureUsage::TRANSFER_DST, VK_SAMPLE_COUNT_1_BIT, "PhalanxVEGF" } );
     stream->UploadTextureImmediate( vegfTex, &vegfValue, sizeof( float ) );
 
     std::vector<glm::vec4>     agents     = { agentPos };
@@ -3401,7 +3401,7 @@ TEST_F( ComputeTest, Shader_NotchDll4_Hysteresis_KeepsTypeInDeadZone )
     BufferHandle eBuf    = m_rm->CreateBuffer( { sizeof( VesselEdge ), BufferType::STORAGE,  "HysEdges"      } );
     BufferHandle ecBuf   = m_rm->CreateBuffer( { sizeof( uint32_t ),   BufferType::STORAGE,  "HysEdgeCount"  } );
     BufferHandle cBuf    = m_rm->CreateBuffer( { cSz,                  BufferType::INDIRECT, "HysCount"      } );
-    TextureHandle vTex   = m_rm->CreateTexture( { 1, 1, 1, TextureType::Texture3D, VK_FORMAT_R32_SFLOAT, TextureUsage::STORAGE | TextureUsage::TRANSFER_DST, "HysVEGF" } );
+    TextureHandle vTex   = m_rm->CreateTexture( { 1, 1, 1, TextureType::Texture3D, VK_FORMAT_R32_SFLOAT, TextureUsage::STORAGE | TextureUsage::TRANSFER_DST, VK_SAMPLE_COUNT_1_BIT, "HysVEGF" } );
     float one = 1.0f;
     m_stream->UploadTextureImmediate( vTex, &one, sizeof( float ) );
 
@@ -3487,7 +3487,7 @@ TEST_F( ComputeTest, Shader_NotchDll4_Hysteresis_StalkBelowThreshold )
     BufferHandle eBuf    = m_rm->CreateBuffer( { sizeof( VesselEdge ), BufferType::STORAGE,  "HysLowEdges"      } );
     BufferHandle ecBuf   = m_rm->CreateBuffer( { sizeof( uint32_t ),   BufferType::STORAGE,  "HysLowEdgeCount"  } );
     BufferHandle cBuf    = m_rm->CreateBuffer( { cSz,                  BufferType::INDIRECT, "HysLowCount"      } );
-    TextureHandle vTex   = m_rm->CreateTexture( { 1, 1, 1, TextureType::Texture3D, VK_FORMAT_R32_SFLOAT, TextureUsage::STORAGE | TextureUsage::TRANSFER_DST, "HysLowVEGF" } );
+    TextureHandle vTex   = m_rm->CreateTexture( { 1, 1, 1, TextureType::Texture3D, VK_FORMAT_R32_SFLOAT, TextureUsage::STORAGE | TextureUsage::TRANSFER_DST, VK_SAMPLE_COUNT_1_BIT, "HysLowVEGF" } );
     float zero = 0.0f;
     m_stream->UploadTextureImmediate( vTex, &zero, sizeof( float ) );
 
@@ -4518,7 +4518,7 @@ TEST_F( ComputeTest, Shader_NotchDll4_PhalanxCellsParticipate )
     BufferHandle  ecBuf  = m_rm->CreateBuffer( { cSz,   BufferType::STORAGE,  "PxPartEdgeCnt"   } );
     BufferHandle  cBuf   = m_rm->CreateBuffer( { cSz,   BufferType::INDIRECT, "PxPartCount"     } );
     TextureHandle vTex   = m_rm->CreateTexture( { 3, 1, 1, TextureType::Texture3D, VK_FORMAT_R32_SFLOAT,
-                                                  TextureUsage::STORAGE | TextureUsage::TRANSFER_DST, "PxPartVEGF" } );
+                                                  TextureUsage::STORAGE | TextureUsage::TRANSFER_DST, VK_SAMPLE_COUNT_1_BIT, "PxPartVEGF" } );
 
     m_stream->UploadTextureImmediate( vTex, vegfTex.data(), vegfTex.size() * sizeof(float) );
     m_stream->UploadBufferImmediate( {
@@ -4613,7 +4613,7 @@ TEST_F( ComputeTest, Shader_NotchDll4_PhalanxCellNoStalkConversion )
     BufferHandle  ecBuf  = m_rm->CreateBuffer( { cSz,                 BufferType::STORAGE,  "PxNoStalkEC"    } );
     BufferHandle  cBuf   = m_rm->CreateBuffer( { cSz,                 BufferType::INDIRECT, "PxNoStalkCnt"   } );
     TextureHandle vTex   = m_rm->CreateTexture( { 1,1,1, TextureType::Texture3D, VK_FORMAT_R32_SFLOAT,
-                                                  TextureUsage::STORAGE | TextureUsage::TRANSFER_DST, "PxNoStalkVEGF" } );
+                                                  TextureUsage::STORAGE | TextureUsage::TRANSFER_DST, VK_SAMPLE_COUNT_1_BIT, "PxNoStalkVEGF" } );
     float zero = 0.0f;
     m_stream->UploadTextureImmediate( vTex, &zero, sizeof(float) );
     m_stream->UploadBufferImmediate( {
@@ -4695,7 +4695,7 @@ TEST_F( ComputeTest, Shader_NotchDll4_Recruitment_AdjacentToTip )
     BufferHandle  ecBuf  = m_rm->CreateBuffer( { cSz,                BufferType::STORAGE,  "PxRcrEC"   } );
     BufferHandle  cBuf   = m_rm->CreateBuffer( { cSz,                BufferType::INDIRECT, "PxRcrCnt"  } );
     TextureHandle vTex   = m_rm->CreateTexture( { 1,1,1, TextureType::Texture3D, VK_FORMAT_R32_SFLOAT,
-                                                  TextureUsage::STORAGE | TextureUsage::TRANSFER_DST, "PxRcrVEGF" } );
+                                                  TextureUsage::STORAGE | TextureUsage::TRANSFER_DST, VK_SAMPLE_COUNT_1_BIT, "PxRcrVEGF" } );
     float zero = 0.0f;
     m_stream->UploadTextureImmediate( vTex, &zero, sizeof(float) );
     m_stream->UploadBufferImmediate( {
@@ -4778,7 +4778,7 @@ TEST_F( ComputeTest, Shader_NotchDll4_Recruitment_NoTipNeighbor_StaysPhalanx )
     BufferHandle  ecBuf  = m_rm->CreateBuffer( { cSz,                BufferType::STORAGE,  "PxNoTipEC"   } );
     BufferHandle  cBuf   = m_rm->CreateBuffer( { cSz,                BufferType::INDIRECT, "PxNoTipCnt"  } );
     TextureHandle vTex   = m_rm->CreateTexture( { 1,1,1, TextureType::Texture3D, VK_FORMAT_R32_SFLOAT,
-                                                  TextureUsage::STORAGE | TextureUsage::TRANSFER_DST, "PxNoTipVEGF" } );
+                                                  TextureUsage::STORAGE | TextureUsage::TRANSFER_DST, VK_SAMPLE_COUNT_1_BIT, "PxNoTipVEGF" } );
     float zero = 0.0f;
     m_stream->UploadTextureImmediate( vTex, &zero, sizeof(float) );
     m_stream->UploadBufferImmediate( {
@@ -4864,7 +4864,7 @@ TEST_F( ComputeTest, Shader_NotchDll4_PhalanxRecruitment_IgnoresRingEdges )
     BufferHandle  ecBuf  = m_rm->CreateBuffer( { cSz,                BufferType::STORAGE,  "PxRingEC"   } );
     BufferHandle  cBuf   = m_rm->CreateBuffer( { cSz,                BufferType::INDIRECT, "PxRingCnt"  } );
     TextureHandle vTex   = m_rm->CreateTexture( { 1,1,1, TextureType::Texture3D, VK_FORMAT_R32_SFLOAT,
-                                                  TextureUsage::STORAGE | TextureUsage::TRANSFER_DST, "PxRingVEGF" } );
+                                                  TextureUsage::STORAGE | TextureUsage::TRANSFER_DST, VK_SAMPLE_COUNT_1_BIT, "PxRingVEGF" } );
     float zero = 0.0f;
     m_stream->UploadTextureImmediate( vTex, &zero, sizeof(float) );
     m_stream->UploadBufferImmediate( {

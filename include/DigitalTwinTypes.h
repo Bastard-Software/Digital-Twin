@@ -36,6 +36,7 @@ namespace DigitalTwin
         const char* rootDirectory = nullptr;
         bool_t      debugMode     = false;
         WindowDesc  windowDesc;
+        uint32_t    msaaSamples   = 1; ///< Initial MSAA sample count. Valid: 1 (Off) or 4 (4x MSAA).
     };
 
     enum class EngineState

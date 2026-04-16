@@ -481,6 +481,13 @@ namespace DigitalTwin
 
     void Renderer::SetMSAA( VkSampleCountFlagBits samples )
     {
+        // Clamp to what the hardware actually supports
+        if( samples != VK_SAMPLE_COUNT_1_BIT && !m_device->IsSampleCountSupported( samples ) )
+        {
+            DT_WARN( "Renderer: {}x MSAA not supported by this GPU — falling back to Off.", static_cast<uint32_t>( samples ) );
+            samples = VK_SAMPLE_COUNT_1_BIT;
+        }
+
         if( samples == m_sampleCount )
             return;
 

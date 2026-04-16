@@ -46,6 +46,15 @@ namespace DigitalTwin
         bool IsWindowClosed();
 
         // Rendering
+        /**
+         * @brief Hot-swap MSAA sample count. Safe to call at any engine state.
+         * @param samples 1 = Off, 4 = 4x MSAA. Unsupported values fall back to 1.
+         */
+        void     SetMSAA( uint32_t samples );
+        uint32_t GetMSAA() const;
+        /// Returns the maximum MSAA sample count supported by the current GPU (1 or 4).
+        uint32_t GetMaxMSAA() const;
+
         void                             SetGridVisualization( const GridVisualizationSettings& settings );
         const GridVisualizationSettings& GetGridVisualization() const;
         void                               SetVesselVisualization( const VesselVisualizationSettings& settings );

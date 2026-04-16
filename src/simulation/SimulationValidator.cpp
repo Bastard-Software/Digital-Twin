@@ -680,10 +680,16 @@ namespace DigitalTwin
                                  "': CellPolarity regulationRate must be >= 0 (got: " +
                                  std::to_string( polarity->regulationRate ) + ")." );
 
-            if( polarity->apicalRepulsion < 0.0f )
-                result.AddError( "AgentGroup '" + group.GetName() +
-                                 "': CellPolarity apicalRepulsion must be >= 0 (got: " +
-                                 std::to_string( polarity->apicalRepulsion ) + ")." );
+            // apicalRepulsion may be negative: in the Phase-3+ cord-hollowing
+            // regime, apical-apical contacts become ACTIVELY repulsive (PODXL
+            // electrostatic repulsion, Strilic 2009). Only warn on extreme
+            // magnitudes that would destabilise integration.
+            if( polarity->apicalRepulsion < -5.0f || polarity->apicalRepulsion > 5.0f )
+                result.AddWarning( "AgentGroup '" + group.GetName() +
+                                   "': CellPolarity apicalRepulsion = " +
+                                   std::to_string( polarity->apicalRepulsion ) +
+                                   " is outside the typical [-5, 5] range; negative values "
+                                   "are biologically legal (apical electrostatic repulsion)." );
 
             if( polarity->basalAdhesion < 0.0f )
                 result.AddError( "AgentGroup '" + group.GetName() +

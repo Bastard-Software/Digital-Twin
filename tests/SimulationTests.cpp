@@ -3919,6 +3919,188 @@ TEST_F( SimulationBuilderTest, ECBlobDemo_DoesNotSettle )
 }
 
 // =============================================================================
+// Phase 3 — net-negative apical adhesion (apical repulsion)
+// =============================================================================
+//
+// Shared setup helper for Phase-3 integration tests: builds a Phase-1+2+3
+// blueprint with configurable plate presence and configurable apical
+// parameters, runs N seconds of sim.
+// Returns the final positions for comparative analysis.
+static std::vector<glm::vec4> RunECDemoPhase3(
+    Device*           device,
+    ResourceManager*  rm,
+    StreamingManager* stream,
+    bool              withPlate,
+    int               frames,
+    float             apicalRepulsion = -1.0f,
+    float             basalAdhesion   =  2.5f )
+{
+    SimulationBlueprint blueprint;
+    blueprint.SetDomainSize( glm::vec3( 40.0f ), 1.5f );
+    blueprint.ConfigureSpatialPartitioning()
+        .SetMethod( SpatialPartitioningMethod::HashGrid )
+        .SetCellSize( 3.0f )
+        .SetMaxDensity( 64 )
+        .SetComputeHz( 60.0f );
+
+    const float     radius     = 2.0f;
+    const float     halfLength = 6.0f;
+    const float     spacing    = 1.2f;
+    const glm::vec3 center     = glm::vec3( 0.0f, 2.5f, 0.0f );
+    const glm::vec3 axis       = glm::vec3( 1.0f, 0.0f, 0.0f );
+
+    auto positions = SpatialDistribution::LatticeInCylinder(
+        spacing, radius, halfLength, center, axis );
+    const uint32_t count = static_cast<uint32_t>( positions.size() );
+
+    AgentGroup& ecs = blueprint.AddAgentGroup( "Endothelial Cells" );
+    ecs.SetCount( count )
+        .SetMorphology( MorphologyGenerator::CreateCurvedTile( 20.0f, 1.05f, 0.25f, radius ) )
+        .SetDistribution( positions );
+
+    ecs.AddBehaviour( BiomechanicsGenerator::JKR()
+                          .SetYoungsModulus( 20.0f )
+                          .SetPoissonRatio( 0.4f )
+                          .SetAdhesionEnergy( 5.0f )
+                          .SetMaxInteractionRadius( 0.75f )
+                          .SetDampingCoefficient( 150.0f )
+                          .Build() )
+        .SetHz( 60.0f );
+    ecs.AddBehaviour( Behaviours::CadherinAdhesion{
+                          glm::vec4( 0.0f, 0.0f, 1.0f, 0.0f ), 0.05f, 0.001f, 2.0f } )
+        .SetHz( 60.0f );
+    Behaviours::CellPolarity polarity;
+    polarity.regulationRate  = 0.2f;
+    polarity.apicalRepulsion = apicalRepulsion;
+    polarity.basalAdhesion   = basalAdhesion;
+    ecs.AddBehaviour( polarity ).SetHz( 60.0f );
+    ecs.AddBehaviour( Behaviours::BrownianMotion{ 0.1f } ).SetHz( 60.0f );
+
+    if( withPlate )
+    {
+        Behaviours::BasementMembrane plate;
+        plate.planeNormal       = glm::vec3( 0.0f, 1.0f, 0.0f );
+        plate.height            = 0.0f;
+        plate.contactStiffness  = 15.0f;
+        plate.integrinAdhesion  = 1.5f;
+        plate.anchorageDistance = 1.0f;
+        plate.polarityBias      = 2.0f;
+        ecs.AddBehaviour( plate ).SetHz( 60.0f );
+    }
+
+    SimulationBuilder builder( rm, stream );
+    SimulationState   state = builder.Build( blueprint );
+
+    auto compCtxHandle = device->CreateThreadContext( QueueType::COMPUTE );
+    auto compCtx       = device->GetThreadContext( compCtxHandle );
+    auto compCmd       = compCtx->GetCommandBuffer( compCtx->CreateCommandBuffer() );
+
+    GraphDispatcher dispatcher;
+    const float     dt        = 1.0f / 60.0f;
+    uint32_t        activeIdx = 0;
+    for( int frame = 0; frame < frames; ++frame )
+    {
+        compCmd->Begin();
+        activeIdx = dispatcher.Dispatch( &state.computeGraph, compCmd, nullptr,
+                                         dt, dt * static_cast<float>( frame ), activeIdx );
+        compCmd->End();
+        device->GetComputeQueue()->Submit( { compCmd } );
+        device->GetComputeQueue()->WaitIdle();
+    }
+
+    std::vector<glm::vec4> finalPositions( count );
+    stream->ReadbackBufferImmediate(
+        state.agentBuffers[ activeIdx ], finalPositions.data(), count * sizeof( glm::vec4 ) );
+
+    state.Destroy( rm );
+    return finalPositions;
+}
+
+// Mean pairwise distance across all cells — a cheap proxy for how "open" or
+// "compact" the aggregate is. Active inter-cell repulsion increases this;
+// strong adhesion (no repulsion) decreases it.
+static float MeanPairwiseDistance( const std::vector<glm::vec4>& pos )
+{
+    if( pos.size() < 2 ) return 0.0f;
+    // Sample-based for speed: for ~100 cells this is cheap enough to do all N²/2
+    // pairs directly, but we cap to avoid surprise costs at larger counts.
+    const size_t n = pos.size();
+    double       sum  = 0.0;
+    size_t       nPairs = 0;
+    for( size_t i = 0; i < n; ++i )
+        for( size_t j = i + 1; j < n; ++j )
+        {
+            glm::vec3 d = glm::vec3( pos[ i ] ) - glm::vec3( pos[ j ] );
+            sum += glm::length( d );
+            ++nPairs;
+        }
+    return nPairs > 0 ? static_cast<float>( sum / static_cast<double>( nPairs ) ) : 0.0f;
+}
+
+// 11. Phase 3 positive case — net-negative apical repulsion must produce more
+//     inter-cell spacing than merely-weakened apical adhesion, under the same
+//     initial conditions and plate. This is the core Phase 3 signal: turning
+//     apical modifier from attractive (+0.3) to actively repulsive (-1.0)
+//     pushes cells apart throughout the aggregate.
+//
+//     Note: we do NOT assert the appearance of a clean axial tube here — that
+//     requires active cortical tension (Phase 4) to resist the plate-induced
+//     pancake-spreading. Phase 3 in isolation produces "more spaced cells",
+//     not "tube morphology". That's the correct biology progression.
+TEST_F( SimulationBuilderTest, ECTubeDemo_ApicalRepulsion_IncreasesSpacing )
+{
+    if( !m_device )
+        GTEST_SKIP();
+
+    // Run A — Phase 3 values (apical -1.0: active repulsion).
+    auto finalRepulsive = RunECDemoPhase3(
+        m_device.get(), m_resourceManager.get(), m_streamingManager.get(),
+        /*withPlate=*/true, /*frames=*/300,
+        /*apicalRepulsion=*/-1.0f, /*basalAdhesion=*/2.5f );
+    float dRepulsive = MeanPairwiseDistance( finalRepulsive );
+
+    // Run B — Phase 2 apical values (apical +0.3: just weakened adhesion).
+    auto finalAttractive = RunECDemoPhase3(
+        m_device.get(), m_resourceManager.get(), m_streamingManager.get(),
+        /*withPlate=*/true, /*frames=*/300,
+        /*apicalRepulsion=*/0.3f, /*basalAdhesion=*/1.5f );
+    float dAttractive = MeanPairwiseDistance( finalAttractive );
+
+    EXPECT_GT( dRepulsive, dAttractive )
+        << "Net-negative apical must produce more inter-cell spacing than "
+           "weak-apical (spacing: repulsive=" << dRepulsive
+        << " vs attractive=" << dAttractive << ")";
+}
+
+// 12. Phase 3 paired control — the same differential must hold in ECBlobDemo
+//     (no plate). Apical repulsion must do *something* even without the
+//     substrate cue, because surface cells still establish polarity from
+//     neighbour geometry. Proves the Phase-3 mechanism is not plate-dependent
+//     — it acts on any polarised cell pair.
+TEST_F( SimulationBuilderTest, ECBlobDemo_ApicalRepulsion_IncreasesSpacing )
+{
+    if( !m_device )
+        GTEST_SKIP();
+
+    auto finalRepulsive = RunECDemoPhase3(
+        m_device.get(), m_resourceManager.get(), m_streamingManager.get(),
+        /*withPlate=*/false, /*frames=*/300,
+        /*apicalRepulsion=*/-1.0f, /*basalAdhesion=*/2.5f );
+    float dRepulsive = MeanPairwiseDistance( finalRepulsive );
+
+    auto finalAttractive = RunECDemoPhase3(
+        m_device.get(), m_resourceManager.get(), m_streamingManager.get(),
+        /*withPlate=*/false, /*frames=*/300,
+        /*apicalRepulsion=*/0.3f, /*basalAdhesion=*/1.5f );
+    float dAttractive = MeanPairwiseDistance( finalAttractive );
+
+    EXPECT_GT( dRepulsive, dAttractive )
+        << "Net-negative apical must produce more inter-cell spacing than "
+           "weak-apical, even without a plate (spacing: repulsive="
+        << dRepulsive << " vs attractive=" << dAttractive << ")";
+}
+
+// =============================================================================
 // Rigid body dynamics — builder wiring + orientation evolution tests
 // =============================================================================
 

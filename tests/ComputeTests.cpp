@@ -5985,6 +5985,54 @@ TEST_F( ComputeTest, Shader_JKR_Polarity_ZeroMagnitude_NoEffect )
     EXPECT_NEAR( x1_pol, x1_base, 1e-4f ) << "Zero-magnitude polarity should produce no change";
 }
 
+// Phase 3: apical-apical aligned contact with NEGATIVE apicalRepulsion flips
+// adhesion into ACTIVE repulsion — two cells end up further apart than without
+// any JKR attraction at all. This is the PODXL electrostatic repulsion
+// mechanism (Strilic 2009): at apical poles, net-negative polarity modifier
+// pushes cells apart beyond the baseline repulsion distance.
+TEST_F( ComputeTest, Shader_JKR_Polarity_ApicalFacing_NetNegative_IsRepulsive )
+{
+    if( !m_device )
+        GTEST_SKIP();
+
+    float repulsion = 50.0f, adhesion = 5.0f, maxRadius = 1.5f;
+
+    // Agent 0 at x=0, polarity -X (apical toward agent 1)
+    // Agent 1 at x=2.9, polarity +X (apical toward agent 0)
+    // Both magnitudes = 1 → full polarity effect.
+    glm::vec4 pol0 = glm::vec4( -1.0f, 0.0f, 0.0f, 1.0f );
+    glm::vec4 pol1 = glm::vec4(  1.0f, 0.0f, 0.0f, 1.0f );
+
+    // Phase 3 values: apicalRepulsion = -1.0 (active repulsion)
+    auto [x0_neg, x1_neg] = RunJKRCadherin(
+        m_device.get(), m_rm.get(), m_stream.get(),
+        0.0f, 2.9f, repulsion, adhesion, maxRadius,
+        glm::vec4( 0.0f ), glm::vec4( 0.0f ), glm::mat4( 1.0f ),
+        0u, 1.0f,
+        1u, pol0, pol1, -1.0f, 2.5f );
+
+    // Baseline: Phase 2 values: apicalRepulsion = 0.3 (weakened, still attractive)
+    auto [x0_weak, x1_weak] = RunJKRCadherin(
+        m_device.get(), m_rm.get(), m_stream.get(),
+        0.0f, 2.9f, repulsion, adhesion, maxRadius,
+        glm::vec4( 0.0f ), glm::vec4( 0.0f ), glm::mat4( 1.0f ),
+        0u, 1.0f,
+        1u, pol0, pol1, 0.3f, 1.5f );
+
+    float disp_neg  = x1_neg  - x0_neg;
+    float disp_weak = x1_weak - x0_weak;
+
+    // Net-negative apical must produce STRICTLY LARGER separation than merely
+    // weakened-apical — proves the sign flip is taking effect, not just a scale.
+    EXPECT_GT( disp_neg, disp_weak )
+        << "Net-negative apical (-1.0) must push cells apart more than weak apical (+0.3)";
+    // Additionally, the net motion under -1.0 must move cells OUTWARD relative to
+    // their starting 2.9 separation (since overlap = 0.1 initially, the pair
+    // should separate, not compress).
+    EXPECT_GT( disp_neg, 2.9f )
+        << "Net-negative apical must push cells past their starting separation (active repulsion)";
+}
+
 // =============================================================================
 // BasementMembrane plate — raw jkr_forces shader tests (Phase 2)
 // =============================================================================

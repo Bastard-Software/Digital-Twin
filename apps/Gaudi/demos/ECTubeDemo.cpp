@@ -53,10 +53,18 @@ namespace Gaudi::Demos
                           } )
             .SetHz( 60.0f );
 
+        // Phase 3 values: see ECBlobDemo.cpp for rationale. ECTubeDemo's
+        // divergence comes from the plate: bottom-layer cells have their
+        // polarity anchored toward +Y by the plate polarity bias, so their
+        // apical side points away from the substrate into the cluster
+        // interior. Combined with interior cells' neighbour-centroid-driven
+        // polarity, the apical repulsion should open a cavity ALONG the
+        // cluster axis (horizontal tube-like hollowing), not as an isotropic
+        // sphere.
         DigitalTwin::Behaviours::CellPolarity polarity;
         polarity.regulationRate  = 0.2f;
-        polarity.apicalRepulsion = 0.3f;
-        polarity.basalAdhesion   = 1.5f;
+        polarity.apicalRepulsion = -1.0f;
+        polarity.basalAdhesion   = 2.5f;
         ecs.AddBehaviour( polarity ).SetHz( 60.0f );
 
         ecs.AddBehaviour( DigitalTwin::Behaviours::BrownianMotion{ 0.1f } ).SetHz( 60.0f );

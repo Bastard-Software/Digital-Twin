@@ -48,7 +48,16 @@ namespace DigitalTwin::Behaviours
     struct CellPolarity
     {
         float regulationRate  = 0.1f;  // EMA rate for polarity adaptation (1/s)
-        float apicalRepulsion = 0.5f;  // adhesion multiplier when apical faces apical (< 1 = weaker)
+        // Adhesion multiplier when apical faces apical.
+        //   > 1.0  = stronger adhesion (rare biologically)
+        //   0 < x < 1 = weakened adhesion (attenuates VE-cad at apical pole)
+        //   = 0   = no apical-apical adhesion
+        //   < 0   = actively REPULSIVE at apical pole (PODXL electrostatic
+        //           repulsion, cord-hollowing mechanism; Strilic 2009)
+        // Net pair adhesion reads `adhScale = mix(apicalRepulsion, basalAdhesion, alignment)`
+        // times cadherin affinity, so a negative value here flips adhesion to
+        // repulsion for fully-apical-aligned contacts.
+        float apicalRepulsion = 0.5f;
         float basalAdhesion   = 1.5f;  // adhesion multiplier when basal faces basal (> 1 = stronger)
     };
 

@@ -172,12 +172,24 @@ namespace Gaudi::Demos
             .SetHz( 60.0f );
 
         // Apical-basal polarity — symmetric-interior / outward-surface EMA.
-        // Phase 1 values: same phenomenological weights as the old tube demo
-        // (will be retuned in Phase 3 when net-negative apical is introduced).
+        // Phase 3 values: net-negative apical repulsion.
+        //   * apicalRepulsion = -1.0  → apical-aligned contacts (interior of a
+        //     cluster, where polarised cells face each other apex-to-apex) flip
+        //     adhesion into active repulsion. Biologically represents PODXL
+        //     electrostatic repulsion at apical poles (Strilic 2009).
+        //   * basalAdhesion   = 2.5   → basal-aligned contacts stay strongly
+        //     attractive, preserving outer-shell integrity against the interior
+        //     repulsion that would otherwise rupture the aggregate.
+        // ECBlobDemo inherits these values even though it has no plate cue —
+        // polarity will still establish on cluster-surface cells from neighbour
+        // geometry, so apical (toward cluster centre) and basal (outward) are
+        // still defined. Expected outcome differs from ECTubeDemo: with no
+        // directional anchor, a hollow spheroid topology is the minimum-energy
+        // shape for this force balance.
         DigitalTwin::Behaviours::CellPolarity polarity;
         polarity.regulationRate  = 0.2f;
-        polarity.apicalRepulsion = 0.3f;
-        polarity.basalAdhesion   = 1.5f;
+        polarity.apicalRepulsion = -1.0f;
+        polarity.basalAdhesion   = 2.5f;
         ecs.AddBehaviour( polarity ).SetHz( 60.0f );
 
         // Thermal noise — minimal jitter to help cells escape local energy

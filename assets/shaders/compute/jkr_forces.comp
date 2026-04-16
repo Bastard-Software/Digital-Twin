@@ -176,15 +176,33 @@ void main() {
                     if (dist >= interactDist) continue;
 
                     // ── Cadherin + polarity modulation (cell-level, once per neighbour) ──
+                    //
+                    // adhScale ends up as a SIGNED multiplier on the base adhesion
+                    // force. A negative value inverts adhesion into active repulsion —
+                    // the mechanism by which apical-apical contacts between polarised
+                    // cells push each other apart (PODXL electrostatic repulsion,
+                    // Strilic 2009). Downstream:
+                    //   * hull torque path:   torque += cross(myHull[a], localDir * (-adhF))
+                    //                         adhF < 0 → torque pushes hull points AWAY
+                    //                         from the contact (reorient to reduce overlap).
+                    //   * point-particle:     netForce = repForce - adhForce
+                    //                         adhForce < 0 → |netForce| increases outward.
+                    // No clamp on adhScale itself — Phase 3+ requires signed values.
                     float adhScale = 1.0;
                     if (pc.gridSize.x != 0u) {
                         float couplingStrength = uintBitsToFloat(pc.gridSize.y);
                         vec4  profileI = cadherinProfiles.profiles[originalAgentIdx];
                         vec4  profileJ = cadherinProfiles.profiles[neighborAgentIdx];
-                        float A = clamp(dot(profileI, cadherinAffinity.M * profileJ), 0.0, 1.0);
+                        // Allow negative off-diagonal affinities (hetero-cadherin
+                        // repulsion); in practice the blueprint affinity matrix is
+                        // non-negative and this acts as a passthrough.
+                        float A = clamp(dot(profileI, cadherinAffinity.M * profileJ), -1.0, 1.0);
                         adhScale *= A * couplingStrength;
                     }
                     if (pc.gridSize.z != 0u) {
+                        // pp.x = apicalRepulsion, pp.y = basalAdhesion. In Phase 3+ pp.x
+                        // can be negative: apical-aligned contacts (alignment ≈ 0) then
+                        // produce scale < 0 → adhScale flips sign → net repulsion.
                         vec2  pp        = unpackHalf2x16(pc.gridSize.w);
                         vec3  r_ij      = diff / dist;
                         float dotI      = dot(polarityData.data[originalAgentIdx].xyz, -r_ij);

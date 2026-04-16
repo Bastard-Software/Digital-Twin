@@ -74,6 +74,8 @@ namespace DigitalTwin
             resourceManager->DestroyBuffer( drawMetaBuffer );
         if( visibilityBuffer.IsValid() )
             resourceManager->DestroyBuffer( visibilityBuffer );
+        if( basementMembraneBuffer.IsValid() )
+            resourceManager->DestroyBuffer( basementMembraneBuffer );
 
         for( auto& field: gridFields )
         {
@@ -109,6 +111,7 @@ namespace DigitalTwin
         agentReorderBuffer     = {};
         drawMetaBuffer         = {};
         visibilityBuffer       = {};
+        basementMembraneBuffer = {};
     }
 
     SimulationState SimulationBuilder::Build( const SimulationBlueprint& blueprint )
@@ -790,6 +793,51 @@ namespace DigitalTwin
                 { { outState.cadherinAffinityBuffer, &affinity, sizeof( glm::mat4 ), 0 } } );
         }
 
+        // Pre-pass: basement-membrane plate buffer (global, single plate per sim).
+        // Always allocated so both polarity_update (binding 6) and jkr_forces
+        // (binding 12) always have a valid binding. Flags.x = 0 → shader skips
+        // the plate block entirely; flags.x = 1 → plate active with params below.
+        {
+            struct GPUPlate {
+                glm::vec4  normalHeight; // xyz=normal, w=height
+                glm::vec4  params;       // x=contactStiff, y=integrinAdh, z=anchorageDist, w=polarityBias
+                glm::uvec4 flags;        // x=active
+            };
+            GPUPlate plateData{};
+            plateData.normalHeight = glm::vec4( 0.0f, 0.0f, 1.0f, 0.0f );
+            plateData.params       = glm::vec4( 0.0f );
+            plateData.flags        = glm::uvec4( 0u );
+
+            for( const auto& g : blueprint.GetGroups() )
+            {
+                bool found = false;
+                for( const auto& r : g.GetBehaviours() )
+                {
+                    if( const auto* bm = std::get_if<Behaviours::BasementMembrane>( &r.behaviour ) )
+                    {
+                        glm::vec3 n    = bm->planeNormal;
+                        float     nLen = glm::length( n );
+                        if( nLen > 0.0001f ) n /= nLen;
+
+                        plateData.normalHeight = glm::vec4( n, bm->height );
+                        plateData.params       = glm::vec4( bm->contactStiffness,
+                                                            bm->integrinAdhesion,
+                                                            bm->anchorageDistance,
+                                                            bm->polarityBias );
+                        plateData.flags        = glm::uvec4( 1u, 0u, 0u, 0u );
+                        found = true;
+                        break;
+                    }
+                }
+                if( found ) break;
+            }
+
+            outState.basementMembraneBuffer = m_resourceManager->CreateBuffer(
+                { sizeof( GPUPlate ), BufferType::STORAGE, "BasementMembraneBuffer" } );
+            m_streamingManager->UploadBufferImmediate(
+                { { outState.basementMembraneBuffer, &plateData, sizeof( GPUPlate ), 0 } } );
+        }
+
         // Pre-pass: allocate polarity buffer. Always allocated so JKR binding 9 is always valid.
         {
             bool hasPolarity = false;
@@ -882,6 +930,7 @@ namespace DigitalTwin
                         bg0->Bind( 3, m_resourceManager->GetBuffer( outState.hashBuffer ) );
                         bg0->Bind( 4, m_resourceManager->GetBuffer( outState.offsetBuffer ) );
                         bg0->Bind( 5, m_resourceManager->GetBuffer( outState.phenotypeBuffer ) );
+                        bg0->Bind( 6, m_resourceManager->GetBuffer( outState.basementMembraneBuffer ) );
                         bg0->Build();
 
                         BindingGroup* bg1 = m_resourceManager->GetBindingGroup( m_resourceManager->CreateBindingGroup( polarityPipeHandle, 0 ) );
@@ -891,6 +940,7 @@ namespace DigitalTwin
                         bg1->Bind( 3, m_resourceManager->GetBuffer( outState.hashBuffer ) );
                         bg1->Bind( 4, m_resourceManager->GetBuffer( outState.offsetBuffer ) );
                         bg1->Bind( 5, m_resourceManager->GetBuffer( outState.phenotypeBuffer ) );
+                        bg1->Bind( 6, m_resourceManager->GetBuffer( outState.basementMembraneBuffer ) );
                         bg1->Build();
 
                         ComputePushConstants polPC{};
@@ -1061,6 +1111,7 @@ namespace DigitalTwin
                     bgJkr0->Bind( 9, m_resourceManager->GetBuffer( outState.polarityBuffer ) );
                     bgJkr0->Bind( 10, m_resourceManager->GetBuffer( outState.orientationBuffer ) );
                     bgJkr0->Bind( 11, m_resourceManager->GetBuffer( outState.contactHullBuffer ) );
+                    bgJkr0->Bind( 12, m_resourceManager->GetBuffer( outState.basementMembraneBuffer ) );
                     bgJkr0->Build();
 
                     BindingGroup* bgJkr1 = m_resourceManager->GetBindingGroup( m_resourceManager->CreateBindingGroup( jkrPipeHandle, 0 ) );
@@ -1079,6 +1130,7 @@ namespace DigitalTwin
                     bgJkr1->Bind( 9, m_resourceManager->GetBuffer( outState.polarityBuffer ) );
                     bgJkr1->Bind( 10, m_resourceManager->GetBuffer( outState.orientationBuffer ) );
                     bgJkr1->Bind( 11, m_resourceManager->GetBuffer( outState.contactHullBuffer ) );
+                    bgJkr1->Bind( 12, m_resourceManager->GetBuffer( outState.basementMembraneBuffer ) );
                     bgJkr1->Build();
 
                     // 3. Configure Task specific parameters
@@ -2419,6 +2471,51 @@ namespace DigitalTwin
                 behaviourIndex++;
             }
             groupIndex++;
+        }
+
+        // ── Basement-membrane plate (hot reload) ──────────────────────────────
+        // Scan for a BasementMembrane behaviour. If found, re-upload the plate
+        // SSBO with current parameters. If none, re-upload with flags.x = 0 so
+        // the shader branch stays disabled — enables toggling the plate off
+        // without rebuild.
+        if( state.basementMembraneBuffer.IsValid() )
+        {
+            struct GPUPlate {
+                glm::vec4  normalHeight;
+                glm::vec4  params;
+                glm::uvec4 flags;
+            };
+            GPUPlate plateData{};
+            plateData.normalHeight = glm::vec4( 0.0f, 0.0f, 1.0f, 0.0f );
+            plateData.params       = glm::vec4( 0.0f );
+            plateData.flags        = glm::uvec4( 0u );
+
+            for( const auto& g : blueprint.GetGroups() )
+            {
+                bool found = false;
+                for( const auto& r : g.GetBehaviours() )
+                {
+                    if( const auto* bm = std::get_if<Behaviours::BasementMembrane>( &r.behaviour ) )
+                    {
+                        glm::vec3 n    = bm->planeNormal;
+                        float     nLen = glm::length( n );
+                        if( nLen > 0.0001f ) n /= nLen;
+
+                        plateData.normalHeight = glm::vec4( n, bm->height );
+                        plateData.params       = glm::vec4( bm->contactStiffness,
+                                                            bm->integrinAdhesion,
+                                                            bm->anchorageDistance,
+                                                            bm->polarityBias );
+                        plateData.flags        = glm::uvec4( 1u, 0u, 0u, 0u );
+                        found = true;
+                        break;
+                    }
+                }
+                if( found ) break;
+            }
+
+            m_streamingManager->UploadBufferImmediate(
+                { { state.basementMembraneBuffer, &plateData, sizeof( GPUPlate ), 0 } } );
         }
     }
 

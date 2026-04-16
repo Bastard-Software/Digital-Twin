@@ -61,6 +61,26 @@ namespace Gaudi::Demos
 
         ecs.AddBehaviour( DigitalTwin::Behaviours::BrownianMotion{ 0.1f } ).SetHz( 60.0f );
 
-        // NOTE: No BasementMembrane behaviour yet — introduced in Phase 2.
+        // ── Basement membrane (Phase 2) ───────────────────────────────────────
+        // 2D Matrigel-like plate lying in the XZ plane at y=0, outward normal
+        // +Y. Camera convention is Y-up, so this is the floor. Supplies:
+        //   * Contact repulsion: cells cannot penetrate the substrate.
+        //   * Integrin adhesion: cells within anchorageDistance are pulled
+        //     toward the plate (focal-adhesion engagement).
+        //   * Polarity bias: anchored cells' apico-basal axis aligns with +Y
+        //     (basal side toward plate).
+        //
+        // Biological prediction being tested in Phase 2: this anchorage
+        // suppresses the Plateau-Rayleigh spheroid breakup observed in
+        // ECBlobDemo. The elongated EC cluster should stay elongated when
+        // pinned to the plate — a horizontal log along the X axis.
+        DigitalTwin::Behaviours::BasementMembrane plate;
+        plate.planeNormal       = glm::vec3( 0.0f, 1.0f, 0.0f );
+        plate.height            = 0.0f;
+        plate.contactStiffness  = 15.0f;
+        plate.integrinAdhesion  = 1.5f;
+        plate.anchorageDistance = 1.0f;
+        plate.polarityBias      = 2.0f;
+        ecs.AddBehaviour( plate ).SetHz( 60.0f );
     }
 } // namespace Gaudi::Demos

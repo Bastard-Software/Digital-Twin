@@ -248,6 +248,7 @@ namespace Gaudi
             if constexpr( std::is_same_v<T, DigitalTwin::Behaviours::VesselSpring> )     return "Behaviour — Vessel Spring";
             if constexpr( std::is_same_v<T, DigitalTwin::Behaviours::VesselSeed> )       return "Behaviour — Vessel Seed";
             if constexpr( std::is_same_v<T, DigitalTwin::Behaviours::PhalanxActivation> ) return "Behaviour — Phalanx Activation";
+            if constexpr( std::is_same_v<T, DigitalTwin::Behaviours::BasementMembrane> ) return "Behaviour — Basement Membrane";
             return "Behaviour";
         }, record.behaviour );
         ImGui::TextDisabled( "%s", behaviourTypeName );
@@ -305,6 +306,15 @@ namespace Gaudi
                     changed |= ImGui::SliderFloat( "Regulation Rate",   &b.regulationRate,  0.0f, 1.0f, "%.3f" );
                     changed |= ImGui::SliderFloat( "Apical Repulsion",  &b.apicalRepulsion, 0.0f, 1.0f );
                     changed |= ImGui::SliderFloat( "Basal Adhesion",    &b.basalAdhesion,   1.0f, 3.0f );
+                }
+                else if constexpr( std::is_same_v<T, DigitalTwin::Behaviours::BasementMembrane> )
+                {
+                    changed |= ImGui::SliderFloat3( "Plane Normal",      &b.planeNormal.x,    -1.0f, 1.0f );
+                    changed |= ImGui::SliderFloat ( "Height",            &b.height,           -10.0f, 10.0f );
+                    changed |= ImGui::SliderFloat ( "Contact Stiffness", &b.contactStiffness, 0.0f, 100.0f );
+                    changed |= ImGui::SliderFloat ( "Integrin Adhesion", &b.integrinAdhesion, 0.0f, 10.0f );
+                    changed |= ImGui::SliderFloat ( "Anchorage Distance",&b.anchorageDistance,0.05f, 5.0f );
+                    changed |= ImGui::SliderFloat ( "Polarity Bias",     &b.polarityBias,     0.0f, 5.0f );
                 }
                 else if constexpr( std::is_same_v<T, DigitalTwin::Behaviours::CadherinAdhesion> )
                 {

@@ -174,6 +174,42 @@ namespace DigitalTwin::Behaviours
         float       rate = 1.0f;
     };
 
+    /**
+     * @brief Basement-membrane plate — static infinite plane anchorage surface.
+     *
+     * Supplies the two biologically essential ECM cues for endothelial
+     * tubulogenesis without the cost of a full 3D ECM field:
+     *   1. Contact repulsion — cells cannot penetrate the plane (integrin-rich
+     *      basal surface is impermeable at the cell's mechanical scale).
+     *   2. Integrin adhesion — cells within `anchorageDistance` of the plane
+     *      are attracted toward it (focal-adhesion / integrin engagement).
+     *   3. Polarity bias — anchored cells' polarity target shifts toward
+     *      `planeNormal` (basal-toward-membrane polarity cue from integrin
+     *      signalling).
+     *
+     * Biological analog: in vitro Matrigel tube formation assay (Kubota 1988,
+     * Arnaoutova 2009) — a 2D basement-membrane-like gel substrate on which
+     * ECs are seeded. In vivo analog: a pre-existing basal lamina that
+     * endothelial cells aggregate upon.
+     *
+     * Does NOT model:
+     *   - ECs depositing their own BM (phalanx-cell activity, later work).
+     *   - MMP-driven BM degradation during sprouting (roadmap item 5).
+     *   - Full 3D interstitial ECM (roadmap item 5).
+     *
+     * Global per simulation: one plate supported. All groups carrying this
+     * behaviour share the same plate parameters (builder picks the first).
+     */
+    struct BasementMembrane
+    {
+        glm::vec3 planeNormal       = { 0.0f, 0.0f, 1.0f }; // unit outward normal (away from plate into bulk)
+        float     height            = 0.0f;                 // plane origin along planeNormal (dot(planeOrigin, planeNormal))
+        float     contactStiffness  = 15.0f;                // Hertz-like repulsion preventing penetration
+        float     integrinAdhesion  = 1.5f;                 // JKR-like adhesion pulling cells toward plate
+        float     anchorageDistance = 1.0f;                 // max distance at which integrin adhesion + polarity bias apply
+        float     polarityBias      = 2.0f;                 // weight of plate polarity cue (overrides neighbour-centroid when strong)
+    };
+
 } // namespace DigitalTwin::Behaviours
 
 namespace DigitalTwin
@@ -194,7 +230,8 @@ namespace DigitalTwin
         Behaviours::Perfusion,
         Behaviours::Drain,
         Behaviours::VesselSeed,
-        Behaviours::VesselSpring>;
+        Behaviours::VesselSpring,
+        Behaviours::BasementMembrane>;
 
     // Wrapper to attach execution parameters (like frequency) to a behaviour
     struct BehaviourRecord

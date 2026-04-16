@@ -36,6 +36,7 @@ namespace DigitalTwin
         CheckCellCycleThresholds( blueprint, result );
         CheckCadherinAdhesion( blueprint, result );
         CheckCellPolarity( blueprint, result );
+        CheckBasementMembrane( blueprint, result );
         CheckPopulations( blueprint, result );
 
         return result;
@@ -689,6 +690,59 @@ namespace DigitalTwin
                                  "': CellPolarity basalAdhesion must be >= 0 (got: " +
                                  std::to_string( polarity->basalAdhesion ) + ")." );
         }
+    }
+
+    void SimulationValidator::CheckBasementMembrane( const SimulationBlueprint& blueprint, ValidationResult& result )
+    {
+        // Count groups carrying BasementMembrane. One global plate per simulation is
+        // supported in Phase 2; warn if multiple groups declare one (the builder
+        // will pick the first).
+        int plateCount = 0;
+        for( const auto& group : blueprint.GetGroups() )
+        {
+            for( const auto& record : group.GetBehaviours() )
+            {
+                if( std::holds_alternative<Behaviours::BasementMembrane>( record.behaviour ) )
+                {
+                    const auto& bm = std::get<Behaviours::BasementMembrane>( record.behaviour );
+                    ++plateCount;
+
+                    const float nLen = glm::length( bm.planeNormal );
+                    if( nLen < 0.001f )
+                        result.AddError( "AgentGroup '" + group.GetName() +
+                                         "': BasementMembrane planeNormal must be non-zero." );
+                    else if( std::abs( nLen - 1.0f ) > 0.05f )
+                        result.AddWarning( "AgentGroup '" + group.GetName() +
+                                           "': BasementMembrane planeNormal is not unit length (|n| = " +
+                                           Fmt2f( nLen ) + "); it will be normalised by the shader." );
+
+                    if( bm.contactStiffness <= 0.0f )
+                        result.AddError( "AgentGroup '" + group.GetName() +
+                                         "': BasementMembrane contactStiffness must be > 0 (got: " +
+                                         Fmt2f( bm.contactStiffness ) + ")." );
+
+                    if( bm.integrinAdhesion < 0.0f )
+                        result.AddError( "AgentGroup '" + group.GetName() +
+                                         "': BasementMembrane integrinAdhesion must be >= 0 (got: " +
+                                         Fmt2f( bm.integrinAdhesion ) + ")." );
+
+                    if( bm.anchorageDistance <= 0.0f )
+                        result.AddError( "AgentGroup '" + group.GetName() +
+                                         "': BasementMembrane anchorageDistance must be > 0 (got: " +
+                                         Fmt2f( bm.anchorageDistance ) + ")." );
+
+                    if( bm.polarityBias < 0.0f )
+                        result.AddError( "AgentGroup '" + group.GetName() +
+                                         "': BasementMembrane polarityBias must be >= 0 (got: " +
+                                         Fmt2f( bm.polarityBias ) + ")." );
+                }
+            }
+        }
+
+        if( plateCount > 1 )
+            result.AddWarning( "BasementMembrane declared on more than one AgentGroup (" +
+                               std::to_string( plateCount ) +
+                               "); only one global plate is supported — the builder will use the first." );
     }
 
     void SimulationValidator::CheckPopulations( const SimulationBlueprint& blueprint, ValidationResult& result )

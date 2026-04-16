@@ -43,6 +43,14 @@ struct PhenotypeData {
 };
 layout(std430, binding = 5) readonly buffer Phenotypes  { PhenotypeData data[]; } phenotypes;
 
+// Basement-membrane plate (global, shared across all groups). Always bound.
+// See jkr_forces.comp for the layout description.
+layout(std430, binding = 6) readonly buffer PlateBuf {
+    vec4  normalHeight;
+    vec4  params;
+    uvec4 flags;
+} plate;
+
 uint hashPos(ivec3 cell) {
     const uint p1 = 73856093u; const uint p2 = 19349663u; const uint p3 = 83492791u;
     return (uint(cell.x) * p1) ^ (uint(cell.y) * p2) ^ (uint(cell.z) * p3);
@@ -112,22 +120,61 @@ void main()
     float rawLen   = length(rawVec);
     float alpha    = pc.regulationRate * pc.dt;
 
-    // xyz: direction component — EMA toward outward unit vector then renormalize
+    // Neighbour-centroid target direction (outward from aggregate).
+    vec3  neighborTarget = (rawLen > 0.001) ? (rawVec / rawLen) : vec3(0.0);
+    float neighborW      = clamp(rawLen / pc.interactionRadius, 0.0, 1.0);
+
+    // ── Basement-membrane polarity bias ──
+    // When the plate is active AND this cell is within anchorageDistance of it,
+    // the integrin-signalling cue biases polarity toward the outward plate
+    // normal (basal-pointing). Strength falls off linearly from polarityBias at
+    // plate contact to 0 at anchorageDistance. Biological analog: integrin
+    // engagement initiates apico-basal segregation of Golgi and PODXL
+    // trafficking (Strilic 2009; review in Iruela-Arispe & Davis 2009).
+    vec3  plateTarget = neighborTarget;
+    float plateW      = neighborW;
+    float plateWeight = 0.0; // 0 = no plate influence, 1 = full plate override
+    if (plate.flags.x != 0u) {
+        vec3  nRaw = plate.normalHeight.xyz;
+        float nLen = length(nRaw);
+        if (nLen > 0.0001) {
+            vec3  n  = nRaw / nLen;
+            float h  = plate.normalHeight.w;
+            float d  = dot(myPos, n) - h;               // signed distance from plate
+            float aD = max(plate.params.z, 0.0001);     // anchorageDistance
+            float pb = plate.params.w;                  // polarityBias
+
+            if (d >= 0.0 && d <= aD) {
+                // Linear falloff: full bias at plate surface, zero at anchorage boundary.
+                plateWeight = pb * (1.0 - d / aD);
+                plateWeight = clamp(plateWeight, 0.0, 1.0);
+                plateTarget = n;
+                // Anchored cells are "surface" cells by definition — saturate w.
+                plateW      = 1.0;
+            }
+        }
+    }
+
+    // Blend neighbour-centroid target with plate target by plateWeight. Result
+    // is EMAed with the old polarity below.
+    vec3 targetDir = mix(neighborTarget, plateTarget, plateWeight);
+    float targetMag = length(targetDir);
+    if (targetMag > 0.001) targetDir /= targetMag;
+    float targetW  = mix(neighborW, plateW, plateWeight);
+
+    // xyz: direction component — EMA toward blended target, then renormalise
     vec3 newDir;
-    if (rawLen > 0.001) {
-        vec3 targetDir = rawVec / rawLen;
+    if (targetMag > 0.001) {
         newDir = mix(old.xyz, targetDir, alpha);
         float l = length(newDir);
         if (l > 0.001) newDir /= l;
     } else {
-        // Interior cell with symmetric neighbors — polarity decays toward zero
+        // Interior cell with symmetric neighbours and no plate cue — polarity decays.
         newDir = mix(old.xyz, vec3(0.0), alpha);
     }
 
-    // w: magnitude — 1 on surface (large displacement from centroid), 0 deep in interior
-    // Normalized by interactionRadius so the transition happens over ~1 cell radius
-    float targetW = clamp(rawLen / pc.interactionRadius, 0.0, 1.0);
-    float newW    = mix(old.w, targetW, alpha);
+    // w: magnitude — EMA toward the blended target magnitude.
+    float newW = mix(old.w, targetW, alpha);
 
     polarity.data[globalIdx] = vec4(newDir, newW);
 }

@@ -58,6 +58,21 @@ layout(std430, binding = 11) readonly buffer ContactHullBuf {
     vec4 points[16];
 } hull;
 
+// Basement-membrane plate (global, shared across all groups). Always bound.
+// Shader branches on plate.flags.x — when 0 the plate block is skipped entirely.
+//   normalHeight.xyz = outward plane normal (unit-ish; shader re-normalises)
+//   normalHeight.w   = plane offset along normal (plane origin = normal * height)
+//   params.x         = contactStiffness (Hertz-like repulsion)
+//   params.y         = integrinAdhesion (JKR-like attraction toward plate)
+//   params.z         = anchorageDistance (max distance for integrin + polarity cue)
+//   params.w         = polarityBias (consumed by polarity_update only, ignored here)
+//   flags.x          = active (0 = plate disabled)
+layout(std430, binding = 12) readonly buffer PlateBuf {
+    vec4  normalHeight;
+    vec4  params;
+    uvec4 flags;
+} plate;
+
 // Rotate vector v by unit quaternion q.
 vec3 qrot( vec4 q, vec3 v ) {
     return v + 2.0 * cross( q.xyz, cross( q.xyz, v ) + q.w * v );
@@ -259,6 +274,47 @@ void main() {
                         }
                     }
                 }
+            }
+        }
+    }
+
+    // ── Basement-membrane plate (global, per-agent once outside neighbour loop) ──
+    // Supplies:
+    //   1. Contact repulsion — Hertz-like push along the outward normal when the
+    //      cell centre is below the plane (signed distance d < 0).
+    //   2. Integrin adhesion — JKR-like pull toward the plate when 0 <= d <=
+    //      anchorageDistance. Mimics focal-adhesion engagement with a BM-like
+    //      substrate; strictly one-sided (never attracts through the plane).
+    // Gated on plate.flags.x; zero cost when the plate is not in use.
+    if (plate.flags.x != 0u) {
+        vec3  nRaw = plate.normalHeight.xyz;
+        float nLen = length(nRaw);
+        if (nLen > 0.0001) {
+            vec3  n   = nRaw / nLen;
+            float h   = plate.normalHeight.w;
+            float d   = dot(myPos, n) - h;            // signed distance along normal
+
+            float kP   = plate.params.x;               // contactStiffness
+            float kI   = plate.params.y;               // integrinAdhesion
+            float aD   = max(plate.params.z, 0.0001);  // anchorageDistance
+
+            if (d < 0.0) {
+                // Below plane — Hertz push out. Use the same (-d)^1.5 form as
+                // cell-cell repulsion so plate stiffness and cell stiffness are
+                // comparable with matching numerical magnitudes.
+                force += n * (kP * pow(-d, 1.5));
+                // Pressure accumulator — plate contact reads like a contact too.
+                totalPressure += kP * pow(-d, 1.5);
+            } else if (d <= aD) {
+                // Within anchorage range — integrin pull toward plate (along -n).
+                // Parabolic shape: force = kI at d = aD/2, 0 at d = 0 and d = aD.
+                // Biologically: integrin engagement is strongest at the optimal
+                // cell-substrate separation; it falls to zero at the plate
+                // (no anomalous pull into contact — Hertz handles sub-plane),
+                // and at the boundary (smooth fade so cells leaving anchorage
+                // aren't flung). Peak force = kI, attained at d = aD/2.
+                float shape = 4.0 * d * (aD - d) / (aD * aD);
+                force += (-n) * (kI * shape);
             }
         }
     }

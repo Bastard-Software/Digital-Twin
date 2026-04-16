@@ -56,6 +56,14 @@ namespace DigitalTwin
         // Full-size when any group has CellPolarity; 16-byte dummy otherwise.
         BufferHandle polarityBuffer;
 
+        // Basement-membrane plate parameters — single global plate per simulation.
+        // Always allocated (48 bytes). Shader branches on plateFlags.x.
+        //   layout: vec4 normalHeight (xyz=normal, w=height)
+        //           vec4 params       (x=contactStiffness, y=integrinAdhesion,
+        //                               z=anchorageDistance, w=polarityBias)
+        //           uvec4 flags       (x=active 0/1; yzw reserved)
+        BufferHandle basementMembraneBuffer;
+
         // Per-agent orientation quaternions (xyzw). Dynamic when rigid body active — updated by JKR
         // each frame. Groups without a contact hull store (0,1,0,0) (shortest-arc mode in geometry.vert).
         // Groups with a contact hull store identity quaternion (0,0,0,1) (quaternion mode).

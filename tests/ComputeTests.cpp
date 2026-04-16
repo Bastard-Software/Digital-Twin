@@ -762,6 +762,11 @@ TEST_F( ComputeTest, Shader_JKRForces_Logic )
     ContactHullGPU dummyHull{};
     BufferHandle contactHullDummy = m_rm->CreateBuffer( { sizeof( ContactHullGPU ), BufferType::STORAGE, "JKRContactHullDummy" } );
     m_stream->UploadBufferImmediate( { { contactHullDummy, &dummyHull, sizeof( ContactHullGPU ) } } );
+    // Dummy plate buffer for binding 12 (activeFlag=0 → plate block skipped)
+    struct PlateGPU { glm::vec4 normalHeight; glm::vec4 params; glm::uvec4 flags; };
+    PlateGPU plateDummy{};
+    BufferHandle plateDummyBuf = m_rm->CreateBuffer( { sizeof( PlateGPU ), BufferType::STORAGE, "JKRPlateDummy" } );
+    m_stream->UploadBufferImmediate( { { plateDummyBuf, &plateDummy, sizeof( PlateGPU ) } } );
 
     BindingGroupHandle bgHandle = m_rm->CreateBindingGroup( pipeHandle, 0 );
     BindingGroup*      bg       = m_rm->GetBindingGroup( bgHandle );
@@ -777,6 +782,7 @@ TEST_F( ComputeTest, Shader_JKRForces_Logic )
     bg->Bind( 9, m_rm->GetBuffer( polarityDummy ) );
     bg->Bind( 10, m_rm->GetBuffer( orientationDummy ) );
     bg->Bind( 11, m_rm->GetBuffer( contactHullDummy ) );
+    bg->Bind( 12, m_rm->GetBuffer( plateDummyBuf ) );
     bg->Build();
 
     // 4. Setup Push Constants (Packed exactly as in SimulationBuilder)
@@ -5522,6 +5528,19 @@ TEST_F( ComputeTest, Shader_BrownianMotion_DeadSlot_Skipped )
 // Helper: dispatch jkr_forces once for two overlapping agents, return their x positions.
 // Both agents are placed on the X axis, same Y/Z.  The hash places both in cell (0,0,0).
 // Returns {agent0_x, agent1_x}.
+// Plate parameter pack matching the GPU `PlateBuf` layout used by jkr_forces +
+// polarity_update. All fields default to "disabled" — tests that don't exercise
+// the plate branch leave these zeroed and the shader skips the plate block.
+struct PlateTestParams {
+    glm::vec3 normal            = glm::vec3( 0.0f, 0.0f, 1.0f );
+    float     height            = 0.0f;
+    float     contactStiffness  = 0.0f;
+    float     integrinAdhesion  = 0.0f;
+    float     anchorageDistance = 0.0f;
+    float     polarityBias      = 0.0f;
+    uint32_t  activeFlag        = 0u;
+};
+
 static std::pair<float, float> RunJKRCadherin(
     Device*           device,
     ResourceManager*  rm,
@@ -5540,7 +5559,8 @@ static std::pair<float, float> RunJKRCadherin(
     glm::vec4         polarity0       = glm::vec4( 0.0f ), // xyz=dir w=magnitude
     glm::vec4         polarity1       = glm::vec4( 0.0f ),
     float             apicalRepulsion = 0.5f,
-    float             basalAdhesion   = 1.5f )
+    float             basalAdhesion   = 1.5f,
+    PlateTestParams   plate           = {} )
 {
     uint32_t agentCount = 2;
 
@@ -5599,6 +5619,17 @@ static std::pair<float, float> RunJKRCadherin(
     BufferHandle hullBuf = rm->CreateBuffer( { sizeof( ContactHullGPU ), BufferType::STORAGE, "JKRHullDummy" } );
     stream->UploadBufferImmediate( { { hullBuf, &dummyHull, sizeof( ContactHullGPU ) } } );
 
+    // Plate buffer (binding 12) — shader reads this unconditionally; the plate
+    // branch is gated on flags.x. Default plate = disabled (activeFlag = 0u).
+    struct PlateGPU { glm::vec4 normalHeight; glm::vec4 params; glm::uvec4 flags; };
+    PlateGPU plateData{};
+    plateData.normalHeight = glm::vec4( plate.normal, plate.height );
+    plateData.params       = glm::vec4( plate.contactStiffness, plate.integrinAdhesion,
+                                        plate.anchorageDistance, plate.polarityBias );
+    plateData.flags        = glm::uvec4( plate.activeFlag, 0u, 0u, 0u );
+    BufferHandle plateBuf = rm->CreateBuffer( { sizeof( PlateGPU ), BufferType::STORAGE, "JKRPlateBuf" } );
+    stream->UploadBufferImmediate( { { plateBuf, &plateData, sizeof( PlateGPU ) } } );
+
     BindingGroup* bg = rm->GetBindingGroup( rm->CreateBindingGroup( pipeHandle, 0 ) );
     bg->Bind( 0, rm->GetBuffer( inBuf ) );
     bg->Bind( 1, rm->GetBuffer( outBuf ) );
@@ -5612,6 +5643,7 @@ static std::pair<float, float> RunJKRCadherin(
     bg->Bind( 9, rm->GetBuffer( polarityBuf ) );
     bg->Bind( 10, rm->GetBuffer( orientBuf ) );
     bg->Bind( 11, rm->GetBuffer( hullBuf ) );
+    bg->Bind( 12, rm->GetBuffer( plateBuf ) );
     bg->Build();
 
     uint32_t couplingBits  = 0u;
@@ -5652,8 +5684,132 @@ static std::pair<float, float> RunJKRCadherin(
     rm->DestroyBuffer( phenoBuf ); rm->DestroyBuffer( profBuf ); rm->DestroyBuffer( affBuf );
     rm->DestroyBuffer( polarityBuf );
     rm->DestroyBuffer( orientBuf ); rm->DestroyBuffer( hullBuf );
+    rm->DestroyBuffer( plateBuf );
 
     return { result[ 0 ].x, result[ 1 ].x };
+}
+
+// Minimal single-agent plate harness — tests the BasementMembrane contact
+// block in isolation from cell-cell interactions. One agent, no neighbours
+// (the hash grid only has its own entry), JKR output position readback.
+static glm::vec3 RunJKRWithPlate(
+    Device*                 device,
+    ResourceManager*        rm,
+    StreamingManager*       stream,
+    glm::vec3               agentPos,
+    const PlateTestParams&  plate,
+    float                   dt = 0.01f )
+{
+    uint32_t agentCount = 1;
+    glm::vec4 inAgent( agentPos, 1.0f );
+
+    struct AgentHash { uint32_t hash; uint32_t agentIndex; };
+    AgentHash hashEntry{ 0u, 0u };
+
+    uint32_t offsetArraySize = 256;
+    std::vector<uint32_t> cellOffsets( offsetArraySize, 0xFFFFFFFF );
+    cellOffsets[ 0 ] = 0;
+
+    BufferHandle inBuf    = rm->CreateBuffer( { sizeof( glm::vec4 ),             BufferType::STORAGE,  "PlateInBuf" } );
+    BufferHandle outBuf   = rm->CreateBuffer( { sizeof( glm::vec4 ),             BufferType::STORAGE,  "PlateOutBuf" } );
+    BufferHandle pressBuf = rm->CreateBuffer( { sizeof( float ),                 BufferType::STORAGE,  "PlatePressBuf" } );
+    BufferHandle hashBuf  = rm->CreateBuffer( { sizeof( AgentHash ),             BufferType::STORAGE,  "PlateHashBuf" } );
+    BufferHandle offsetBuf= rm->CreateBuffer( { offsetArraySize * sizeof( uint32_t ), BufferType::STORAGE, "PlateOffsetBuf" } );
+    BufferHandle countBuf = rm->CreateBuffer( { sizeof( uint32_t ),              BufferType::INDIRECT, "PlateCountBuf" } );
+    BufferHandle phenoBuf = rm->CreateBuffer( { sizeof( PhenotypeData ),         BufferType::STORAGE,  "PlatePhenoBuf" } );
+    BufferHandle profBuf  = rm->CreateBuffer( { sizeof( glm::vec4 ),             BufferType::STORAGE,  "PlateProfBuf" } );
+    BufferHandle affBuf   = rm->CreateBuffer( { sizeof( glm::mat4 ),             BufferType::STORAGE,  "PlateAffBuf" } );
+    BufferHandle polBuf   = rm->CreateBuffer( { sizeof( glm::vec4 ),             BufferType::STORAGE,  "PlatePolBuf" } );
+    BufferHandle orientBuf= rm->CreateBuffer( { sizeof( glm::vec4 ),             BufferType::STORAGE,  "PlateOrientBuf" } );
+
+    struct ContactHullGPU { glm::vec4 meta{}; glm::vec4 points[16]{}; };
+    ContactHullGPU dummyHull{};
+    BufferHandle hullBuf  = rm->CreateBuffer( { sizeof( ContactHullGPU ),        BufferType::STORAGE,  "PlateHullBuf" } );
+
+    struct PlateGPU { glm::vec4 normalHeight; glm::vec4 params; glm::uvec4 flags; };
+    PlateGPU plateData{};
+    plateData.normalHeight = glm::vec4( plate.normal, plate.height );
+    plateData.params       = glm::vec4( plate.contactStiffness, plate.integrinAdhesion,
+                                        plate.anchorageDistance, plate.polarityBias );
+    plateData.flags        = glm::uvec4( plate.activeFlag, 0u, 0u, 0u );
+    BufferHandle plateBuf = rm->CreateBuffer( { sizeof( PlateGPU ),              BufferType::STORAGE,  "PlatePlateBuf" } );
+
+    glm::vec4     profile( 0.0f );
+    glm::mat4     affinity( 1.0f );
+    glm::vec4     polarity( 0.0f );
+    glm::vec4     orient( 0.0f, 0.0f, 0.0f, 1.0f );
+    PhenotypeData pheno{ 0u, 0.5f, 0.0f, 0u };
+    uint32_t      count = agentCount;
+
+    stream->UploadBufferImmediate( { { inBuf,     &inAgent,       sizeof( glm::vec4 ) } } );
+    stream->UploadBufferImmediate( { { hashBuf,   &hashEntry,     sizeof( AgentHash ) } } );
+    stream->UploadBufferImmediate( { { offsetBuf, cellOffsets.data(), offsetArraySize * sizeof( uint32_t ) } } );
+    stream->UploadBufferImmediate( { { countBuf,  &count,         sizeof( uint32_t ) } } );
+    stream->UploadBufferImmediate( { { phenoBuf,  &pheno,         sizeof( PhenotypeData ) } } );
+    stream->UploadBufferImmediate( { { profBuf,   &profile,       sizeof( glm::vec4 ) } } );
+    stream->UploadBufferImmediate( { { affBuf,    &affinity,      sizeof( glm::mat4 ) } } );
+    stream->UploadBufferImmediate( { { polBuf,    &polarity,      sizeof( glm::vec4 ) } } );
+    stream->UploadBufferImmediate( { { orientBuf, &orient,        sizeof( glm::vec4 ) } } );
+    stream->UploadBufferImmediate( { { hullBuf,   &dummyHull,     sizeof( ContactHullGPU ) } } );
+    stream->UploadBufferImmediate( { { plateBuf,  &plateData,     sizeof( PlateGPU ) } } );
+
+    ComputePipelineDesc pipeDesc{};
+    pipeDesc.shader = rm->CreateShader( "shaders/compute/jkr_forces.comp" );
+    ComputePipelineHandle pipeHandle = rm->CreatePipeline( pipeDesc );
+    ComputePipeline*      pipeline   = rm->GetPipeline( pipeHandle );
+
+    BindingGroup* bg = rm->GetBindingGroup( rm->CreateBindingGroup( pipeHandle, 0 ) );
+    bg->Bind( 0, rm->GetBuffer( inBuf ) );
+    bg->Bind( 1, rm->GetBuffer( outBuf ) );
+    bg->Bind( 2, rm->GetBuffer( pressBuf ) );
+    bg->Bind( 3, rm->GetBuffer( hashBuf ) );
+    bg->Bind( 4, rm->GetBuffer( offsetBuf ) );
+    bg->Bind( 5, rm->GetBuffer( countBuf ) );
+    bg->Bind( 6, rm->GetBuffer( phenoBuf ) );
+    bg->Bind( 7, rm->GetBuffer( profBuf ) );
+    bg->Bind( 8, rm->GetBuffer( affBuf ) );
+    bg->Bind( 9, rm->GetBuffer( polBuf ) );
+    bg->Bind( 10, rm->GetBuffer( orientBuf ) );
+    bg->Bind( 11, rm->GetBuffer( hullBuf ) );
+    bg->Bind( 12, rm->GetBuffer( plateBuf ) );
+    bg->Build();
+
+    ComputePushConstants pc{};
+    pc.dt          = dt;
+    pc.maxCapacity = agentCount;
+    pc.offset      = 0;
+    pc.fParam0     = 10.0f;   // repulsion
+    pc.fParam1     = 1.0f;    // adhesion (small; neighbour-less so unused)
+    pc.fParam2     = -1.0f;   // reqLC = any
+    pc.fParam3     = -1.0f;   // reqCT = any
+    pc.fParam4     = 0.0f;    // damping
+    pc.fParam5     = 0.5f;    // maxRadius (small; no neighbour in range)
+    pc.uParam0     = offsetArraySize;
+    pc.uParam1     = 0;
+    pc.domainSize  = glm::vec4( 100.0f, 100.0f, 100.0f, 2.0f );
+    pc.gridSize    = glm::uvec4( 0u, 0u, 0u, 0u );
+
+    auto ctx = device->GetThreadContext( device->CreateThreadContext( QueueType::COMPUTE ) );
+    auto cmd = ctx->GetCommandBuffer( ctx->CreateCommandBuffer() );
+    cmd->Begin();
+    cmd->SetPipeline( pipeline );
+    cmd->SetBindingGroup( bg, pipeline->GetLayout(), VK_PIPELINE_BIND_POINT_COMPUTE );
+    cmd->PushConstants( pipeline->GetLayout(), VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof( pc ), &pc );
+    cmd->Dispatch( 1, 1, 1 );
+    cmd->End();
+    device->GetComputeQueue()->Submit( { cmd } );
+    device->GetComputeQueue()->WaitIdle();
+
+    glm::vec4 result( 0.0f );
+    stream->ReadbackBufferImmediate( outBuf, &result, sizeof( glm::vec4 ) );
+
+    rm->DestroyBuffer( inBuf ); rm->DestroyBuffer( outBuf ); rm->DestroyBuffer( pressBuf );
+    rm->DestroyBuffer( hashBuf ); rm->DestroyBuffer( offsetBuf ); rm->DestroyBuffer( countBuf );
+    rm->DestroyBuffer( phenoBuf ); rm->DestroyBuffer( profBuf ); rm->DestroyBuffer( affBuf );
+    rm->DestroyBuffer( polBuf ); rm->DestroyBuffer( orientBuf ); rm->DestroyBuffer( hullBuf );
+    rm->DestroyBuffer( plateBuf );
+
+    return glm::vec3( result );
 }
 
 // 1. Matching profiles + coupling > 1 → higher adhesion → agents move less apart than without cadherin
@@ -5827,6 +5983,87 @@ TEST_F( ComputeTest, Shader_JKR_Polarity_ZeroMagnitude_NoEffect )
 
     EXPECT_NEAR( x0_pol, x0_base, 1e-4f ) << "Zero-magnitude polarity should produce no change";
     EXPECT_NEAR( x1_pol, x1_base, 1e-4f ) << "Zero-magnitude polarity should produce no change";
+}
+
+// =============================================================================
+// BasementMembrane plate — raw jkr_forces shader tests (Phase 2)
+// =============================================================================
+
+// Cell below the plane (signed distance d < 0) → Hertz-like push along +normal.
+TEST_F( ComputeTest, Shader_Plate_RepulsesPenetratingCell )
+{
+    if( !m_device )
+        GTEST_SKIP();
+
+    PlateTestParams plate{};
+    plate.normal            = glm::vec3( 0.0f, 0.0f, 1.0f );
+    plate.height            = 0.0f;
+    plate.contactStiffness  = 50.0f;
+    plate.integrinAdhesion  = 0.0f;   // adhesion disabled so we observe repulsion only
+    plate.anchorageDistance = 1.0f;
+    plate.polarityBias      = 0.0f;
+    plate.activeFlag        = 1u;
+
+    // Agent penetrated 0.5 units below the plate (z = -0.5). One dt of
+    // Hertz-like repulsion will NOT clear the plate in a single frame (expected
+    // Δz ≈ 50·0.5^1.5·0.01 ≈ 0.18) — the test only asserts monotone upward
+    // motion along the plate normal.
+    glm::vec3 pos = RunJKRWithPlate( m_device.get(), m_rm.get(), m_stream.get(),
+                                      glm::vec3( 0.0f, 0.0f, -0.5f ), plate );
+
+    EXPECT_GT( pos.z, -0.5f ) << "Penetrating cell must be pushed upward along +normal";
+    // Sanity: position is along z only, no lateral drift.
+    EXPECT_NEAR( pos.x, 0.0f, 1e-4f );
+    EXPECT_NEAR( pos.y, 0.0f, 1e-4f );
+}
+
+// Cell just above the plate (0 <= d <= anchorageDistance) → JKR-like pull toward plate.
+TEST_F( ComputeTest, Shader_Plate_AttractsWithinAnchorageDistance )
+{
+    if( !m_device )
+        GTEST_SKIP();
+
+    PlateTestParams plate{};
+    plate.normal            = glm::vec3( 0.0f, 0.0f, 1.0f );
+    plate.height            = 0.0f;
+    plate.contactStiffness  = 0.0f;   // repulsion disabled; contact region unused here
+    plate.integrinAdhesion  = 5.0f;
+    plate.anchorageDistance = 1.0f;
+    plate.polarityBias      = 0.0f;
+    plate.activeFlag        = 1u;
+
+    // Agent at z = 0.5 (halfway through anchorage band)
+    glm::vec3 pos = RunJKRWithPlate( m_device.get(), m_rm.get(), m_stream.get(),
+                                      glm::vec3( 0.0f, 0.0f, 0.5f ), plate );
+
+    EXPECT_LT( pos.z, 0.5f ) << "Cell within anchorage distance must be pulled toward plate";
+    EXPECT_GE( pos.z, 0.0f ) << "Integrin pull must not push cell through the plate in one dt";
+}
+
+// Plate inactive (flags.x = 0) → no force on the cell, whatever the params.
+// This is the ECM-leak guard: proves that a blueprint without BasementMembrane
+// behaves identically to one without the plate-branch code at all.
+TEST_F( ComputeTest, Shader_Plate_Inactive_WhenFlagOff )
+{
+    if( !m_device )
+        GTEST_SKIP();
+
+    PlateTestParams plate{};
+    plate.normal            = glm::vec3( 0.0f, 0.0f, 1.0f );
+    plate.height            = 0.0f;
+    plate.contactStiffness  = 50.0f;  // large params but...
+    plate.integrinAdhesion  = 5.0f;
+    plate.anchorageDistance = 1.0f;
+    plate.polarityBias      = 5.0f;
+    plate.activeFlag        = 0u;     // ... disabled.
+
+    glm::vec3 posBelow = RunJKRWithPlate( m_device.get(), m_rm.get(), m_stream.get(),
+                                           glm::vec3( 0.0f, 0.0f, -0.5f ), plate );
+    glm::vec3 posAbove = RunJKRWithPlate( m_device.get(), m_rm.get(), m_stream.get(),
+                                           glm::vec3( 0.0f, 0.0f,  0.5f ), plate );
+
+    EXPECT_NEAR( posBelow.z, -0.5f, 1e-4f ) << "Inactive plate must not affect position";
+    EXPECT_NEAR( posAbove.z,  0.5f, 1e-4f ) << "Inactive plate must not affect position";
 }
 
 // =============================================================================
@@ -6062,6 +6299,13 @@ static RigidBodyResult RunJKRRigidBody(
     BufferHandle orientBuf = rm->CreateBuffer( { agentCount * sizeof( glm::vec4 ),       BufferType::STORAGE,  "RBOrientBuf" } );
     BufferHandle hullBuf   = rm->CreateBuffer( { sizeof( ContactHullGPU ),               BufferType::STORAGE,  "RBHullBuf" } );
 
+    // Plate buffer (binding 12) — rigid-body tests don't exercise the plate, so
+    // allocate a disabled dummy so validation layers don't complain about an
+    // unbound descriptor. activeFlag = 0 → shader skips the plate block.
+    struct PlateGPU { glm::vec4 normalHeight; glm::vec4 params; glm::uvec4 flags; };
+    PlateGPU plateData{};
+    BufferHandle plateBuf  = rm->CreateBuffer( { sizeof( PlateGPU ),                     BufferType::STORAGE,  "RBPlateBuf" } );
+
     stream->UploadBufferImmediate( { { inBuf,     inPositions.data(),    agentCount * sizeof( glm::vec4 ) } } );
     stream->UploadBufferImmediate( { { hashBuf,   sortedHashes.data(),   agentCount * sizeof( AgentHash ) } } );
     stream->UploadBufferImmediate( { { offsetBuf, cellOffsets.data(),    offsetArraySize * sizeof( uint32_t ) } } );
@@ -6074,6 +6318,7 @@ static RigidBodyResult RunJKRRigidBody(
     stream->UploadBufferImmediate( { { polBuf,    zeros.data(),          agentCount * sizeof( glm::vec4 ) } } );
     stream->UploadBufferImmediate( { { orientBuf, inOrientations.data(), agentCount * sizeof( glm::vec4 ) } } );
     stream->UploadBufferImmediate( { { hullBuf,   &hullGPU,             sizeof( ContactHullGPU ) } } );
+    stream->UploadBufferImmediate( { { plateBuf,  &plateData,           sizeof( PlateGPU ) } } );
 
     ComputePipelineDesc   pipeDesc{};
     pipeDesc.shader                  = rm->CreateShader( "shaders/compute/jkr_forces.comp" );
@@ -6093,6 +6338,7 @@ static RigidBodyResult RunJKRRigidBody(
     bg->Bind( 9,  rm->GetBuffer( polBuf ) );
     bg->Bind( 10, rm->GetBuffer( orientBuf ) );
     bg->Bind( 11, rm->GetBuffer( hullBuf ) );
+    bg->Bind( 12, rm->GetBuffer( plateBuf ) );
     bg->Build();
 
     ComputePushConstants pc{};
@@ -6139,6 +6385,7 @@ static RigidBodyResult RunJKRRigidBody(
     rm->DestroyBuffer( hashBuf );  rm->DestroyBuffer( offsetBuf ); rm->DestroyBuffer( countBuf );
     rm->DestroyBuffer( phenoBuf ); rm->DestroyBuffer( profBuf );   rm->DestroyBuffer( affBuf );
     rm->DestroyBuffer( polBuf );   rm->DestroyBuffer( orientBuf ); rm->DestroyBuffer( hullBuf );
+    rm->DestroyBuffer( plateBuf );
 
     return result;
 }

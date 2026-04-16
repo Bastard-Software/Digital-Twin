@@ -3547,7 +3547,7 @@ TEST_F( SimulationBuilderTest, ECBlobDemo_BuildsWithoutExplosion )
     const float     radius     = 2.0f;
     const float     halfLength = 6.0f;
     const float     spacing    = 1.2f;
-    const glm::vec3 center     = glm::vec3( 0.0f, 0.0f, 2.5f );
+    const glm::vec3 center     = glm::vec3( 0.0f, 2.5f, 0.0f );
     const glm::vec3 axis       = glm::vec3( 1.0f, 0.0f, 0.0f );
 
     auto positions = SpatialDistribution::LatticeInCylinder(
@@ -3640,7 +3640,7 @@ TEST_F( SimulationBuilderTest, ECTubeDemo_BuildsWithoutExplosion )
     const float     radius     = 2.0f;
     const float     halfLength = 6.0f;
     const float     spacing    = 1.2f;
-    const glm::vec3 center     = glm::vec3( 0.0f, 0.0f, 2.5f );
+    const glm::vec3 center     = glm::vec3( 0.0f, 2.5f, 0.0f );
     const glm::vec3 axis       = glm::vec3( 1.0f, 0.0f, 0.0f );
 
     auto positions = SpatialDistribution::LatticeInCylinder(
@@ -3707,6 +3707,213 @@ TEST_F( SimulationBuilderTest, ECTubeDemo_BuildsWithoutExplosion )
         if( finalPositions[ i ].w > 0.0f ) ++aliveCount;
     }
     EXPECT_EQ( aliveCount, count ) << "Agent count changed during 1 s of simulation";
+
+    state.Destroy( m_resourceManager.get() );
+}
+
+// 9. Phase 2 prediction: an ECTubeDemo-style blueprint with BasementMembrane
+//    at z=0 (+z normal) should let cells settle ONTO the plate. Starting all
+//    cells above the plate, after N seconds we expect the cluster centroid to
+//    have descended (integrin pull) and no cell to be below z=0 (contact
+//    repulsion).
+TEST_F( SimulationBuilderTest, ECTubeDemo_SettlesOnPlate )
+{
+    if( !m_device )
+        GTEST_SKIP();
+
+    SimulationBlueprint blueprint;
+    blueprint.SetName( "EC Tube (test)" );
+    blueprint.SetDomainSize( glm::vec3( 40.0f ), 1.5f );
+    blueprint.ConfigureSpatialPartitioning()
+        .SetMethod( SpatialPartitioningMethod::HashGrid )
+        .SetCellSize( 3.0f )
+        .SetMaxDensity( 64 )
+        .SetComputeHz( 60.0f );
+
+    const float     radius     = 2.0f;
+    const float     halfLength = 6.0f;
+    const float     spacing    = 1.2f;
+    const glm::vec3 center     = glm::vec3( 0.0f, 2.5f, 0.0f );
+    const glm::vec3 axis       = glm::vec3( 1.0f, 0.0f, 0.0f );
+
+    auto positions = SpatialDistribution::LatticeInCylinder(
+        spacing, radius, halfLength, center, axis );
+    ASSERT_GT( positions.size(), 50u );
+    const uint32_t count = static_cast<uint32_t>( positions.size() );
+
+    // Mean z before sim
+    float yMeanBefore = 0.0f;
+    for( const auto& p : positions ) yMeanBefore += p.y;
+    yMeanBefore /= static_cast<float>( count );
+
+    AgentGroup& ecs = blueprint.AddAgentGroup( "Endothelial Cells" );
+    ecs.SetCount( count )
+        .SetMorphology( MorphologyGenerator::CreateCurvedTile( 20.0f, 1.05f, 0.25f, radius ) )
+        .SetDistribution( positions );
+
+    auto jkr = BiomechanicsGenerator::JKR()
+                   .SetYoungsModulus( 20.0f )
+                   .SetPoissonRatio( 0.4f )
+                   .SetAdhesionEnergy( 5.0f )
+                   .SetMaxInteractionRadius( 0.75f )
+                   .SetDampingCoefficient( 150.0f )
+                   .Build();
+    ecs.AddBehaviour( jkr ).SetHz( 60.0f );
+    ecs.AddBehaviour( Behaviours::CadherinAdhesion{
+                          glm::vec4( 0.0f, 0.0f, 1.0f, 0.0f ), 0.05f, 0.001f, 2.0f } )
+        .SetHz( 60.0f );
+    Behaviours::CellPolarity polarity;
+    polarity.regulationRate  = 0.2f;
+    polarity.apicalRepulsion = 0.3f;
+    polarity.basalAdhesion   = 1.5f;
+    ecs.AddBehaviour( polarity ).SetHz( 60.0f );
+    ecs.AddBehaviour( Behaviours::BrownianMotion{ 0.1f } ).SetHz( 60.0f );
+
+    // Test uses deliberately STRONG plate parameters so the integrin pull is
+    // unambiguous at the regression level. The actual demo uses gentler values
+    // (tuned for visual realism over 30+ s of sim time).
+    Behaviours::BasementMembrane plate;
+    plate.planeNormal       = glm::vec3( 0.0f, 1.0f, 0.0f );
+    plate.height            = 0.0f;
+    plate.contactStiffness  = 15.0f;
+    plate.integrinAdhesion  = 10.0f;  // strong — test only
+    plate.anchorageDistance = 5.0f;   // covers full cluster y range — test only
+    plate.polarityBias      = 2.0f;
+    ecs.AddBehaviour( plate ).SetHz( 60.0f );
+
+    SimulationBuilder builder( m_resourceManager.get(), m_streamingManager.get() );
+    SimulationState   state = builder.Build( blueprint );
+
+    auto compCtxHandle = m_device->CreateThreadContext( QueueType::COMPUTE );
+    auto compCtx       = m_device->GetThreadContext( compCtxHandle );
+    auto compCmd       = compCtx->GetCommandBuffer( compCtx->CreateCommandBuffer() );
+
+    GraphDispatcher dispatcher;
+    const float     dt        = 1.0f / 60.0f;
+    uint32_t        activeIdx = 0;
+    // 5 s of sim time — enough to settle onto the plate.
+    for( int frame = 0; frame < 300; ++frame )
+    {
+        compCmd->Begin();
+        activeIdx = dispatcher.Dispatch( &state.computeGraph, compCmd, nullptr, dt, dt * static_cast<float>( frame ), activeIdx );
+        compCmd->End();
+        m_device->GetComputeQueue()->Submit( { compCmd } );
+        m_device->GetComputeQueue()->WaitIdle();
+    }
+
+    std::vector<glm::vec4> finalPositions( count );
+    m_streamingManager->ReadbackBufferImmediate(
+        state.agentBuffers[ activeIdx ], finalPositions.data(), count * sizeof( glm::vec4 ) );
+
+    float yMeanAfter = 0.0f;
+    float yMin       = 1e9f;
+    for( uint32_t i = 0; i < count; ++i )
+    {
+        yMeanAfter += finalPositions[ i ].y;
+        if( finalPositions[ i ].y < yMin ) yMin = finalPositions[ i ].y;
+    }
+    yMeanAfter /= static_cast<float>( count );
+
+    EXPECT_LT( yMeanAfter, yMeanBefore )
+        << "ECTubeDemo with plate must settle toward the plate (y_mean should decrease)";
+    EXPECT_GE( yMin, -0.5f )
+        << "No cell should penetrate the plate by more than a small tolerance";
+
+    state.Destroy( m_resourceManager.get() );
+}
+
+// 10. Paired control: same blueprint WITHOUT BasementMembrane should NOT settle.
+//     Proves the plate effect in ECTubeDemo is attributable to the plate behaviour
+//     (no accidental ECM leak into plateless demos).
+TEST_F( SimulationBuilderTest, ECBlobDemo_DoesNotSettle )
+{
+    if( !m_device )
+        GTEST_SKIP();
+
+    SimulationBlueprint blueprint;
+    blueprint.SetName( "EC Blob (test)" );
+    blueprint.SetDomainSize( glm::vec3( 40.0f ), 1.5f );
+    blueprint.ConfigureSpatialPartitioning()
+        .SetMethod( SpatialPartitioningMethod::HashGrid )
+        .SetCellSize( 3.0f )
+        .SetMaxDensity( 64 )
+        .SetComputeHz( 60.0f );
+
+    const float     radius     = 2.0f;
+    const float     halfLength = 6.0f;
+    const float     spacing    = 1.2f;
+    const glm::vec3 center     = glm::vec3( 0.0f, 2.5f, 0.0f );
+    const glm::vec3 axis       = glm::vec3( 1.0f, 0.0f, 0.0f );
+
+    auto positions = SpatialDistribution::LatticeInCylinder(
+        spacing, radius, halfLength, center, axis );
+    ASSERT_GT( positions.size(), 50u );
+    const uint32_t count = static_cast<uint32_t>( positions.size() );
+
+    float yMeanBefore = 0.0f;
+    for( const auto& p : positions ) yMeanBefore += p.y;
+    yMeanBefore /= static_cast<float>( count );
+
+    AgentGroup& ecs = blueprint.AddAgentGroup( "Endothelial Cells" );
+    ecs.SetCount( count )
+        .SetMorphology( MorphologyGenerator::CreateCurvedTile( 20.0f, 1.05f, 0.25f, radius ) )
+        .SetDistribution( positions );
+
+    auto jkr = BiomechanicsGenerator::JKR()
+                   .SetYoungsModulus( 20.0f )
+                   .SetPoissonRatio( 0.4f )
+                   .SetAdhesionEnergy( 5.0f )
+                   .SetMaxInteractionRadius( 0.75f )
+                   .SetDampingCoefficient( 150.0f )
+                   .Build();
+    ecs.AddBehaviour( jkr ).SetHz( 60.0f );
+    ecs.AddBehaviour( Behaviours::CadherinAdhesion{
+                          glm::vec4( 0.0f, 0.0f, 1.0f, 0.0f ), 0.05f, 0.001f, 2.0f } )
+        .SetHz( 60.0f );
+    Behaviours::CellPolarity polarity;
+    polarity.regulationRate  = 0.2f;
+    polarity.apicalRepulsion = 0.3f;
+    polarity.basalAdhesion   = 1.5f;
+    ecs.AddBehaviour( polarity ).SetHz( 60.0f );
+    ecs.AddBehaviour( Behaviours::BrownianMotion{ 0.1f } ).SetHz( 60.0f );
+    // NO BasementMembrane.
+
+    SimulationBuilder builder( m_resourceManager.get(), m_streamingManager.get() );
+    SimulationState   state = builder.Build( blueprint );
+
+    auto compCtxHandle = m_device->CreateThreadContext( QueueType::COMPUTE );
+    auto compCtx       = m_device->GetThreadContext( compCtxHandle );
+    auto compCmd       = compCtx->GetCommandBuffer( compCtx->CreateCommandBuffer() );
+
+    GraphDispatcher dispatcher;
+    const float     dt        = 1.0f / 60.0f;
+    uint32_t        activeIdx = 0;
+    for( int frame = 0; frame < 300; ++frame )
+    {
+        compCmd->Begin();
+        activeIdx = dispatcher.Dispatch( &state.computeGraph, compCmd, nullptr, dt, dt * static_cast<float>( frame ), activeIdx );
+        compCmd->End();
+        m_device->GetComputeQueue()->Submit( { compCmd } );
+        m_device->GetComputeQueue()->WaitIdle();
+    }
+
+    std::vector<glm::vec4> finalPositions( count );
+    m_streamingManager->ReadbackBufferImmediate(
+        state.agentBuffers[ activeIdx ], finalPositions.data(), count * sizeof( glm::vec4 ) );
+
+    float yMeanAfter = 0.0f;
+    for( uint32_t i = 0; i < count; ++i )
+        yMeanAfter += finalPositions[ i ].y;
+    yMeanAfter /= static_cast<float>( count );
+
+    // Without a plate, adhesion-driven surface-tension + Brownian should drive
+    // the cluster toward a compact / pinching aggregate, NOT toward a plate.
+    // Centroid y should stay within a tight band of its starting value
+    // (Plateau-Rayleigh breakup moves cells laterally, not systematically
+    // downward). A 1.0-unit tolerance is generous but still asserts no
+    // plate-like downward drift (>2 units would mean the plate is leaking).
+    EXPECT_NEAR( yMeanAfter, yMeanBefore, 1.0f )
+        << "Plateless ECBlobDemo must not settle toward a plate (ECM leak check)";
 
     state.Destroy( m_resourceManager.get() );
 }

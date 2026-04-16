@@ -18,7 +18,11 @@ namespace Gaudi::Demos
         // them is the BasementMembrane behaviour (added in Phase 2).
         //
         // Geometry is an elongated cylinder along +X, lifted so its lowest cells sit
-        // at z ≈ 0.5 — inside future plate anchorage distance for ECTubeDemo.
+        // at y ≈ 0.5 — inside future plate anchorage distance for ECTubeDemo.
+        // The renderer is Y-up, so the basement-membrane plate lives in the XZ
+        // plane (normal = +Y) and the cluster sits on top of it, elongated along
+        // the X axis. In the camera that reads as a horizontal log on the floor.
+        //
         // Regular cubic-lattice placement — no random pair-overlap. Random
         // UniformInCylinder placement creates occasional pairs at very small
         // distance; even mild overlap generates Hertz repulsion (pow(ov,1.5))
@@ -29,7 +33,7 @@ namespace Gaudi::Demos
         // condition (cells in regular close-packing contact).
         constexpr float    k_cloudRadius      = 2.0f;   // cylinder radius
         constexpr float    k_cloudHalfLength  = 6.0f;   // ~3:1 elongation
-        constexpr float    k_cloudCenterZ     = 2.5f;   // lowest z ≈ 0.5
+        constexpr float    k_cloudCenterY     = 2.5f;   // lowest y ≈ 0.5 (above plate at y=0)
         constexpr float    k_latticeSpacing   = 1.2f;   // ≈ 10% above JKR eq dist 1.06 → net attractive
         constexpr float    k_cellMaxRadius    = 0.75f;
 
@@ -46,14 +50,14 @@ namespace Gaudi::Demos
     // composes the behaviour stack (and adds BasementMembrane for ECTubeDemo).
     void SeedECCloud( DigitalTwin::AgentGroup& group, uint32_t /*seed*/ )
     {
-        // Regular-lattice placement in an elongated cylinder along +X.
-        // Geometry-derived count (deterministic, no RNG) — typically ~100 cells
-        // at spacing 1.2 in a cylinder r=2.0, halfL=6.0.
+        // Regular-lattice placement in an elongated cylinder along +X, sitting
+        // above y=0 so ECTubeDemo's basement-membrane plate (XZ plane, +Y normal)
+        // catches the bottom cells.
         auto positions = DigitalTwin::SpatialDistribution::LatticeInCylinder(
             k_latticeSpacing,
             k_cloudRadius,
             k_cloudHalfLength,
-            glm::vec3( 0.0f, 0.0f, k_cloudCenterZ ),
+            glm::vec3( 0.0f, k_cloudCenterY, 0.0f ),
             glm::vec3( 1.0f, 0.0f, 0.0f ) );
 
         // Initial orientation: shortest-arc quaternion from model +Y to a unit

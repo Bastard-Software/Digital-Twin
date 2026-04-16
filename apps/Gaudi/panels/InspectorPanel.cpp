@@ -303,11 +303,13 @@ namespace Gaudi
                 }
                 else if constexpr( std::is_same_v<T, DigitalTwin::Behaviours::CellPolarity> )
                 {
-                    changed |= ImGui::SliderFloat( "Regulation Rate",   &b.regulationRate,  0.0f, 1.0f, "%.3f" );
+                    changed |= ImGui::SliderFloat( "Regulation Rate",     &b.regulationRate,     0.0f, 1.0f, "%.3f" );
                     // Apical Repulsion range spans negative: Phase 3+ uses
                     // negative values for active apical-apical repulsion (PODXL).
-                    changed |= ImGui::SliderFloat( "Apical Repulsion",  &b.apicalRepulsion, -2.0f, 2.0f );
-                    changed |= ImGui::SliderFloat( "Basal Adhesion",    &b.basalAdhesion,    0.0f, 5.0f );
+                    changed |= ImGui::SliderFloat( "Apical Repulsion",    &b.apicalRepulsion,   -2.0f, 2.0f );
+                    changed |= ImGui::SliderFloat( "Basal Adhesion",      &b.basalAdhesion,      0.0f, 5.0f );
+                    // Phase 4.5: junctional propagation weight (PAR/Crumbs cascade).
+                    changed |= ImGui::SliderFloat( "Propagation Strength", &b.propagationStrength, 0.0f, 2.0f );
                 }
                 else if constexpr( std::is_same_v<T, DigitalTwin::Behaviours::BasementMembrane> )
                 {
@@ -333,10 +335,12 @@ namespace Gaudi
                 }
                 else if constexpr( std::is_same_v<T, DigitalTwin::Behaviours::Biomechanics> )
                 {
-                    changed |= ImGui::SliderFloat( "Repulsion Stiffness", &b.repulsionStiffness, 0.0f, 100.0f );
-                    changed |= ImGui::SliderFloat( "Adhesion Strength", &b.adhesionStrength, 0.0f, 20.0f );
-                    changed |= ImGui::SliderFloat( "Max Radius", &b.maxRadius, 0.5f, 5.0f );
-                    changed |= ImGui::SliderFloat( "Damping", &b.dampingCoefficient, 0.0f, 300.0f );
+                    changed |= ImGui::SliderFloat( "Repulsion Stiffness",    &b.repulsionStiffness,    0.0f, 100.0f );
+                    changed |= ImGui::SliderFloat( "Adhesion Strength",      &b.adhesionStrength,      0.0f, 20.0f );
+                    changed |= ImGui::SliderFloat( "Max Radius",             &b.maxRadius,             0.5f, 5.0f );
+                    changed |= ImGui::SliderFloat( "Damping",                &b.dampingCoefficient,    0.0f, 300.0f );
+                    changed |= ImGui::SliderFloat( "Cortical Tension",       &b.corticalTension,       0.0f, 20.0f );
+                    changed |= ImGui::SliderFloat( "Lateral Adhesion Scale", &b.lateralAdhesionScale,  0.0f, 1.0f );
                 }
                 else if constexpr( std::is_same_v<T, DigitalTwin::Behaviours::CellCycle> )
                 {

@@ -695,6 +695,23 @@ namespace DigitalTwin
                 result.AddError( "AgentGroup '" + group.GetName() +
                                  "': CellPolarity basalAdhesion must be >= 0 (got: " +
                                  std::to_string( polarity->basalAdhesion ) + ")." );
+
+            // Phase 4.5: propagationStrength must be non-negative (negative propagation
+            // weights are mathematically legal but biologically meaningless — they would
+            // invert neighbour polarity contribution, which has no PAR/Crumbs analog).
+            if( polarity->propagationStrength < 0.0f )
+                result.AddError( "AgentGroup '" + group.GetName() +
+                                 "': CellPolarity propagationStrength must be >= 0 (got: " +
+                                 std::to_string( polarity->propagationStrength ) + ")." );
+
+            // Warn if propagation weight is above the plausible tight-junction coupling
+            // range. Values > 3 dominate the geometric centroid cue completely and are
+            // only meaningful for research parameter sweeps.
+            if( polarity->propagationStrength > 3.0f )
+                result.AddWarning( "AgentGroup '" + group.GetName() +
+                                   "': CellPolarity propagationStrength = " +
+                                   std::to_string( polarity->propagationStrength ) +
+                                   " is above the typical [0, 3] range for junctional coupling." );
         }
     }
 

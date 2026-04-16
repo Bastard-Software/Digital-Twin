@@ -5560,7 +5560,8 @@ static std::pair<float, float> RunJKRCadherin(
     glm::vec4         polarity1       = glm::vec4( 0.0f ),
     float             apicalRepulsion = 0.5f,
     float             basalAdhesion   = 1.5f,
-    PlateTestParams   plate           = {} )
+    PlateTestParams   plate           = {},
+    float             corticalTension = 0.0f )
 {
     uint32_t agentCount = 2;
 
@@ -5649,6 +5650,9 @@ static std::pair<float, float> RunJKRCadherin(
     uint32_t couplingBits  = 0u;
     std::memcpy( &couplingBits, &couplingStrength, sizeof( float ) );
     uint32_t polarityBits  = glm::packHalf2x16( glm::vec2( apicalRepulsion, basalAdhesion ) );
+    // gridSize.x packs cadherinFlag (bit 0) with half-float corticalTension in the upper 16 bits.
+    uint32_t tensionPacked = glm::packHalf2x16( glm::vec2( 0.0f, corticalTension ) );
+    uint32_t gridSizeX     = ( cadherinFlag & 1u ) | ( tensionPacked & 0xFFFF0000u );
 
     ComputePushConstants pc{};
     pc.dt          = 1.0f;
@@ -5663,7 +5667,7 @@ static std::pair<float, float> RunJKRCadherin(
     pc.uParam0     = offsetArraySize;
     pc.uParam1     = 0;
     pc.domainSize  = glm::vec4( 100.0f, 100.0f, 100.0f, maxRadius * 2.0f + 1.0f ); // cellSize spans both agents
-    pc.gridSize    = glm::uvec4( cadherinFlag, couplingBits, polarityFlag, polarityBits );
+    pc.gridSize    = glm::uvec4( gridSizeX, couplingBits, polarityFlag, polarityBits );
 
     auto ctx = device->GetThreadContext( device->CreateThreadContext( QueueType::COMPUTE ) );
     auto cmd = ctx->GetCommandBuffer( ctx->CreateCommandBuffer() );
@@ -6033,6 +6037,380 @@ TEST_F( ComputeTest, Shader_JKR_Polarity_ApicalFacing_NetNegative_IsRepulsive )
         << "Net-negative apical must push cells past their starting separation (active repulsion)";
 }
 
+// Phase 4 — cortical tension (Maître et al. 2012 interfacial-tension model).
+// At fixed overlap, cortical tension contributes an outward force that linearly
+// opposes the inward adhesion term. With all else equal, adding corticalTension
+// must leave cells further apart after one dispatch than the baseline (tension = 0).
+TEST_F( ComputeTest, Shader_JKR_CorticalTension_OpposesAdhesion )
+{
+    if( !m_device )
+        GTEST_SKIP();
+
+    // Deliberately adhesion-dominated pair: mild overlap, large adhesion vs
+    // small repulsion, so the baseline net force is inward (cells compress).
+    // Cortical tension adds k_T·overlap outward — must partially/fully cancel.
+    float repulsion = 5.0f;
+    float adhesion  = 20.0f;
+    float maxRadius = 1.5f; // interactDist = 3.0; at x=2.9 overlap = 0.1
+
+    // Baseline: no cortical tension.
+    auto [x0_base, x1_base] = RunJKRCadherin(
+        m_device.get(), m_rm.get(), m_stream.get(),
+        0.0f, 2.9f, repulsion, adhesion, maxRadius,
+        glm::vec4( 0.0f ), glm::vec4( 0.0f ), glm::mat4( 1.0f ),
+        0u, 1.0f,                                   // cadherin OFF
+        0u, glm::vec4( 0.0f ), glm::vec4( 0.0f ),   // polarity OFF
+        0.5f, 1.5f, PlateTestParams{},
+        0.0f );                                     // corticalTension = 0
+
+    // Phase 4: strong cortical tension.
+    auto [x0_ten, x1_ten] = RunJKRCadherin(
+        m_device.get(), m_rm.get(), m_stream.get(),
+        0.0f, 2.9f, repulsion, adhesion, maxRadius,
+        glm::vec4( 0.0f ), glm::vec4( 0.0f ), glm::mat4( 1.0f ),
+        0u, 1.0f,
+        0u, glm::vec4( 0.0f ), glm::vec4( 0.0f ),
+        0.5f, 1.5f, PlateTestParams{},
+        30.0f );                                    // corticalTension = 30 (strong)
+
+    float disp_base = x1_base - x0_base;
+    float disp_ten  = x1_ten  - x0_ten;
+
+    // Cortical tension must push the pair further apart than the no-tension baseline.
+    EXPECT_GT( disp_ten, disp_base )
+        << "Cortical tension must oppose adhesion: pair separation with tension ("
+        << disp_ten << ") must exceed baseline (" << disp_base << ")";
+}
+
+// =============================================================================
+// Phase 4.5 — polarity_update.comp junctional propagation tests
+// =============================================================================
+//
+// These tests hit the polarity_update shader directly (not the JKR shader that
+// consumes polarity). We control initial polarity and agent positions, dispatch
+// the shader N times, read back the polarity buffer, and assert on the result.
+// The harness packs all agents into a single hash cell so the neighbour scan
+// simply walks every agent pair.
+
+// Run polarity_update.comp `steps` times on the given agent configuration and
+// return the final polarity buffer. Plate is optional (activeFlag selects).
+static std::vector<glm::vec4> RunPolarityUpdate(
+    Device*           device,
+    ResourceManager*  rm,
+    StreamingManager* stream,
+    const std::vector<glm::vec4>& initialPositions,  // xyz = pos, w = alive flag (1 live, 0 dead)
+    const std::vector<glm::vec4>& initialPolarities, // xyz = dir, w = magnitude
+    float             regulationRate,
+    float             interactionRadius,
+    float             propagationStrength,
+    int               steps,
+    float             dt       = 1.0f / 60.0f,
+    PlateTestParams   plate    = {} )
+{
+    const uint32_t agentCount = static_cast<uint32_t>( initialPositions.size() );
+    EXPECT_EQ( initialPositions.size(), initialPolarities.size() );
+
+    // All agents share cell (0,0,0); cellSize chosen large enough to span any test
+    // configuration (positions must be within ±cellSize/2 of origin).
+    struct AgentHash { uint32_t hash; uint32_t agentIndex; };
+    std::vector<AgentHash> sortedHashes( agentCount );
+    for( uint32_t i = 0; i < agentCount; ++i )
+        sortedHashes[ i ] = { 0u, i };
+
+    const uint32_t        offsetArraySize = 256;
+    std::vector<uint32_t> cellOffsets( offsetArraySize, 0xFFFFFFFFu );
+    cellOffsets[ 0 ] = 0u;
+
+    std::vector<PhenotypeData> phenotypes( agentCount, { 0u, 0.5f, 0.0f, 0u } );
+
+    // Buffers
+    BufferHandle inBuf     = rm->CreateBuffer( { agentCount * sizeof( glm::vec4 ),      BufferType::STORAGE,  "PolUpdInBuf" } );
+    BufferHandle polBuf    = rm->CreateBuffer( { agentCount * sizeof( glm::vec4 ),      BufferType::STORAGE,  "PolUpdPolBuf" } );
+    BufferHandle hashBuf   = rm->CreateBuffer( { agentCount * sizeof( AgentHash ),      BufferType::STORAGE,  "PolUpdHashBuf" } );
+    BufferHandle offsetBuf = rm->CreateBuffer( { offsetArraySize * sizeof( uint32_t ),  BufferType::STORAGE,  "PolUpdOffsetBuf" } );
+    BufferHandle countBuf  = rm->CreateBuffer( { sizeof( uint32_t ),                    BufferType::INDIRECT, "PolUpdCountBuf" } );
+    BufferHandle phenoBuf  = rm->CreateBuffer( { agentCount * sizeof( PhenotypeData ),  BufferType::STORAGE,  "PolUpdPhenoBuf" } );
+
+    struct PlateGPU { glm::vec4 normalHeight; glm::vec4 params; glm::uvec4 flags; };
+    PlateGPU plateData{};
+    plateData.normalHeight = glm::vec4( plate.normal, plate.height );
+    plateData.params       = glm::vec4( plate.contactStiffness, plate.integrinAdhesion,
+                                        plate.anchorageDistance, plate.polarityBias );
+    plateData.flags        = glm::uvec4( plate.activeFlag, 0u, 0u, 0u );
+    BufferHandle plateBuf  = rm->CreateBuffer( { sizeof( PlateGPU ),                    BufferType::STORAGE,  "PolUpdPlateBuf" } );
+
+    stream->UploadBufferImmediate( { { inBuf,     initialPositions.data(),  agentCount * sizeof( glm::vec4 ) } } );
+    stream->UploadBufferImmediate( { { polBuf,    initialPolarities.data(), agentCount * sizeof( glm::vec4 ) } } );
+    stream->UploadBufferImmediate( { { hashBuf,   sortedHashes.data(),      agentCount * sizeof( AgentHash ) } } );
+    stream->UploadBufferImmediate( { { offsetBuf, cellOffsets.data(),       offsetArraySize * sizeof( uint32_t ) } } );
+    stream->UploadBufferImmediate( { { countBuf,  &agentCount,              sizeof( uint32_t ) } } );
+    stream->UploadBufferImmediate( { { phenoBuf,  phenotypes.data(),        agentCount * sizeof( PhenotypeData ) } } );
+    stream->UploadBufferImmediate( { { plateBuf,  &plateData,               sizeof( PlateGPU ) } } );
+
+    // Pipeline
+    ComputePipelineDesc pipeDesc{};
+    pipeDesc.shader = rm->CreateShader( "shaders/compute/polarity_update.comp" );
+    ComputePipelineHandle pipeHandle = rm->CreatePipeline( pipeDesc );
+    ComputePipeline*      pipeline   = rm->GetPipeline( pipeHandle );
+
+    BindingGroup* bg = rm->GetBindingGroup( rm->CreateBindingGroup( pipeHandle, 0 ) );
+    bg->Bind( 0, rm->GetBuffer( inBuf ) );
+    bg->Bind( 1, rm->GetBuffer( polBuf ) );
+    bg->Bind( 2, rm->GetBuffer( countBuf ) );
+    bg->Bind( 3, rm->GetBuffer( hashBuf ) );
+    bg->Bind( 4, rm->GetBuffer( offsetBuf ) );
+    bg->Bind( 5, rm->GetBuffer( phenoBuf ) );
+    bg->Bind( 6, rm->GetBuffer( plateBuf ) );
+    bg->Build();
+
+    ComputePushConstants pc{};
+    pc.dt          = dt;
+    pc.fParam0     = regulationRate;
+    pc.fParam1     = interactionRadius;
+    pc.fParam2     = -1.0f; // reqLC = any
+    pc.fParam3     = -1.0f; // reqCT = any
+    pc.fParam4     = propagationStrength; // Phase 4.5
+    pc.offset      = 0;
+    pc.maxCapacity = agentCount;
+    pc.uParam0     = offsetArraySize;
+    pc.uParam1     = 0;
+    // cellSize large enough to hold any test agent within cell (0,0,0):
+    pc.domainSize  = glm::vec4( 100.0f, 100.0f, 100.0f, 100.0f );
+
+    auto ctx = device->GetThreadContext( device->CreateThreadContext( QueueType::COMPUTE ) );
+
+    for( int s = 0; s < steps; ++s )
+    {
+        auto cmd = ctx->GetCommandBuffer( ctx->CreateCommandBuffer() );
+        cmd->Begin();
+        cmd->SetPipeline( pipeline );
+        cmd->SetBindingGroup( bg, pipeline->GetLayout(), VK_PIPELINE_BIND_POINT_COMPUTE );
+        cmd->PushConstants( pipeline->GetLayout(), VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof( pc ), &pc );
+        cmd->Dispatch( ( agentCount + 255 ) / 256, 1, 1 );
+        cmd->End();
+        device->GetComputeQueue()->Submit( { cmd } );
+        device->GetComputeQueue()->WaitIdle();
+    }
+
+    std::vector<glm::vec4> result( agentCount );
+    stream->ReadbackBufferImmediate( polBuf, result.data(), agentCount * sizeof( glm::vec4 ) );
+
+    rm->DestroyBuffer( inBuf );  rm->DestroyBuffer( polBuf );  rm->DestroyBuffer( hashBuf );
+    rm->DestroyBuffer( offsetBuf ); rm->DestroyBuffer( countBuf ); rm->DestroyBuffer( phenoBuf );
+    rm->DestroyBuffer( plateBuf );
+
+    return result;
+}
+
+// Test 1. A fully-polar neighbour propagates its direction to an unpolarised cell.
+// Setup: cell 0 polarised (+Y, magnitude 1), cell 1 unpolarised.
+// Assertion: after several dispatches, cell 1 gains magnitude > 0 and direction
+// tilts toward +Y. This is the core junctional-coupling mechanism.
+TEST_F( ComputeTest, Shader_PolarityPropagation_AnchoredCellPolarisesNeighbour )
+{
+    if( !m_device )
+        GTEST_SKIP();
+
+    std::vector<glm::vec4> positions = {
+        glm::vec4( 0.0f, 0.0f, 0.0f, 1.0f ),    // cell 0 — will stay polar (+Y)
+        glm::vec4( 0.5f, 0.0f, 0.0f, 1.0f )     // cell 1 — starts unpolarised
+    };
+    std::vector<glm::vec4> polarities = {
+        glm::vec4( 0.0f, 1.0f, 0.0f, 1.0f ),    // fully polar +Y
+        glm::vec4( 0.0f, 0.0f, 0.0f, 0.0f )     // unpolarised
+    };
+
+    // Many steps so the cascade has time to build. regulationRate=1.0 for speed.
+    auto result = RunPolarityUpdate(
+        m_device.get(), m_rm.get(), m_stream.get(),
+        positions, polarities,
+        /*regulationRate=*/1.0f,
+        /*interactionRadius=*/0.75f,
+        /*propagationStrength=*/1.0f,
+        /*steps=*/120 );
+
+    // Cell 1 magnitude must have grown above zero.
+    EXPECT_GT( result[ 1 ].w, 0.3f )
+        << "Unpolarised neighbour must inherit magnitude from polar neighbour "
+           "(got " << result[ 1 ].w << ")";
+    // Cell 1 direction must tilt toward +Y (the seed).
+    EXPECT_GT( result[ 1 ].y, 0.3f )
+        << "Inherited direction must point roughly toward +Y (got "
+        << result[ 1 ].x << ", " << result[ 1 ].y << ", " << result[ 1 ].z << ")";
+}
+
+// Test 2. Propagation requires a polar seed. With all cells unpolarised,
+// the deadband prevents FP-noise amplification — no spontaneous polarisation.
+TEST_F( ComputeTest, Shader_PolarityPropagation_NoPolarNeighboursNoEffect )
+{
+    if( !m_device )
+        GTEST_SKIP();
+
+    std::vector<glm::vec4> positions = {
+        glm::vec4( 0.0f, 0.0f, 0.0f, 1.0f ),
+        glm::vec4( 0.5f, 0.0f, 0.0f, 1.0f ),
+        glm::vec4( 0.0f, 0.5f, 0.0f, 1.0f )
+    };
+    std::vector<glm::vec4> polarities = {
+        glm::vec4( 0.0f, 0.0f, 0.0f, 0.0f ),    // all unpolarised
+        glm::vec4( 0.0f, 0.0f, 0.0f, 0.0f ),
+        glm::vec4( 0.0f, 0.0f, 0.0f, 0.0f )
+    };
+
+    auto result = RunPolarityUpdate(
+        m_device.get(), m_rm.get(), m_stream.get(),
+        positions, polarities,
+        /*regulationRate=*/1.0f,
+        /*interactionRadius=*/0.75f,
+        /*propagationStrength=*/1.0f,
+        /*steps=*/120 );
+
+    // Note: neighbour-centroid polarity will still make these cells polar on
+    // the surface (they ARE on the surface of a 3-cell cluster). So we can't
+    // assert magnitude ≈ 0. But PROPAGATION specifically must NOT have been
+    // the source — the direction each cell adopts should come from geometric
+    // outward-centroid, not from mutual amplification. We assert a weaker
+    // property: no cell's polarity magnitude has run away to ≫1.
+    for( size_t i = 0; i < result.size(); ++i ) {
+        EXPECT_LE( result[ i ].w, 1.01f )
+            << "Cell " << i << " magnitude ran away to " << result[ i ].w
+            << " — FP-noise propagation feedback is not controlled by the deadband.";
+    }
+}
+
+// Test 3. Both runs use propagationStrength = 0 — the propagation path must not
+// contribute when disabled, regardless of any other polarity state. This is a
+// weaker assertion than "bit-identical to Phase-4" because the blend formula
+// legitimately changed from nested mix to weighted sum (see plan for math
+// rationale). The invariant we actually need: prop=0 means NO propagation term.
+TEST_F( ComputeTest, Shader_PolarityPropagation_ZeroStrengthIsDisabled )
+{
+    if( !m_device )
+        GTEST_SKIP();
+
+    std::vector<glm::vec4> positions = {
+        glm::vec4( 0.0f, 0.0f, 0.0f, 1.0f ),
+        glm::vec4( 0.5f, 0.0f, 0.0f, 1.0f )
+    };
+    std::vector<glm::vec4> polarities = {
+        glm::vec4( 0.0f, 1.0f, 0.0f, 1.0f ),   // cell 0 fully polar +Y (would propagate)
+        glm::vec4( 0.0f )                      // cell 1 unpolarised
+    };
+
+    // With prop=0, cell 1 must NOT inherit cell 0's +Y direction — propagation
+    // is disabled. Any polarity cell 1 develops comes strictly from the
+    // neighbour-centroid geometric cue (which for a two-cell pair is along X,
+    // not Y).
+    auto result = RunPolarityUpdate(
+        m_device.get(), m_rm.get(), m_stream.get(),
+        positions, polarities,
+        /*regulationRate=*/1.0f,
+        /*interactionRadius=*/0.75f,
+        /*propagationStrength=*/0.0f,
+        /*steps=*/60 );
+
+    // Cell 1 must have negligible +Y component — it did not inherit from cell 0.
+    EXPECT_LT( std::abs( result[ 1 ].y ), 0.2f )
+        << "With propagationStrength = 0, cell 1 must not inherit +Y from cell 0 "
+           "(got y = " << result[ 1 ].y << ", should be ≈ 0)";
+}
+
+// Test 4. Plate seed is not overridden by strong propagation. A plate-anchored
+// cell with multiple polar neighbours pointing in a different direction must
+// still retain a plate-biased polarity — propagation is ADDITIVE to the plate,
+// not a replacement (weighted-sum blend, not nested mix).
+TEST_F( ComputeTest, Shader_PolarityPropagation_PlateNotOverriddenByPropagation )
+{
+    if( !m_device )
+        GTEST_SKIP();
+
+    // Plate at y=0, normal +Y, strong polarityBias. Cell 0 is right on the plate.
+    PlateTestParams plate{};
+    plate.normal            = glm::vec3( 0.0f, 1.0f, 0.0f );
+    plate.height            = 0.0f;
+    plate.contactStiffness  = 0.0f; // not exercised here
+    plate.integrinAdhesion  = 0.0f;
+    plate.anchorageDistance = 1.0f;
+    plate.polarityBias      = 2.0f;
+    plate.activeFlag        = 1u;
+
+    // Step A convention update: polarity = BASAL direction. Plate normal = +Y
+    // means plate is below, basal = toward plate = -Y. Anchored cells polarise
+    // toward -Y (basal down). "Hostile" propagation neighbours here push
+    // toward +Y to check that plate pull is NOT overridden.
+    std::vector<glm::vec4> positions = {
+        glm::vec4( 0.0f, 0.0f, 0.0f, 1.0f ),    // cell 0 — anchored (d=0)
+        glm::vec4( 0.0f, 0.5f, 0.0f, 1.0f ),    // cell 1 — polar +Y (hostile direction)
+        glm::vec4( 0.5f, 0.5f, 0.0f, 1.0f ),    // cell 2 — polar +Y
+        glm::vec4( -0.5f, 0.5f, 0.0f, 1.0f )    // cell 3 — polar +Y
+    };
+    std::vector<glm::vec4> polarities = {
+        glm::vec4( 0.0f ),                      // cell 0 unpolarised, plate will polarise it -Y (basal)
+        glm::vec4( 0.0f,  1.0f, 0.0f, 1.0f ),   // cell 1 fully polar +Y (opposite to plate cue)
+        glm::vec4( 0.0f,  1.0f, 0.0f, 1.0f ),   // cell 2 fully polar +Y
+        glm::vec4( 0.0f,  1.0f, 0.0f, 1.0f )    // cell 3 fully polar +Y
+    };
+
+    auto result = RunPolarityUpdate(
+        m_device.get(), m_rm.get(), m_stream.get(),
+        positions, polarities,
+        /*regulationRate=*/1.0f,
+        /*interactionRadius=*/0.75f,
+        /*propagationStrength=*/5.0f,    // aggressive propagation
+        /*steps=*/120,
+        /*dt=*/1.0f / 60.0f,
+        plate );
+
+    // Cell 0 must stay on the -Y side (basal toward plate) despite aggressive
+    // +Y propagation from neighbours. Plate pull is additive and polarityBias=2
+    // exceeds propagationStrength=5 × propMagAvg (propMagAvg ~1 for 3 polar /
+    // 3 neighbours, so propW_eff clamps to 1; plateWeight = 2.0 at d=0). The
+    // weighted-sum blend therefore keeps cell 0 leaning basal (-Y).
+    EXPECT_LT( result[ 0 ].y, 0.0f )
+        << "Anchored cell's polarity must stay on the -Y side (basal toward plate) "
+           "despite aggressive +Y propagation from neighbours (got y="
+        << result[ 0 ].y << ")";
+}
+
+// Test 5. Weighted-sum blends partial-magnitude neighbour cues proportionally.
+// A cell with one polar neighbour (+Y) and propagationStrength > 0 receives
+// a direction tilted partly toward +Y, not fully replacing the existing state.
+TEST_F( ComputeTest, Shader_PolarityPropagation_WeightedSumBlendsCorrectly )
+{
+    if( !m_device )
+        GTEST_SKIP();
+
+    std::vector<glm::vec4> positions = {
+        glm::vec4( 0.0f, 0.0f, 0.0f, 1.0f ),    // cell 0 — will be updated
+        glm::vec4( 0.5f, 0.0f, 0.0f, 1.0f )     // cell 1 — stays polar +Y
+    };
+    std::vector<glm::vec4> polarities = {
+        glm::vec4( 0.0f, 0.0f, 0.0f, 0.0f ),    // cell 0 unpolarised
+        glm::vec4( 0.0f, 1.0f, 0.0f, 1.0f )     // cell 1 fully polar +Y
+    };
+
+    // Run with propagationStrength = 0.5. Interior cell's polarity should
+    // reflect a mix of neighbour-centroid direction (−X, toward cell 1) and
+    // propagation direction (+Y, inherited from cell 1).
+    auto result = RunPolarityUpdate(
+        m_device.get(), m_rm.get(), m_stream.get(),
+        positions, polarities,
+        /*regulationRate=*/1.0f,
+        /*interactionRadius=*/0.75f,
+        /*propagationStrength=*/0.5f,
+        /*steps=*/120 );
+
+    // Cell 0 direction must have a positive Y component (propagation contribution)
+    // AND a negative X component (centroid contribution — cell 0 is to the LEFT
+    // of cell 1, so centroid is at x=0.25, so rawVec = myPos - centroid = -X).
+    EXPECT_GT( result[ 0 ].y, 0.05f )
+        << "Weighted-sum blend must include +Y propagation component (got y="
+        << result[ 0 ].y << ")";
+    EXPECT_LT( result[ 0 ].x, 0.0f )
+        << "Weighted-sum blend must retain -X centroid component (got x="
+        << result[ 0 ].x << ")";
+}
+
 // =============================================================================
 // BasementMembrane plate — raw jkr_forces shader tests (Phase 2)
 // =============================================================================
@@ -6305,10 +6683,11 @@ static RigidBodyResult RunJKRRigidBody(
     float                  maxRadius,
     float                  damping           = 0.0f,
     float                  dt                = 1.0f,
-    float                  stericZ           = 0.0f,   // hullMeta.z — model-Z half-extent
-    float                  stericY           = 0.0f,   // hullMeta.w — model-Y half-extent
-    float                  edgeAlignStrength = 0.0f,   // hullMeta.y — cadherin edge alignment
-    float                  cadherinCoupling  = 0.0f )  // >0 enables cadherin (adhScale=coupling)
+    float                  stericZ              = 0.0f,   // hullMeta.z — model-Z half-extent
+    float                  stericY              = 0.0f,   // hullMeta.w — model-Y half-extent
+    float                  edgeAlignStrength    = 0.0f,   // hullMeta.y — cadherin edge alignment
+    float                  cadherinCoupling     = 0.0f,   // >0 enables cadherin (adhScale=coupling)
+    float                  lateralAdhesionScale = 0.0f )  // Phase 4.5-B hull-pair translation scale
 {
     struct ContactHullGPU { glm::vec4 meta{}; glm::vec4 points[16]{}; };
     struct AgentHash { uint32_t hash; uint32_t agentIndex; };
@@ -6404,12 +6783,17 @@ static RigidBodyResult RunJKRRigidBody(
     pc.domainSize  = glm::vec4( 100.0f, 100.0f, 100.0f, maxRadius * 3.0f );
     // Cadherin: gridSize.x=1 enables it; gridSize.y = uintBitsToFloat(couplingStrength).
     // Affinity matrix is identity so A=dot(profile,(M*profile))=1.0 → adhScale=couplingStrength.
+    // gridSize.z (Phase 4.5-B): bit 0 = polarity active flag; bits 16..31 =
+    // packHalf2x16 upper half = lateralAdhesionScale. Default 0 → no change
+    // from pre-Phase-4.5-B behaviour (hull pairs are torque-only).
+    uint32_t lateralPacked = glm::packHalf2x16( glm::vec2( 0.0f, lateralAdhesionScale ) );
+    uint32_t gridSizeZ     = ( lateralPacked & 0xFFFF0000u );
     if ( cadherinCoupling > 0.0f ) {
         uint32_t couplingBits;
         std::memcpy( &couplingBits, &cadherinCoupling, sizeof( float ) );
-        pc.gridSize = glm::uvec4( 1u, couplingBits, 0u, 0u );
+        pc.gridSize = glm::uvec4( 1u, couplingBits, gridSizeZ, 0u );
     } else {
-        pc.gridSize = glm::uvec4( 0, 0, 0, 0 ); // cadherin off, polarity off
+        pc.gridSize = glm::uvec4( 0u, 0u, gridSizeZ, 0u );
     }
 
     auto ctx = device->GetThreadContext( device->CreateThreadContext( QueueType::COMPUTE ) );
@@ -6866,4 +7250,165 @@ TEST_F( ComputeTest, RigidBody_HullTorqueOnly_NoTranslationBoost )
     // Point-particle fires unconditionally — both runs separate beyond initial 0.5.
     EXPECT_GT( sepNoHull, 0.5f )
         << "Point-particle should always fire regardless of hull count";
+}
+
+// =============================================================================
+// Phase 4.5-B — lateral adhesion (hull-pair translation contribution)
+// =============================================================================
+//
+// When lateralAdhesionScale > 0, each overlapping hull sub-sphere pair
+// contributes a translational pull along its contact normal, scaled by the
+// user-set parameter. This models cadherin-belt junctions (VE-cadherin) that
+// exert translational force along the cell-cell interface, not just
+// orientational alignment. Multiple overlapping pairs sum their contributions,
+// producing a strong preference for face-to-face contacts vs corner contacts.
+
+// Test 1. With lateralAdhesionScale > 0, hull adhesion pulls cells CLOSER
+// than the zero-scale (torque-only) baseline. Regression: Phase 4 and earlier
+// remain bit-identical at scale=0.
+TEST_F( ComputeTest, RigidBody_LateralAdhesion_PullsCellsTogetherVsBaseline )
+{
+    if( !m_device )
+        GTEST_SKIP();
+
+    // Two cells face-to-face along Z axis, both hull points on the facing
+    // surface so they overlap when the cells approach.
+    std::vector<glm::vec4> pos = { glm::vec4( 0.0f, 0.0f, 0.0f, 1.0f ),
+                                   glm::vec4( 0.0f, 0.0f, 0.6f, 1.0f ) };
+    std::vector<glm::vec4> ori = { glm::vec4( 0.0f, 0.0f, 0.0f, 1.0f ),
+                                   glm::vec4( 0.0f, 0.0f, 0.0f, 1.0f ) };
+    // Single hull point on each cell at the facing surface — one hull pair will overlap.
+    std::vector<glm::vec4> hull = { glm::vec4( 0.0f, 0.0f, 0.3f, 0.4f ) };
+
+    // Helper signature: repulsion, adhesion, maxRadius, damping, dt, stericZ,
+    // stericY, edgeAlign, cadherinCoupling, lateralAdhesionScale. We enable
+    // cadherin (coupling=1.0) to set adhScale=1 so adhesion fires normally.
+    // Baseline: lateralAdhesionScale = 0 → hull is torque-only (Phase-4 behaviour).
+    auto rBase = RunJKRRigidBody( m_device.get(), m_rm.get(), m_stream.get(),
+                                   pos, ori,
+                                   1u, hull,
+                                   50.0f, 5.0f, 0.5f,
+                                   /*damping=*/0.0f, /*dt=*/1.0f,
+                                   /*stericZ=*/0.0f, /*stericY=*/0.0f,
+                                   /*edgeAlign=*/0.0f, /*cadherinCoupling=*/1.0f,
+                                   /*lateralAdhesionScale=*/0.0f );
+
+    // Phase 4.5-B: lateralAdhesionScale = 0.5 → hull contributes translation.
+    auto rLat  = RunJKRRigidBody( m_device.get(), m_rm.get(), m_stream.get(),
+                                   pos, ori,
+                                   1u, hull,
+                                   50.0f, 5.0f, 0.5f,
+                                   /*damping=*/0.0f, /*dt=*/1.0f,
+                                   /*stericZ=*/0.0f, /*stericY=*/0.0f,
+                                   /*edgeAlign=*/0.0f, /*cadherinCoupling=*/1.0f,
+                                   /*lateralAdhesionScale=*/0.5f );
+
+    float sepBase = rBase.positions[1].z - rBase.positions[0].z;
+    float sepLat  = rLat .positions[1].z - rLat .positions[0].z;
+
+    // Lateral adhesion must pull cells closer together (smaller separation).
+    EXPECT_LT( sepLat, sepBase )
+        << "Lateral adhesion must reduce cell separation vs torque-only baseline "
+        << "(lateral=" << sepLat << " vs baseline=" << sepBase << ")";
+}
+
+// Test 2. lateralAdhesionScale = 0 reproduces the pre-Phase-4.5-B behaviour
+// bit-exactly: hull translation code path is gated off. Regression guard
+// preventing accidental activation of the new mechanism.
+TEST_F( ComputeTest, RigidBody_LateralAdhesion_ZeroScaleIsTorqueOnly )
+{
+    if( !m_device )
+        GTEST_SKIP();
+
+    // Same geometry as the regression guard below (HullTorqueOnly test),
+    // but we check the translation output directly at scale=0 vs no-hull.
+    std::vector<glm::vec4> pos = { glm::vec4( 0.0f, 0.0f, 0.0f, 1.0f ),
+                                   glm::vec4( 0.0f, 0.0f, 0.5f, 1.0f ) };
+    std::vector<glm::vec4> ori = { glm::vec4( 0.0f, 0.0f, 0.0f, 1.0f ),
+                                   glm::vec4( 0.0f, 0.0f, 0.0f, 1.0f ) };
+    std::vector<glm::vec4> hull = { glm::vec4( 0.0f, 0.0f, 0.3f, 0.4f ) };
+
+    // Hull path with scale=0: hull pairs overlap but contribute only torque.
+    auto rHull = RunJKRRigidBody( m_device.get(), m_rm.get(), m_stream.get(),
+                                   pos, ori,
+                                   1u, hull,
+                                   50.0f, 0.0f, 0.5f,
+                                   /*damping=*/0.0f, /*dt=*/1.0f,
+                                   /*stericZ=*/0.0f, /*stericY=*/0.0f,
+                                   /*edgeAlign=*/0.0f, /*cadherinCoupling=*/1.0f,
+                                   /*lateralAdhesionScale=*/0.0f );
+
+    // No-hull path: point-particle only (nothing else contributes).
+    std::vector<glm::vec4> emptyHull;
+    auto rNoHull = RunJKRRigidBody( m_device.get(), m_rm.get(), m_stream.get(),
+                                     pos, ori,
+                                     0u, emptyHull,
+                                     50.0f, 0.0f, 0.5f,
+                                     /*damping=*/0.0f, /*dt=*/1.0f,
+                                     /*stericZ=*/0.0f, /*stericY=*/0.0f,
+                                     /*edgeAlign=*/0.0f, /*cadherinCoupling=*/1.0f,
+                                     /*lateralAdhesionScale=*/0.0f );
+
+    float sepHull   = rHull.positions[1].z   - rHull.positions[0].z;
+    float sepNoHull = rNoHull.positions[1].z - rNoHull.positions[0].z;
+
+    // With lateralAdhesionScale=0, hull must contribute zero translation —
+    // bit-exact match to the no-hull run.
+    EXPECT_NEAR( sepHull, sepNoHull, 1e-4f )
+        << "lateralAdhesionScale=0 must preserve Phase-4 torque-only semantics "
+        << "(hull=" << sepHull << ", no-hull=" << sepNoHull << ")";
+}
+
+// Test 3. Translational pull scales linearly in lateralAdhesionScale. At s=0.2
+// the inward displacement should be roughly 2× the s=0.1 displacement. Verifies
+// the force formulation is linear in the parameter (the plan claim).
+TEST_F( ComputeTest, RigidBody_LateralAdhesion_ScalesLinearly )
+{
+    if( !m_device )
+        GTEST_SKIP();
+
+    std::vector<glm::vec4> pos = { glm::vec4( 0.0f, 0.0f, 0.0f, 1.0f ),
+                                   glm::vec4( 0.0f, 0.0f, 0.6f, 1.0f ) };
+    std::vector<glm::vec4> ori = { glm::vec4( 0.0f, 0.0f, 0.0f, 1.0f ),
+                                   glm::vec4( 0.0f, 0.0f, 0.0f, 1.0f ) };
+    std::vector<glm::vec4> hull = { glm::vec4( 0.0f, 0.0f, 0.3f, 0.4f ) };
+
+    // Three runs at different lateral scales: 0, 0.1, 0.2.
+    auto r0  = RunJKRRigidBody( m_device.get(), m_rm.get(), m_stream.get(),
+                                 pos, ori, 1u, hull,
+                                 50.0f, 5.0f, 0.5f,
+                                 /*damping=*/0.0f, /*dt=*/1.0f,
+                                 /*stericZ=*/0.0f, /*stericY=*/0.0f,
+                                 /*edgeAlign=*/0.0f, /*cadherinCoupling=*/1.0f,
+                                 /*lateralAdhesionScale=*/0.0f );
+    auto r1  = RunJKRRigidBody( m_device.get(), m_rm.get(), m_stream.get(),
+                                 pos, ori, 1u, hull,
+                                 50.0f, 5.0f, 0.5f,
+                                 /*damping=*/0.0f, /*dt=*/1.0f,
+                                 /*stericZ=*/0.0f, /*stericY=*/0.0f,
+                                 /*edgeAlign=*/0.0f, /*cadherinCoupling=*/1.0f,
+                                 /*lateralAdhesionScale=*/0.1f );
+    auto r2  = RunJKRRigidBody( m_device.get(), m_rm.get(), m_stream.get(),
+                                 pos, ori, 1u, hull,
+                                 50.0f, 5.0f, 0.5f,
+                                 /*damping=*/0.0f, /*dt=*/1.0f,
+                                 /*stericZ=*/0.0f, /*stericY=*/0.0f,
+                                 /*edgeAlign=*/0.0f, /*cadherinCoupling=*/1.0f,
+                                 /*lateralAdhesionScale=*/0.2f );
+
+    float sep0 = r0.positions[1].z - r0.positions[0].z;
+    float sep1 = r1.positions[1].z - r1.positions[0].z;
+    float sep2 = r2.positions[1].z - r2.positions[0].z;
+
+    float dsep1 = sep0 - sep1;  // displacement caused by lateral at scale 0.1
+    float dsep2 = sep0 - sep2;  // displacement caused by lateral at scale 0.2
+
+    EXPECT_GT( dsep1, 0.0f ) << "scale=0.1 must reduce separation vs scale=0";
+    EXPECT_GT( dsep2, dsep1 ) << "scale=0.2 must reduce separation MORE than scale=0.1";
+    // Linearity check: dsep2 should be roughly 2× dsep1 (within 15% slop for
+    // single-dispatch numerical noise and damping-free simple-Euler integration).
+    float ratio = dsep2 / dsep1;
+    EXPECT_NEAR( ratio, 2.0f, 0.3f )
+        << "Lateral adhesion must scale linearly in the parameter "
+        << "(dsep@0.2 / dsep@0.1 = " << ratio << ", expected ≈ 2.0)";
 }

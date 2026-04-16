@@ -59,6 +59,22 @@ namespace DigitalTwin::Behaviours
         // repulsion for fully-apical-aligned contacts.
         float apicalRepulsion = 0.5f;
         float basalAdhesion   = 1.5f;  // adhesion multiplier when basal faces basal (> 1 = stronger)
+        // Phase 4.5 — weight of the apical-basal cue propagated from polar
+        // neighbours via cell-cell junctional coupling (St Johnston & Ahringer
+        // 2010; Bryant et al. 2010 PAR/Crumbs cascade). Solves the interior-
+        // polarity gap: without propagation, interior cells have
+        // neighbour-centroid magnitude ≈ 0 and never feel apical-basal
+        // adhesion scaling; with propagation, an anchored seed (plate-
+        // polarised cells) transmits orientation cell-to-cell through the
+        // aggregate, enabling cord hollowing from the interior outward.
+        //   0.0  = disabled — interior cells stay unpolarised (Phase 4 behaviour)
+        //   0.5-1.0 = biologically plausible for tight-junction coupling
+        //   >1.0 = dominates geometric centroid (sweep values for research use)
+        // Sub-threshold neighbour polarity (mean magnitude < 0.05) is treated
+        // as zero — a biologically-motivated deadband (junctional PAR
+        // recruitment has a cooperativity threshold) that also prevents
+        // FP-noise feedback amplification in non-seeded clusters.
+        float propagationStrength = 0.0f;
     };
 
     /**
@@ -86,6 +102,19 @@ namespace DigitalTwin::Behaviours
     /**
      * @brief Raw data structure for the GPU Compute Compiler.
      * Contains pre-calculated mathematical constants derived from biological parameters.
+     *
+     * corticalTension models the actomyosin cortex contractility that opposes
+     * cell-cell adhesion (Maître et al. 2012 "Adhesion functions in cell sorting
+     * by mechanically coupling the cortices of adhering cells"). In the
+     * interfacial-tension framework the per-pair interfacial tension is
+     *   γ_ij = (T_i + T_j) - W_ij
+     * where T is cortical tension and W is adhesion work. The effect in this
+     * model: for each overlapping neighbour pair an outward force
+     *   F_tension = corticalTension * overlap * dir_ij
+     * is added, linearly opposing the adhesive inward pull. Raising tension
+     * thus stiffens the aggregate (rounder spheroids, smoother boundaries)
+     * and shifts the adhesion/tension balance toward sorting-like compaction.
+     * Default 0.0f preserves pre-Phase-4 behaviour.
      */
     struct Biomechanics
     {
@@ -93,6 +122,18 @@ namespace DigitalTwin::Behaviours
         float adhesionStrength    = 2.0f;  // How strongly cells stick together (JKR force)
         float maxRadius           = 1.5f;  // The interaction radius for collision detection
         float dampingCoefficient  = 0.0f;  // Velocity drag (dashpot). 0 = no damping.
+        float corticalTension     = 0.0f;  // Actomyosin contractile term opposing adhesion (0 = off)
+        // Phase 4.5-B — lateral (edge-to-edge) junctional adhesion. Hull
+        // sub-sphere pairs contribute a translational force scaled by this
+        // factor, pulling cells into face-to-face contact in proportion to the
+        // number of hull-point pairs that overlap. Biological analog: cadherin
+        // belt junctions (VE-cad, E-cad adherens belts) exert a translational
+        // pull along the contact surface, not just a torque. Without this
+        // mechanism, hull pairs only ALIGN tiles rotationally; tiles can drift
+        // corner-to-corner without committing to a full edge-to-edge contact.
+        // Scale ~0.05-0.2 is biologically plausible (lateral adhesion is a
+        // fraction of the omnidirectional point-particle adhesion). 0 = off.
+        float lateralAdhesionScale = 0.0f;
     };
 
     /**

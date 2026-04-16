@@ -13,12 +13,12 @@ namespace Gaudi::Demos
     {
         // ── Shared EC cloud geometry ──────────────────────────────────────────
         // These are the initial-state parameters shared by both ECBlobDemo (no plate)
-        // and ECTubeDemo (with plate). Keeping them in one place guarantees the two
+        // and EC2DMatrigelDemo (with plate). Keeping them in one place guarantees the two
         // demos start from an identical cloud — the only allowed divergence between
         // them is the BasementMembrane behaviour (added in Phase 2).
         //
         // Geometry is an elongated cylinder along +X, lifted so its lowest cells sit
-        // at y ≈ 0.5 — inside future plate anchorage distance for ECTubeDemo.
+        // at y ≈ 0.5 — inside future plate anchorage distance for EC2DMatrigelDemo.
         // The renderer is Y-up, so the basement-membrane plate lives in the XZ
         // plane (normal = +Y) and the cluster sits on top of it, elongated along
         // the X axis. In the camera that reads as a horizontal log on the floor.
@@ -47,11 +47,11 @@ namespace Gaudi::Demos
     // Defined here; declared in Demos.h. Populates the given AgentGroup with an
     // elongated cloud of random endothelial cells (CurvedTile morphology, oriented
     // outward from the cluster centroid). Does NOT attach behaviours — the caller
-    // composes the behaviour stack (and adds BasementMembrane for ECTubeDemo).
+    // composes the behaviour stack (and adds BasementMembrane for EC2DMatrigelDemo).
     void SeedECCloud( DigitalTwin::AgentGroup& group, uint32_t /*seed*/ )
     {
         // Regular-lattice placement in an elongated cylinder along +X, sitting
-        // above y=0 so ECTubeDemo's basement-membrane plate (XZ plane, +Y normal)
+        // above y=0 so EC2DMatrigelDemo's basement-membrane plate (XZ plane, +Y normal)
         // catches the bottom cells.
         auto positions = DigitalTwin::SpatialDistribution::LatticeInCylinder(
             k_latticeSpacing,
@@ -122,17 +122,17 @@ namespace Gaudi::Demos
         // ── EC blob, no ECM cue ───────────────────────────────────────────────
         // Phase 1 baseline. An unstructured elongated cloud of endothelial cells
         // with JKR + VE-cadherin adhesion + apical-basal polarity — the same
-        // physics stack as ECTubeDemo, but WITHOUT a basement-membrane plate.
+        // physics stack as EC2DMatrigelDemo, but WITHOUT a basement-membrane plate.
         //
         // Biological analog: endothelial cells in suspension / ultra-low-attachment
         // culture, where absent ECM contact prevents polarity establishment and
         // the classic in-vitro outcome is solid spheroids (NOT tubes). This demo
-        // is intentionally the negative control of ECTubeDemo.
+        // is intentionally the negative control of EC2DMatrigelDemo.
         //
         // Phase 1 expectation: the elongated cloud compresses into a solid sausage
         // within a few seconds. No lumen. This is the "blobbing collapse" baseline
         // that later phases (net-negative apical, cortical tension, catch-bond)
-        // progressively fix — but only in ECTubeDemo, which has the plate cue.
+        // progressively fix — but only in EC2DMatrigelDemo, which has the plate cue.
         // ECBlobDemo stays blob-like throughout the plan.
 
         blueprint.SetName( "EC Blob" );
@@ -148,21 +148,48 @@ namespace Gaudi::Demos
         SeedECCloud( ecs, 42 );
 
         // ── Biomechanics ───────────────────────────────────────────────────────
-        // AdhesionEnergy 5.0 (was 2.0): widens the JKR attractive basin from a
-        // razor-thin 0.07-unit band around eq dist 1.43 to a 0.44-unit band
-        // around eq dist 1.06. Cells that drift under Brownian noise still feel
-        // an inward pull up to ~1.4 separation, preventing escape past the
-        // interaction cutoff.
+        // Biology: in vitro suspension culture. ECs aggregate via VE-cadherin
+        // homotypic adhesion into solid spheroids. They do NOT establish
+        // apical-basal polarity — polarity requires a symmetry-breaking cue
+        // (BM integrin engagement) which this demo explicitly lacks. Without
+        // integrin, ECs would eventually undergo anoikis in real biology; we
+        // don't model cell death and so approximate "freshly suspended ECs."
+        //
+        // Revision note (Phase 4.5 review). Earlier revisions added apical
+        // repulsion (Phase 3), cortical tension (Phase 4), and junctional
+        // propagation (Phase 4.5) to this demo. Those mechanisms belong to the
+        // 3D collagen gel tube-formation biology (Strilic 2009 cord hollowing),
+        // NOT to the 2D / suspension setups modelled here. Layered on the
+        // suspension baseline they produced cluster disruption without
+        // corresponding phenotype benefit. Removed the CellPolarity behaviour
+        // outright — in a no-BM setting it was spuriously polarising surface
+        // cells via the neighbour-centroid cue. Cortical tension kept at 0.5
+        // because it IS a cell-intrinsic property (actomyosin contractility)
+        // that doesn't require any ECM context to be valid.
+        //
+        // AdhesionEnergy 5.0 widens the JKR attractive basin to ~0.44 (from
+        // ~0.07 at the Phase-1 default 2.0). Biological anchor: VE-cadherin
+        // homotypic adhesion energy in the 0.5-2 mN/m range; 5.0 is a
+        // dimensionless proxy scaled to sim units.
+        // Phase 4.5-B: lateralAdhesionScale = 0.15 adds translational pull to
+        // hull sub-sphere pairs, modelling VE-cadherin belt junctions. At
+        // face-to-face contact many hull pairs overlap and their translations
+        // sum; at corner-only contact the pull is small. This drives edge-to-
+        // edge cell commitment rather than the random 3D packing that pure
+        // omnidirectional point-particle adhesion produced.
         auto jkr = DigitalTwin::BiomechanicsGenerator::JKR()
                        .SetYoungsModulus( 20.0f )
                        .SetPoissonRatio( 0.4f )
                        .SetAdhesionEnergy( 5.0f )
                        .SetMaxInteractionRadius( 0.75f )
                        .SetDampingCoefficient( 150.0f )
+                       .SetCorticalTension( 0.5f )
+                       .SetLateralAdhesionScale( 0.15f )
                        .Build();
         ecs.AddBehaviour( jkr ).SetHz( 60.0f );
 
-        // VE-cadherin (channel z) — homophilic EC–EC adhesion
+        // VE-cadherin (channel z) — homophilic EC–EC adhesion. Drives spheroid
+        // formation through lateral junctional assembly (VE-cad belts).
         ecs.AddBehaviour( DigitalTwin::Behaviours::CadherinAdhesion{
                               glm::vec4( 0.0f, 0.0f, 1.0f, 0.0f ),
                               0.05f,  // expressionRate
@@ -171,30 +198,35 @@ namespace Gaudi::Demos
                           } )
             .SetHz( 60.0f );
 
-        // Apical-basal polarity — symmetric-interior / outward-surface EMA.
-        // Phase 3 values: net-negative apical repulsion.
-        //   * apicalRepulsion = -1.0  → apical-aligned contacts (interior of a
-        //     cluster, where polarised cells face each other apex-to-apex) flip
-        //     adhesion into active repulsion. Biologically represents PODXL
-        //     electrostatic repulsion at apical poles (Strilic 2009).
-        //   * basalAdhesion   = 2.5   → basal-aligned contacts stay strongly
-        //     attractive, preserving outer-shell integrity against the interior
-        //     repulsion that would otherwise rupture the aggregate.
-        // ECBlobDemo inherits these values even though it has no plate cue —
-        // polarity will still establish on cluster-surface cells from neighbour
-        // geometry, so apical (toward cluster centre) and basal (outward) are
-        // still defined. Expected outcome differs from ECTubeDemo: with no
-        // directional anchor, a hollow spheroid topology is the minimum-energy
-        // shape for this force balance.
+        // ── CellPolarity (Step A — unified cell behaviours across all demos) ──
+        //
+        // Same CellPolarity parameters as EC2DMatrigelDemo and the future
+        // ECTubeDemo. Biological principle: ECs have intrinsic PAR/Crumbs +
+        // VE-cadherin polarity machinery regardless of substrate. What
+        // differs between demos is the ENVIRONMENT, not the cell's
+        // molecular kit.
+        //
+        // In ECBlobDemo specifically: no BM plate → `plateWeight = 0` for
+        // every cell → no propagation seed → polarity magnitude stays at 0
+        // (post-Step-A polarity model gates magnitude by plate+propagation
+        // only, not by geometric centroid). The cluster remains effectively
+        // unpolarised and behaves as a pure cadherin/lateral-adhesion
+        // aggregate. This models anoikis biology: suspended ECs without
+        // integrin engagement cannot maintain apical-basal polarity.
+        //
+        // The apical/basal values are kept conservative (apical = 0.3, i.e.
+        // weakly ATTRACTIVE rather than Strilic's -1.0 repulsive) because the
+        // 2D demos don't need cord hollowing. Phase 6 will sweep toward more
+        // aggressive values once the 3D ECM demo exists to validate them.
         DigitalTwin::Behaviours::CellPolarity polarity;
-        polarity.regulationRate  = 0.2f;
-        polarity.apicalRepulsion = -1.0f;
-        polarity.basalAdhesion   = 2.5f;
+        polarity.regulationRate      = 0.2f;
+        polarity.apicalRepulsion     = 0.3f;
+        polarity.basalAdhesion       = 1.5f;
+        polarity.propagationStrength = 1.0f;
         ecs.AddBehaviour( polarity ).SetHz( 60.0f );
 
         // Thermal noise — minimal jitter to help cells escape local energy
-        // minima during rearrangement. Kept low because the cluster is dense
-        // (all cells have neighbours) and we don't want dispersive drift.
+        // minima during rearrangement.
         ecs.AddBehaviour( DigitalTwin::Behaviours::BrownianMotion{ 0.1f } ).SetHz( 60.0f );
     }
 } // namespace Gaudi::Demos

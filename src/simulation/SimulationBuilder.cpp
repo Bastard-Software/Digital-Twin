@@ -948,6 +948,7 @@ namespace DigitalTwin
                         polPC.fParam1      = interactionRadius;
                         polPC.fParam2      = static_cast<float>( static_cast<int32_t>( static_cast<uint32_t>( record.requiredLifecycleState ) ) );
                         polPC.fParam3      = static_cast<float>( static_cast<int32_t>( static_cast<uint32_t>( record.requiredCellType ) ) );
+                        polPC.fParam4      = pol.propagationStrength; // Phase 4.5 — junctional coupling weight
                         polPC.offset       = preOffset;
                         polPC.maxCapacity  = globalHashCapacity;
                         polPC.uParam0      = offsetArraySize;
@@ -1151,23 +1152,36 @@ namespace DigitalTwin
                     // Same convention as Anastomosis and Chemotaxis shaders.
                     jkrPC.domainSize           = glm::vec4( blueprint.GetDomainSize(), blueprint.GetSpatialPartitioning().cellSize );
 
-                    // Cadherin-scaled adhesion: check if this group also has CadherinAdhesion
+                    // Cadherin-scaled adhesion: check if this group also has CadherinAdhesion.
+                    // gridSize.x is a composite field:
+                    //   bit 0       = cadherin active flag
+                    //   bits 16..31 = packHalf2x16 upper half = corticalTension (Biomechanics)
+                    // The low half of packHalf2x16 is forced to 0.0f (half encoding = 0x0000)
+                    // so bit 0 is reserved for the flag without collision.
                     {
                         const Behaviours::CadherinAdhesion* cadherin = nullptr;
                         for( const auto& r: group.GetBehaviours() )
                             if( const auto* c = std::get_if<Behaviours::CadherinAdhesion>( &r.behaviour ) )
                                 { cadherin = c; break; }
-                        jkrPC.gridSize.x = cadherin ? 1u : 0u;
+                        uint32_t cadFlag       = cadherin ? 1u : 0u;
+                        uint32_t tensionPacked = glm::packHalf2x16( glm::vec2( 0.0f, biomechanics.corticalTension ) );
+                        jkrPC.gridSize.x = cadFlag | ( tensionPacked & 0xFFFF0000u );
                         jkrPC.gridSize.y = cadherin ? *reinterpret_cast<const uint32_t*>( &cadherin->couplingStrength ) : 0u;
                     }
 
-                    // Polarity-modulated adhesion: check if this group also has CellPolarity
+                    // Polarity-modulated adhesion: check if this group also has CellPolarity.
+                    // gridSize.z layout (Phase 4.5-B):
+                    //   bit 0       = polarity active flag
+                    //   bits 16..31 = packHalf2x16 upper half = lateralAdhesionScale
+                    //                 (Biomechanics cadherin-belt translational pull)
                     {
                         const Behaviours::CellPolarity* polarity = nullptr;
                         for( const auto& r: group.GetBehaviours() )
                             if( const auto* p = std::get_if<Behaviours::CellPolarity>( &r.behaviour ) )
                                 { polarity = p; break; }
-                        jkrPC.gridSize.z = polarity ? 1u : 0u;
+                        uint32_t polFlag       = polarity ? 1u : 0u;
+                        uint32_t lateralPacked = glm::packHalf2x16( glm::vec2( 0.0f, biomechanics.lateralAdhesionScale ) );
+                        jkrPC.gridSize.z = polFlag | ( lateralPacked & 0xFFFF0000u );
                         jkrPC.gridSize.w = polarity
                             ? glm::packHalf2x16( glm::vec2( polarity->apicalRepulsion, polarity->basalAdhesion ) )
                             : 0u;
@@ -2284,22 +2298,30 @@ namespace DigitalTwin
                         pc.fParam4                = bio.dampingCoefficient;
                         pc.fParam5                = bio.maxRadius;
                         // domainSize.w holds the spatial hash cell size — do NOT overwrite with maxRadius
-                        // Update cadherin coupling flag in case couplingStrength changed via HotReload
+                        // Update cadherin coupling flag in case couplingStrength changed via HotReload.
+                        // gridSize.x layout mirrors the initial compile path:
+                        //   bit 0 = cadherin active flag; bits 16..31 = corticalTension (half float).
                         {
                             const Behaviours::CadherinAdhesion* cadherin = nullptr;
                             for( const auto& r: group.GetBehaviours() )
                                 if( const auto* c = std::get_if<Behaviours::CadherinAdhesion>( &r.behaviour ) )
                                     { cadherin = c; break; }
-                            pc.gridSize.x = cadherin ? 1u : 0u;
+                            uint32_t cadFlag       = cadherin ? 1u : 0u;
+                            uint32_t tensionPacked = glm::packHalf2x16( glm::vec2( 0.0f, bio.corticalTension ) );
+                            pc.gridSize.x = cadFlag | ( tensionPacked & 0xFFFF0000u );
                             pc.gridSize.y = cadherin ? *reinterpret_cast<const uint32_t*>( &cadherin->couplingStrength ) : 0u;
                         }
-                        // Update polarity flag in case apicalRepulsion/basalAdhesion changed via HotReload
+                        // Update polarity flag + lateralAdhesionScale (Phase 4.5-B) in case
+                        // any parameter changed via HotReload. gridSize.z: bit 0 = polarity
+                        // active flag; bits 16..31 = half-packed lateralAdhesionScale.
                         {
                             const Behaviours::CellPolarity* polarity = nullptr;
                             for( const auto& r: group.GetBehaviours() )
                                 if( const auto* p = std::get_if<Behaviours::CellPolarity>( &r.behaviour ) )
                                     { polarity = p; break; }
-                            pc.gridSize.z = polarity ? 1u : 0u;
+                            uint32_t polFlag       = polarity ? 1u : 0u;
+                            uint32_t lateralPacked = glm::packHalf2x16( glm::vec2( 0.0f, bio.lateralAdhesionScale ) );
+                            pc.gridSize.z = polFlag | ( lateralPacked & 0xFFFF0000u );
                             pc.gridSize.w = polarity
                                 ? glm::packHalf2x16( glm::vec2( polarity->apicalRepulsion, polarity->basalAdhesion ) )
                                 : 0u;
@@ -2340,6 +2362,7 @@ namespace DigitalTwin
                                 { pc.fParam1 = bio->maxRadius; break; }
                         pc.fParam2               = static_cast<float>( static_cast<int32_t>( static_cast<uint32_t>( record.requiredLifecycleState ) ) );
                         pc.fParam3               = static_cast<float>( static_cast<int32_t>( static_cast<uint32_t>( record.requiredCellType ) ) );
+                        pc.fParam4               = pol.propagationStrength; // Phase 4.5 — hot-reload junctional coupling weight
                         task->UpdatePushConstants( pc );
                     }
                 }

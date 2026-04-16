@@ -231,34 +231,26 @@ namespace Gaudi
               "differential adhesion, steric repulsion, chemotaxis.",
               &Demos::SetupCellMechanicsZooDemo },
 
-            { "EC Blob (no ECM)",
-              "~100 VE-cadherin endothelial cells randomly placed\n"
-              "inside an elongated cylinder along +X. NO plate, NO\n"
-              "ECM cue.\n\n"
-              "Biological analog: ECs in suspension / ultra-low-\n"
-              "attachment culture — the classic in-vitro outcome is\n"
-              "solid spheroids, NOT tubes. Absent ECM contact,\n"
-              "polarity cannot establish a stable apico-basal axis.\n\n"
-              "Phase 1 expectation: elongated cloud compresses into\n"
-              "a solid sausage within a few seconds. No lumen. This\n"
-              "is the 'blobbing collapse' baseline — and the\n"
-              "negative control for ECTubeDemo.\n\n"
-              "Demonstrates: CellPolarity + CadherinAdhesion + JKR\n"
-              "with no directional ECM cue.",
+            { "EC Blob (suspension / hanging drop)",
+              "~100 VE-cadherin endothelial cells in a 3D cloud with\n"
+              "NO substrate. Biology: hanging drop / ULA culture.\n\n"
+              "Expected: solid spheroid(s) via cadherin-belt junctions.\n"
+              "NO apical-basal polarity (no BM seed). NO lumen.\n\n"
+              "Paired negative control for EC 2D Matrigel.",
               &Demos::SetupECBlobDemo },
 
-            { "EC Tube (with ECM)",
-              "~100 VE-cadherin endothelial cells randomly placed\n"
-              "inside an elongated cylinder along +X. Identical\n"
-              "cloud to EC Blob — same seed, same geometry.\n\n"
-              "From Phase 2 on, a basement-membrane plate at z=0\n"
-              "supplies a basal polarity cue + integrin anchorage.\n"
-              "Biological analog: 2D Matrigel tube-formation assay\n"
-              "(Kubota 1988, Arnaoutova 2009).\n\n"
-              "Phase 1 scaffold: plate not added yet — demo is\n"
-              "currently indistinguishable from EC Blob. Visual\n"
-              "divergence appears after Phase 2.",
-              &Demos::SetupECTubeDemo },
+            { "EC 2D Matrigel (monolayer / cord)",
+              "Same ~100-cell drop as EC Blob, pipetted onto a 2D\n"
+              "Matrigel-like basement-membrane plate at y=0.\n\n"
+              "Biology: 2D Matrigel tube-formation assay (Kubota\n"
+              "1988, Arnaoutova 2009). ECs anchor to the BM via\n"
+              "integrin, flatten into a MONOLAYER, and form cord-\n"
+              "like networks over 4-24 h. NO hollow tube with lumen\n"
+              "— that phenotype requires 3D collagen gel (future\n"
+              "ECTubeDemo, roadmap item 5).\n\n"
+              "Positive control for EC Blob: the ONLY difference\n"
+              "between the two demos is the plate.",
+              &Demos::SetupEC2DMatrigelDemo },
 
             { "Stress Test",
               "100,000 agents across 3 groups in a 250-unit domain.\n"

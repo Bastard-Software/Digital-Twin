@@ -15,9 +15,13 @@ layout(push_constant) uniform PushConstants {
     uint  arrayOffset;
     uint  grpNdx;
     vec4  domainSize;
-    uvec4 gridSize;          // x: cadherin active flag (0=off, 1=on)
+    uvec4 gridSize;          // x: bit 0 = cadherin active flag;
+                             //    bits 16..31 = half-packed corticalTension
+                             //    (biomechanics contractile term, Maître 2012)
                              // y: couplingStrength encoded as uintBitsToFloat
-                             // z: polarity active flag (0=off, 1=on)
+                             // z: bit 0 = polarity active flag;
+                             //    bits 16..31 = half-packed lateralAdhesionScale
+                             //    (Phase 4.5-B cadherin-belt translational pull)
                              // w: packHalf2x16(apicalRepulsion, basalAdhesion)
 } pc;
 
@@ -189,7 +193,7 @@ void main() {
                     //                         adhForce < 0 → |netForce| increases outward.
                     // No clamp on adhScale itself — Phase 3+ requires signed values.
                     float adhScale = 1.0;
-                    if (pc.gridSize.x != 0u) {
+                    if ((pc.gridSize.x & 1u) != 0u) {
                         float couplingStrength = uintBitsToFloat(pc.gridSize.y);
                         vec4  profileI = cadherinProfiles.profiles[originalAgentIdx];
                         vec4  profileJ = cadherinProfiles.profiles[neighborAgentIdx];
@@ -199,7 +203,7 @@ void main() {
                         float A = clamp(dot(profileI, cadherinAffinity.M * profileJ), -1.0, 1.0);
                         adhScale *= A * couplingStrength;
                     }
-                    if (pc.gridSize.z != 0u) {
+                    if ((pc.gridSize.z & 1u) != 0u) {
                         // pp.x = apicalRepulsion, pp.y = basalAdhesion. In Phase 3+ pp.x
                         // can be negative: apical-aligned contacts (alignment ≈ 0) then
                         // produce scale < 0 → adhScale flips sign → net repulsion.
@@ -217,10 +221,20 @@ void main() {
                     if (hullCount > 0) {
                         // ── Rigid body path: multi-sphere contacts → TORQUE + TRANSLATION ──
                         // Each overlapping hull sub-sphere pair contributes a JKR force to
-                        // both translation and torque.  Only a few pairs overlap at surface
-                        // contact (sub-sphere radii are small), so forces self-scale without
+                        // torque (always) and, if lateralAdhesionScale > 0, to translation
+                        // (Phase 4.5-B). Only a few pairs overlap at surface contact
+                        // (sub-sphere radii are small), so forces self-scale without
                         // an explicit normalisation factor.
                         vec4 qj = orientations[neighborAgentIdx];
+
+                        // Phase 4.5-B: cadherin-belt lateral pull. Hull-pair translation
+                        // contribution scaled by lateralAdhesionScale (unpacked from
+                        // gridSize.z upper half). At edge-to-edge contact many hull
+                        // pairs overlap and the translation force accumulates, giving a
+                        // measurable lateral attraction that encourages committed face-
+                        // to-face junctions rather than corner-only contacts. At 0 the
+                        // hull pairs remain torque-only (pre-Phase-4.5-B behaviour).
+                        float lateralAdhesionScale = unpackHalf2x16(pc.gridSize.z).y;
 
                         for (int a = 0; a < hullCount; a++) {
                             vec3  Pa = myPos + myHull[a];
@@ -238,13 +252,17 @@ void main() {
                                     float overlap    = contactDist - pairDist;
                                     vec3  localDir   = d / pairDist;      // Pa→Pb direction (contact surface normal)
                                     float adhF       = adhesion * overlap * adhScale;
-                                    // Hull pairs are TORQUE-ONLY: adhesion pulls each hull point
-                                    // toward the contact surface to maximise overlap (alignment).
-                                    // Translation is handled entirely by the unconditional point-
-                                    // particle block below.  Hull sub-sphere overlap is on a
-                                    // different scale to centre-to-centre overlap and would overwhelm
-                                    // the point-particle adhesion if added to translation.
+                                    // Torque: rotates hull points toward the contact surface
+                                    // (alignment). Always active, independent of the lateral
+                                    // adhesion scale.
                                     torque += cross(myHull[a], localDir * (-adhF));
+                                    // Translation: Phase 4.5-B cadherin-belt pull. `-adhF * localDir`
+                                    // points from Pa toward Pb when adhF > 0, pulling myPos toward
+                                    // otherPos. Scaled by lateralAdhesionScale (default 0 → no
+                                    // contribution, preserves pre-Phase-4.5-B physics).
+                                    if (lateralAdhesionScale > 0.0) {
+                                        force += localDir * (-adhF) * lateralAdhesionScale;
+                                    }
                                 }
                             }
                         }
@@ -286,7 +304,15 @@ void main() {
                             vec3  dir      = diff / dist;
                             float repForce = repulsion * pow(overlap, 1.5);
                             float adhForce = adhesion * overlap * adhScale;
-                            float netForce = repForce - adhForce;
+                            // Cortical tension (Maître et al. 2012): an outward, per-pair
+                            // contractile force that linearly opposes adhesion. Unlike Hertz
+                            // repulsion (∝ overlap^1.5, diverges under compression), this
+                            // term is linear in overlap and remains finite, so it sets the
+                            // rest-spacing of the aggregate without preventing contact.
+                            // Zero when corticalTension == 0 (default Biomechanics).
+                            float corticalTension = unpackHalf2x16(pc.gridSize.x).y;
+                            float tenForce = corticalTension * overlap;
+                            float netForce = repForce - adhForce + tenForce;
                             force         += dir * netForce;
                             totalPressure += repForce;
                         }

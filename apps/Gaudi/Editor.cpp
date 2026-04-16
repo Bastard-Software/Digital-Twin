@@ -231,17 +231,34 @@ namespace Gaudi
               "differential adhesion, steric repulsion, chemotaxis.",
               &Demos::SetupCellMechanicsZooDemo },
 
-            { "Endothelial Tube",
-              "200 VE-cadherin endothelial cells start randomly\n"
-              "scattered inside a solid cylinder.\n\n"
-              "Apical-basal polarity develops from neighbor\n"
-              "geometry: surface cells polarise outward (w->1),\n"
-              "interior cells stay symmetric (w->0).\n\n"
-              "Polarity-modulated JKR weakens interior contacts\n"
-              "-> cavity opens -> lumenised tube self-assembles.\n\n"
-              "Demonstrates: CellPolarity + CadherinAdhesion,\n"
-              "lumen morphogenesis (Nakamura 2026).",
-              &Demos::SetupEndothelialTubeDemo },
+            { "EC Blob (no ECM)",
+              "~100 VE-cadherin endothelial cells randomly placed\n"
+              "inside an elongated cylinder along +X. NO plate, NO\n"
+              "ECM cue.\n\n"
+              "Biological analog: ECs in suspension / ultra-low-\n"
+              "attachment culture — the classic in-vitro outcome is\n"
+              "solid spheroids, NOT tubes. Absent ECM contact,\n"
+              "polarity cannot establish a stable apico-basal axis.\n\n"
+              "Phase 1 expectation: elongated cloud compresses into\n"
+              "a solid sausage within a few seconds. No lumen. This\n"
+              "is the 'blobbing collapse' baseline — and the\n"
+              "negative control for ECTubeDemo.\n\n"
+              "Demonstrates: CellPolarity + CadherinAdhesion + JKR\n"
+              "with no directional ECM cue.",
+              &Demos::SetupECBlobDemo },
+
+            { "EC Tube (with ECM)",
+              "~100 VE-cadherin endothelial cells randomly placed\n"
+              "inside an elongated cylinder along +X. Identical\n"
+              "cloud to EC Blob — same seed, same geometry.\n\n"
+              "From Phase 2 on, a basement-membrane plate at z=0\n"
+              "supplies a basal polarity cue + integrin anchorage.\n"
+              "Biological analog: 2D Matrigel tube-formation assay\n"
+              "(Kubota 1988, Arnaoutova 2009).\n\n"
+              "Phase 1 scaffold: plate not added yet — demo is\n"
+              "currently indistinguishable from EC Blob. Visual\n"
+              "divergence appears after Phase 2.",
+              &Demos::SetupECTubeDemo },
 
             { "Stress Test",
               "100,000 agents across 3 groups in a 250-unit domain.\n"

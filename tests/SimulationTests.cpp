@@ -3435,9 +3435,14 @@ TEST_F( SimulationBuilderTest, Builder_JKR_Polarity_Wiring )
     state.Destroy( m_resourceManager.get() );
 }
 
-// 6. EndothelialTubeDemo blueprint builds, dispatches 10 frames without errors,
-//    and leaves a non-zero polarity buffer (surface cells develop outward polarity).
-TEST_F( SimulationBuilderTest, EndothelialTube_BuildsAndDispatches )
+// 6. ECBlobDemo / ECTubeDemo biology regression: a blueprint mirroring the demo
+//    setup builds, dispatches 10 frames without errors, and leaves a non-zero
+//    polarity buffer (surface cells develop outward polarity).
+//
+//    Kept as the Phase-1 biology regression; uses a pre-arranged cylindrical
+//    shell so the test exercises the polarity + cadherin stack deterministically
+//    independent of the random-cloud collapse dynamics in the actual demos.
+TEST_F( SimulationBuilderTest, ECBlobDemo_PolarityBuildsAndDispatches )
 {
     if( !m_device )
         GTEST_SKIP();
@@ -3515,6 +3520,193 @@ TEST_F( SimulationBuilderTest, EndothelialTube_BuildsAndDispatches )
         }
 
     EXPECT_TRUE( anyNonZero ) << "No cells developed polarity after 10 frames";
+
+    state.Destroy( m_resourceManager.get() );
+}
+
+// 7. ECBlobDemo scaffold: builds blueprint matching the actual demo's random-cloud
+//    setup (elongated cylinder along +X, ~100 cells, CurvedTile morphology,
+//    Biomechanics + CadherinAdhesion + CellPolarity + Brownian — no plate),
+//    dispatches ~1 second of frames, and asserts no agent escaped / went NaN.
+//    Guards the Phase-1 demo scaffold against integration regressions.
+TEST_F( SimulationBuilderTest, ECBlobDemo_BuildsWithoutExplosion )
+{
+    if( !m_device )
+        GTEST_SKIP();
+
+    SimulationBlueprint blueprint;
+    blueprint.SetName( "EC Blob" );
+    blueprint.SetDomainSize( glm::vec3( 40.0f ), 1.5f );
+    blueprint.ConfigureSpatialPartitioning()
+        .SetMethod( SpatialPartitioningMethod::HashGrid )
+        .SetCellSize( 3.0f )
+        .SetMaxDensity( 64 )
+        .SetComputeHz( 60.0f );
+
+    // Mirror SeedECCloud: lattice-placed cells in elongated cylinder along +X.
+    const float     radius     = 2.0f;
+    const float     halfLength = 6.0f;
+    const float     spacing    = 1.2f;
+    const glm::vec3 center     = glm::vec3( 0.0f, 0.0f, 2.5f );
+    const glm::vec3 axis       = glm::vec3( 1.0f, 0.0f, 0.0f );
+
+    auto positions = SpatialDistribution::LatticeInCylinder(
+        spacing, radius, halfLength, center, axis );
+    ASSERT_GT( positions.size(), 50u );  // geometry-determined count, ~100 expected
+    const uint32_t count = static_cast<uint32_t>( positions.size() );
+
+    AgentGroup& ecs = blueprint.AddAgentGroup( "Endothelial Cells" );
+    ecs.SetCount( count )
+        .SetMorphology( MorphologyGenerator::CreateCurvedTile( 20.0f, 1.05f, 0.25f, radius ) )
+        .SetDistribution( positions );
+
+    auto jkr = BiomechanicsGenerator::JKR()
+                   .SetYoungsModulus( 20.0f )
+                   .SetPoissonRatio( 0.4f )
+                   .SetAdhesionEnergy( 5.0f )
+                   .SetMaxInteractionRadius( 0.75f )
+                   .SetDampingCoefficient( 150.0f )
+                   .Build();
+    ecs.AddBehaviour( jkr ).SetHz( 60.0f );
+    ecs.AddBehaviour( Behaviours::CadherinAdhesion{
+                          glm::vec4( 0.0f, 0.0f, 1.0f, 0.0f ), 0.05f, 0.001f, 2.0f } )
+        .SetHz( 60.0f );
+    Behaviours::CellPolarity polarity;
+    polarity.regulationRate  = 0.2f;
+    polarity.apicalRepulsion = 0.3f;
+    polarity.basalAdhesion   = 1.5f;
+    ecs.AddBehaviour( polarity ).SetHz( 60.0f );
+    ecs.AddBehaviour( Behaviours::BrownianMotion{ 0.1f } ).SetHz( 60.0f );
+
+    SimulationBuilder builder( m_resourceManager.get(), m_streamingManager.get() );
+    SimulationState   state = builder.Build( blueprint );
+
+    // Dispatch ~1 s at 60 Hz
+    auto compCtxHandle = m_device->CreateThreadContext( QueueType::COMPUTE );
+    auto compCtx       = m_device->GetThreadContext( compCtxHandle );
+    auto compCmd       = compCtx->GetCommandBuffer( compCtx->CreateCommandBuffer() );
+
+    GraphDispatcher dispatcher;
+    const float     dt        = 1.0f / 60.0f;
+    uint32_t        activeIdx = 0;
+    for( int frame = 0; frame < 60; ++frame )
+    {
+        compCmd->Begin();
+        activeIdx = dispatcher.Dispatch( &state.computeGraph, compCmd, nullptr, dt, dt * static_cast<float>( frame ), activeIdx );
+        compCmd->End();
+        m_device->GetComputeQueue()->Submit( { compCmd } );
+        m_device->GetComputeQueue()->WaitIdle();
+    }
+
+    // Read back final positions — no NaN, every agent still inside the domain
+    std::vector<glm::vec4> finalPositions( count );
+    m_streamingManager->ReadbackBufferImmediate(
+        state.agentBuffers[ activeIdx ], finalPositions.data(), count * sizeof( glm::vec4 ) );
+
+    uint32_t aliveCount = 0;
+    for( uint32_t i = 0; i < count; ++i )
+    {
+        glm::vec3 p = glm::vec3( finalPositions[ i ] );
+        EXPECT_FALSE( std::isnan( p.x ) || std::isnan( p.y ) || std::isnan( p.z ) )
+            << "Agent " << i << " position went NaN";
+        EXPECT_LT( std::abs( p.x ), 20.0f ) << "Agent " << i << " escaped X bounds";
+        EXPECT_LT( std::abs( p.y ), 20.0f ) << "Agent " << i << " escaped Y bounds";
+        EXPECT_LT( std::abs( p.z ), 20.0f ) << "Agent " << i << " escaped Z bounds";
+        if( finalPositions[ i ].w > 0.0f ) ++aliveCount;
+    }
+    EXPECT_EQ( aliveCount, count ) << "Agent count changed during 1 s of simulation";
+
+    state.Destroy( m_resourceManager.get() );
+}
+
+// 8. ECTubeDemo scaffold (Phase 1). Identical to ECBlobDemo in Phase 1 — no plate
+//    yet. Diverges from Phase 2 onward when BasementMembrane is added only here.
+//    Keeping both tests from Phase 1 exposes any accidental behaviour divergence
+//    introduced while refactoring.
+TEST_F( SimulationBuilderTest, ECTubeDemo_BuildsWithoutExplosion )
+{
+    if( !m_device )
+        GTEST_SKIP();
+
+    SimulationBlueprint blueprint;
+    blueprint.SetName( "EC Tube" );
+    blueprint.SetDomainSize( glm::vec3( 40.0f ), 1.5f );
+    blueprint.ConfigureSpatialPartitioning()
+        .SetMethod( SpatialPartitioningMethod::HashGrid )
+        .SetCellSize( 3.0f )
+        .SetMaxDensity( 64 )
+        .SetComputeHz( 60.0f );
+
+    const float     radius     = 2.0f;
+    const float     halfLength = 6.0f;
+    const float     spacing    = 1.2f;
+    const glm::vec3 center     = glm::vec3( 0.0f, 0.0f, 2.5f );
+    const glm::vec3 axis       = glm::vec3( 1.0f, 0.0f, 0.0f );
+
+    auto positions = SpatialDistribution::LatticeInCylinder(
+        spacing, radius, halfLength, center, axis );
+    ASSERT_GT( positions.size(), 50u );
+    const uint32_t count = static_cast<uint32_t>( positions.size() );
+
+    AgentGroup& ecs = blueprint.AddAgentGroup( "Endothelial Cells" );
+    ecs.SetCount( count )
+        .SetMorphology( MorphologyGenerator::CreateCurvedTile( 20.0f, 1.05f, 0.25f, radius ) )
+        .SetDistribution( positions );
+
+    auto jkr = BiomechanicsGenerator::JKR()
+                   .SetYoungsModulus( 20.0f )
+                   .SetPoissonRatio( 0.4f )
+                   .SetAdhesionEnergy( 5.0f )
+                   .SetMaxInteractionRadius( 0.75f )
+                   .SetDampingCoefficient( 150.0f )
+                   .Build();
+    ecs.AddBehaviour( jkr ).SetHz( 60.0f );
+    ecs.AddBehaviour( Behaviours::CadherinAdhesion{
+                          glm::vec4( 0.0f, 0.0f, 1.0f, 0.0f ), 0.05f, 0.001f, 2.0f } )
+        .SetHz( 60.0f );
+    Behaviours::CellPolarity polarity;
+    polarity.regulationRate  = 0.2f;
+    polarity.apicalRepulsion = 0.3f;
+    polarity.basalAdhesion   = 1.5f;
+    ecs.AddBehaviour( polarity ).SetHz( 60.0f );
+    ecs.AddBehaviour( Behaviours::BrownianMotion{ 0.1f } ).SetHz( 60.0f );
+    // NOTE: No BasementMembrane yet — introduced in Phase 2.
+
+    SimulationBuilder builder( m_resourceManager.get(), m_streamingManager.get() );
+    SimulationState   state = builder.Build( blueprint );
+
+    auto compCtxHandle = m_device->CreateThreadContext( QueueType::COMPUTE );
+    auto compCtx       = m_device->GetThreadContext( compCtxHandle );
+    auto compCmd       = compCtx->GetCommandBuffer( compCtx->CreateCommandBuffer() );
+
+    GraphDispatcher dispatcher;
+    const float     dt        = 1.0f / 60.0f;
+    uint32_t        activeIdx = 0;
+    for( int frame = 0; frame < 60; ++frame )
+    {
+        compCmd->Begin();
+        activeIdx = dispatcher.Dispatch( &state.computeGraph, compCmd, nullptr, dt, dt * static_cast<float>( frame ), activeIdx );
+        compCmd->End();
+        m_device->GetComputeQueue()->Submit( { compCmd } );
+        m_device->GetComputeQueue()->WaitIdle();
+    }
+
+    std::vector<glm::vec4> finalPositions( count );
+    m_streamingManager->ReadbackBufferImmediate(
+        state.agentBuffers[ activeIdx ], finalPositions.data(), count * sizeof( glm::vec4 ) );
+
+    uint32_t aliveCount = 0;
+    for( uint32_t i = 0; i < count; ++i )
+    {
+        glm::vec3 p = glm::vec3( finalPositions[ i ] );
+        EXPECT_FALSE( std::isnan( p.x ) || std::isnan( p.y ) || std::isnan( p.z ) )
+            << "Agent " << i << " position went NaN";
+        EXPECT_LT( std::abs( p.x ), 20.0f ) << "Agent " << i << " escaped X bounds";
+        EXPECT_LT( std::abs( p.y ), 20.0f ) << "Agent " << i << " escaped Y bounds";
+        EXPECT_LT( std::abs( p.z ), 20.0f ) << "Agent " << i << " escaped Z bounds";
+        if( finalPositions[ i ].w > 0.0f ) ++aliveCount;
+    }
+    EXPECT_EQ( aliveCount, count ) << "Agent count changed during 1 s of simulation";
 
     state.Destroy( m_resourceManager.get() );
 }

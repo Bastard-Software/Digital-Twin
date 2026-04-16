@@ -18,7 +18,7 @@ namespace DigitalTwin
         GridVisualizationPass( Device* device, ResourceManager* rm );
         ~GridVisualizationPass();
 
-        Result Initialize( VkFormat colorFormat, VkFormat depthFormat );
+        Result Initialize( VkFormat colorFormat, VkFormat depthFormat, VkSampleCountFlagBits sampleCount = VK_SAMPLE_COUNT_1_BIT );
         void   Shutdown();
 
         void Execute( CommandBuffer* cmd, BufferHandle cameraUBO, const GridFieldState* gridState, const GridVisualizationSettings& settings,

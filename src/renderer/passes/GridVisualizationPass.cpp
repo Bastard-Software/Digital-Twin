@@ -20,7 +20,7 @@ namespace DigitalTwin
     {
     }
 
-    Result GridVisualizationPass::Initialize( VkFormat colorFormat, VkFormat depthFormat )
+    Result GridVisualizationPass::Initialize( VkFormat colorFormat, VkFormat depthFormat, VkSampleCountFlagBits sampleCount )
     {
         m_vertShader = m_resourceManager->CreateShader( "shaders/graphics/grid_overlay.vert" );
         m_fragShader = m_resourceManager->CreateShader( "shaders/graphics/grid_overlay.frag" );
@@ -30,6 +30,7 @@ namespace DigitalTwin
         desc.fragmentShader         = m_fragShader;
         desc.colorAttachmentFormats = { colorFormat };
         desc.depthAttachmentFormat  = depthFormat;
+        desc.sampleCount            = sampleCount;
         desc.depthTestEnable        = false;             // We just overlay based on math, no depth test needed yet
         desc.depthWriteEnable       = false;             // Do not write transparent cloud to depth buffer
         desc.cullMode               = VK_CULL_MODE_NONE; // Fullscreen quad
@@ -68,19 +69,34 @@ namespace DigitalTwin
 
     void GridVisualizationPass::Shutdown()
     {
-        if( !m_linearSampler.IsValid() )
+        if( m_linearSampler.IsValid() )
+        {
             m_resourceManager->DestroySampler( m_linearSampler );
+            m_linearSampler = SamplerHandle::Invalid;
+        }
         if( m_pipeline.IsValid() )
+        {
             m_resourceManager->DestroyPipeline( m_pipeline );
+            m_pipeline = GraphicsPipelineHandle::Invalid;
+        }
         if( m_vertShader.IsValid() )
+        {
             m_resourceManager->DestroyShader( m_vertShader );
+            m_vertShader = ShaderHandle::Invalid;
+        }
         if( m_fragShader.IsValid() )
+        {
             m_resourceManager->DestroyShader( m_fragShader );
+            m_fragShader = ShaderHandle::Invalid;
+        }
 
         for( uint32_t i = 0; i < FRAMES_IN_FLIGHT; ++i )
         {
             if( m_bindingGroups[ i ].IsValid() )
+            {
                 m_resourceManager->DestroyBindingGroup( m_bindingGroups[ i ] );
+                m_bindingGroups[ i ] = BindingGroupHandle::Invalid;
+            }
         }
     }
 

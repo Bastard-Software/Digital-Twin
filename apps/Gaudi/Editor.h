@@ -2,6 +2,7 @@
 #include "EditorSelection.h"
 #include "panels/ConsolePanel.h"
 #include "panels/EditorPanel.h"
+#include "panels/RenderSettingsPanel.h"
 #include <DigitalTwin.h>
 #include <memory>
 #include <optional>
@@ -31,6 +32,7 @@ namespace Gaudi
 
         std::shared_ptr<spdlog::sinks::ringbuffer_sink_mt> GetLogSink() const { return m_logSink; }
         void SetConsolePanel( std::shared_ptr<ConsolePanel> panel ) { m_consolePanel = panel; }
+        void SetRenderSettingsPanel( std::shared_ptr<RenderSettingsPanel> panel ) { m_renderSettingsPanel = panel; }
 
         void RenderMainMenuBar();
         void RenderDemoBrowser();
@@ -46,6 +48,7 @@ namespace Gaudi
         std::vector<std::shared_ptr<EditorPanel>> m_panels;
         std::shared_ptr<spdlog::sinks::ringbuffer_sink_mt> m_logSink;
         std::shared_ptr<ConsolePanel>             m_consolePanel;
+        std::shared_ptr<RenderSettingsPanel>      m_renderSettingsPanel;
         std::string                               m_userIniPath;
         bool                                      m_shouldQuit      = false;
         bool                                      m_showDemoBrowser = false;

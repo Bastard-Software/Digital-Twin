@@ -43,12 +43,23 @@ namespace DigitalTwin
         VkExtent2D GetExtent() const { return m_extent; }
         Window*    GetWindow() const { return m_window; }
 
+        bool GetVSync() const { return m_vsync; }
+        /// Stores the desired VSync state; actual swapchain recreation is deferred to
+        /// ApplyVSyncIfDirty(), which must be called at the start of BeginFrame() before
+        /// AcquireNextImage — never mid-frame after an image index has already been acquired.
+        void SetVSync( bool vsync );
+
+        /// Recreates the swapchain if a pending VSync change exists. Call once per frame,
+        /// after the fence wait and before AcquireNextImage.
+        void ApplyVSyncIfDirty();
+
         VkSemaphore GetImageAvailableSemaphore( uint32_t index ) const { return m_imageAvailableSemaphores[ index ]; }
         VkSemaphore GetRenderFinishedSemaphore( uint32_t index ) const { return m_renderFinishedSemaphores[ index ]; }
 
     private:
         Result CreateInternal( uint32_t width, uint32_t height, bool vsync );
-        void   CleanupInternal(); // Cleans up swapchain resources but keeps Surface
+        void   CleanupInternal();      // Cleans up swapchain resources but keeps Surface
+        void   CleanupTexturesOnly();  // Destroys Texture wrappers only; keeps m_swapchain alive for oldSwapchain handoff
 
     private:
         Device* m_device;
@@ -60,7 +71,8 @@ namespace DigitalTwin
         VkSurfaceFormatKHR m_format;
         VkPresentModeKHR   m_presentMode;
         VkExtent2D         m_extent;
-        bool               m_vsync = true;
+        bool               m_vsync      = true;
+        bool               m_vsyncDirty = false;
 
         std::vector<Texture>     m_textures;
         std::vector<VkSemaphore> m_imageAvailableSemaphores;

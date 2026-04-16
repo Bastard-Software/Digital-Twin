@@ -1674,7 +1674,7 @@ namespace DigitalTwin
                     if( !vegfGrid )
                     {
                         TextureDesc dummyDesc{ 1, 1, 1, TextureType::Texture3D, VK_FORMAT_R32_SFLOAT,
-                                              TextureUsage::STORAGE | TextureUsage::TRANSFER_DST, "PhalanxVEGF_Dummy" };
+                                              TextureUsage::STORAGE | TextureUsage::TRANSFER_DST, VK_SAMPLE_COUNT_1_BIT, "PhalanxVEGF_Dummy" };
                         dummyVEGF  = m_resourceManager->CreateTexture( dummyDesc );
                         float zero = 0.0f;
                         m_streamingManager->UploadTextureImmediate( dummyVEGF, &zero, sizeof( float ) );
@@ -1823,7 +1823,7 @@ namespace DigitalTwin
                     {
                         // Bind a 1×1×1 dummy filled with 1.0 so the descriptor is always satisfied
                         TextureDesc dummyDesc{ 1, 1, 1, TextureType::Texture3D, VK_FORMAT_R32_SFLOAT,
-                                              TextureUsage::STORAGE | TextureUsage::TRANSFER_DST, "NotchVEGF_Dummy" };
+                                              TextureUsage::STORAGE | TextureUsage::TRANSFER_DST, VK_SAMPLE_COUNT_1_BIT, "NotchVEGF_Dummy" };
                         dummyVEGF  = m_resourceManager->CreateTexture( dummyDesc );
                         float one  = 1.0f;
                         m_streamingManager->UploadTextureImmediate( dummyVEGF, &one, sizeof( float ) );

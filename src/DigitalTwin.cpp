@@ -384,6 +384,10 @@ namespace DigitalTwin
                 m_camera->SetFocalPoint( { 0.0f, 0.0f, 0.0f } );
                 m_camera->SetDistance( 250.0f );
 
+                // Apply boot-time MSAA config (validated inside SetMSAA)
+                if( m_config.msaaSamples >= 4 )
+                    m_renderer->SetMSAA( VK_SAMPLE_COUNT_4_BIT );
+
                 // Create render resources
                 for( uint32_t ndx = 0; ndx < FRAMES_IN_FLIGHT; ++ndx )
                 {
@@ -586,6 +590,11 @@ namespace DigitalTwin
             // 3. Acquire Image (Windowed Only)
             if( !m_config.headless )
             {
+                // Apply any pending VSync change BEFORE acquiring the next image.
+                // The fence wait above guarantees no frames are in flight, so it is
+                // safe to destroy and recreate the swapchain here.
+                m_swapchain->ApplyVSyncIfDirty();
+
                 VkSemaphore sem = m_swapchain->GetImageAvailableSemaphore( m_flightIndex );
                 m_swapchain->AcquireNextImage( &m_currentImageIndex, sem );
             }
@@ -1030,6 +1039,42 @@ namespace DigitalTwin
         }
 
         return false;
+    }
+
+    void DigitalTwin::SetMSAA( uint32_t samples )
+    {
+        if( m_impl->m_renderer )
+        {
+            VkSampleCountFlagBits sc = ( samples >= 4 ) ? VK_SAMPLE_COUNT_4_BIT : VK_SAMPLE_COUNT_1_BIT;
+            m_impl->m_renderer->SetMSAA( sc );
+        }
+    }
+
+    uint32_t DigitalTwin::GetMSAA() const
+    {
+        if( m_impl->m_renderer )
+            return static_cast<uint32_t>( m_impl->m_renderer->GetMSAA() );
+        return 1;
+    }
+
+    uint32_t DigitalTwin::GetMaxMSAA() const
+    {
+        if( m_impl->m_device )
+            return m_impl->m_device->IsSampleCountSupported( VK_SAMPLE_COUNT_4_BIT ) ? 4u : 1u;
+        return 1;
+    }
+
+    void DigitalTwin::SetVSync( bool vsync )
+    {
+        if( m_impl->m_swapchain )
+            m_impl->m_swapchain->SetVSync( vsync );
+    }
+
+    bool DigitalTwin::GetVSync() const
+    {
+        if( m_impl->m_swapchain )
+            return m_impl->m_swapchain->GetVSync();
+        return true;
     }
 
     void DigitalTwin::SetGridVisualization( const GridVisualizationSettings& settings )

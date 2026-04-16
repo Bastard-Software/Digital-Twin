@@ -20,7 +20,7 @@ namespace DigitalTwin
     {
     }
 
-    Result VesselVisualizationPass::Initialize( VkFormat colorFormat, VkFormat depthFormat )
+    Result VesselVisualizationPass::Initialize( VkFormat colorFormat, VkFormat depthFormat, VkSampleCountFlagBits sampleCount )
     {
         m_vertShader = m_resourceManager->CreateShader( "shaders/graphics/vessel_lines.vert" );
         m_fragShader = m_resourceManager->CreateShader( "shaders/graphics/vessel_lines.frag" );
@@ -30,6 +30,7 @@ namespace DigitalTwin
         desc.fragmentShader         = m_fragShader;
         desc.colorAttachmentFormats = { colorFormat };
         desc.depthAttachmentFormat  = depthFormat;
+        desc.sampleCount            = sampleCount;
         desc.topology               = VK_PRIMITIVE_TOPOLOGY_LINE_LIST;
         desc.depthTestEnable        = true;
         desc.depthWriteEnable       = false;
@@ -50,16 +51,28 @@ namespace DigitalTwin
     void VesselVisualizationPass::Shutdown()
     {
         if( m_pipeline.IsValid() )
+        {
             m_resourceManager->DestroyPipeline( m_pipeline );
+            m_pipeline = GraphicsPipelineHandle::Invalid;
+        }
         if( m_vertShader.IsValid() )
+        {
             m_resourceManager->DestroyShader( m_vertShader );
+            m_vertShader = ShaderHandle::Invalid;
+        }
         if( m_fragShader.IsValid() )
+        {
             m_resourceManager->DestroyShader( m_fragShader );
+            m_fragShader = ShaderHandle::Invalid;
+        }
 
         for( uint32_t i = 0; i < FRAMES_IN_FLIGHT; ++i )
         {
             if( m_bindingGroups[ i ].IsValid() )
+            {
                 m_resourceManager->DestroyBindingGroup( m_bindingGroups[ i ] );
+                m_bindingGroups[ i ] = BindingGroupHandle::Invalid;
+            }
         }
     }
 

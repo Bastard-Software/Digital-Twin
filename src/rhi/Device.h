@@ -56,6 +56,9 @@ namespace DigitalTwin
         void   WaitIdle();
         Result WaitForSemaphores( const std::vector<VkSemaphore>& semaphores, const std::vector<uint64_t>& values );
 
+        /// Returns true when the device supports rendering color and depth at the given sample count.
+        bool IsSampleCountSupported( VkSampleCountFlagBits sc ) const;
+
     private:
         struct QueueFamilyIndices;
         QueueFamilyIndices FindQueueFamilies( VkPhysicalDevice device );
@@ -76,6 +79,9 @@ namespace DigitalTwin
         Queue* m_transferQueue = nullptr;
 
         Scope<GPUProfiler> m_profiler;
+
+        // Supported framebuffer sample counts (AND of color & depth limits)
+        VkSampleCountFlagBits m_supportedSampleCounts = VK_SAMPLE_COUNT_1_BIT;
 
         // To control lifetime of owned queues
         std::vector<Scope<Queue>>         m_ownedQueues;

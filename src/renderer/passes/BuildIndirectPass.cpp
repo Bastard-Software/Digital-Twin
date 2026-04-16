@@ -41,12 +41,23 @@ namespace DigitalTwin
     void BuildIndirectPass::Shutdown()
     {
         if( m_pipeline.IsValid() )
+        {
             m_resourceManager->DestroyPipeline( m_pipeline );
+            m_pipeline = ComputePipelineHandle::Invalid;
+        }
+        if( m_compShader.IsValid() )
+        {
+            m_resourceManager->DestroyShader( m_compShader );
+            m_compShader = ShaderHandle::Invalid;
+        }
 
         for( uint32_t i = 0; i < FRAMES_IN_FLIGHT; ++i )
         {
             if( m_bindingGroups[ i ].IsValid() )
+            {
                 m_resourceManager->DestroyBindingGroup( m_bindingGroups[ i ] );
+                m_bindingGroups[ i ] = BindingGroupHandle::Invalid;
+            }
         }
     }
 

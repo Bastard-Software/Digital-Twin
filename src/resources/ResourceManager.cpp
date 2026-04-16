@@ -449,6 +449,7 @@ namespace DigitalTwin
         nativeDesc.alphaBlendOp           = desc.alphaBlendOp;
         nativeDesc.colorAttachmentFormats = desc.colorAttachmentFormats;
         nativeDesc.depthAttachmentFormat  = desc.depthAttachmentFormat;
+        nativeDesc.sampleCount            = desc.sampleCount;
         nativeDesc.debugName              = desc.debugName;
 
         // 1. Allocate Raw Memory (Tracked)

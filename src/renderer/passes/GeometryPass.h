@@ -16,7 +16,7 @@ namespace DigitalTwin
         GeometryPass( Device* device, ResourceManager* rm );
         ~GeometryPass();
 
-        Result Initialize();
+        Result Initialize( VkSampleCountFlagBits sampleCount = VK_SAMPLE_COUNT_1_BIT );
         void   Shutdown();
 
         void Execute( CommandBuffer* cmd, BufferHandle cameraUBO, Scene* scene, uint32_t flightIndex );

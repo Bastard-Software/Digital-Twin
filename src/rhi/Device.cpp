@@ -45,6 +45,16 @@ namespace DigitalTwin
             return Result::FAIL;
         }
 
+        // 1b. Query supported MSAA sample counts (AND of color and depth limits)
+        {
+            VkPhysicalDeviceProperties props{};
+            vkGetPhysicalDeviceProperties( m_physicalDevice, &props );
+            VkSampleCountFlags counts = props.limits.framebufferColorSampleCounts
+                                      & props.limits.framebufferDepthSampleCounts;
+            m_supportedSampleCounts = static_cast<VkSampleCountFlagBits>( counts );
+            DT_INFO( "Device: supported framebuffer sample counts mask = 0x{:x}", static_cast<uint32_t>( counts ) );
+        }
+
         // 2. Setup Queue Create Info
         std::vector<VkDeviceQueueCreateInfo> queueCreateInfos;
         std::set<int32_t>                    uniqueQueueFamilies = { indices.graphics, indices.compute, indices.transfer };
@@ -431,6 +441,11 @@ namespace DigitalTwin
         if( !handle.IsValid() || handle.GetIndex() >= m_threadContexts.size() )
             return nullptr;
         return m_threadContexts[ handle.GetIndex() ].get();
+    }
+
+    bool Device::IsSampleCountSupported( VkSampleCountFlagBits sc ) const
+    {
+        return ( m_supportedSampleCounts & sc ) != 0;
     }
 
     Device::QueueFamilyIndices Device::FindQueueFamilies( VkPhysicalDevice device )

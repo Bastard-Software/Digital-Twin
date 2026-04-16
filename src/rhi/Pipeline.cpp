@@ -306,10 +306,10 @@ namespace DigitalTwin
         rasterizer.frontFace                              = desc.frontFace;
         rasterizer.depthBiasEnable                        = VK_FALSE;
 
-        // 7. Multisampling (Default 1 sample)
+        // 7. Multisampling
         VkPipelineMultisampleStateCreateInfo multisampling = { VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO };
         multisampling.sampleShadingEnable                  = VK_FALSE;
-        multisampling.rasterizationSamples                 = VK_SAMPLE_COUNT_1_BIT;
+        multisampling.rasterizationSamples                 = desc.sampleCount;
 
         // 8. Depth Stencil
         VkPipelineDepthStencilStateCreateInfo depthStencil = { VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO };

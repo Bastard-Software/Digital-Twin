@@ -3,6 +3,7 @@
 #include "panels/ConsolePanel.h"
 #include "panels/HierarchyPanel.h"
 #include "panels/InspectorPanel.h"
+#include "panels/RenderSettingsPanel.h"
 #include "panels/SimulationControlsPanel.h"
 #include "panels/ViewportPanel.h"
 
@@ -19,6 +20,10 @@ int main()
     auto consolePanel = std::make_shared<Gaudi::ConsolePanel>( app.GetLogSink() );
     app.SetConsolePanel( consolePanel );
     app.AddPanel( consolePanel );
+
+    auto renderSettingsPanel = std::make_shared<Gaudi::RenderSettingsPanel>( app.GetEngine() );
+    app.SetRenderSettingsPanel( renderSettingsPanel );
+    app.AddPanel( renderSettingsPanel );
 
     app.Run();
 

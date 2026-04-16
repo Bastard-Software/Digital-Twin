@@ -78,6 +78,22 @@ namespace DigitalTwin
         return CreateInternal( width, height, m_vsync );
     }
 
+    void Swapchain::SetVSync( bool vsync )
+    {
+        if( m_vsync == vsync )
+            return;
+        m_vsync      = vsync;
+        m_vsyncDirty = true;
+    }
+
+    void Swapchain::ApplyVSyncIfDirty()
+    {
+        if( !m_vsyncDirty )
+            return;
+        m_vsyncDirty = false;
+        Recreate();
+    }
+
     void Swapchain::CleanupInternal()
     {
         m_device->WaitIdle(); // Safety wait
@@ -93,9 +109,22 @@ namespace DigitalTwin
         }
     }
 
+    void Swapchain::CleanupTexturesOnly()
+    {
+        m_device->WaitIdle();
+        for( auto& tex: m_textures )
+            tex.Destroy();
+        m_textures.clear();
+    }
+
     Result Swapchain::CreateInternal( uint32_t width, uint32_t height, bool vsync )
     {
-        CleanupInternal(); // Cleanup old swapchain if exists (for resize)
+        // Destroy the per-image Texture wrappers (views) but KEEP the old VkSwapchainKHR
+        // alive so we can pass it as `oldSwapchain` below. Some drivers (notably NVIDIA
+        // on Windows + DWM) will not cleanly transition present modes from FIFO back to
+        // MAILBOX/IMMEDIATE unless an oldSwapchain handoff is used.
+        CleanupTexturesOnly();
+        VkSwapchainKHR oldSwapchain = m_swapchain;
 
         const auto&      api    = m_device->GetAPI();
         VkPhysicalDevice pd     = m_device->GetPhysicalDevice();
@@ -156,10 +185,20 @@ namespace DigitalTwin
             m_extent.height = std::clamp( m_extent.height, caps.minImageExtent.height, caps.maxImageExtent.height );
         }
 
+        // --- Image Count ---
+        // MAILBOX requires at least 3 images to actually drop stale frames — with 2 images
+        // the driver falls back to FIFO-like behaviour and the framerate stays capped at
+        // the display refresh rate. Request 3 for MAILBOX, 2 otherwise. Clamp to device
+        // limits (maxImageCount == 0 means "no limit").
+        uint32_t desiredImageCount = ( m_presentMode == VK_PRESENT_MODE_MAILBOX_KHR ) ? 3u : MAX_FRAMES_IN_FLIGHT;
+        desiredImageCount = ( std::max )( desiredImageCount, caps.minImageCount );
+        if( caps.maxImageCount > 0 )
+            desiredImageCount = ( std::min )( desiredImageCount, caps.maxImageCount );
+
         // --- Creation ---
         VkSwapchainCreateInfoKHR createInfo = { VK_STRUCTURE_TYPE_SWAPCHAIN_CREATE_INFO_KHR };
         createInfo.surface                  = m_surface;
-        createInfo.minImageCount            = MAX_FRAMES_IN_FLIGHT;
+        createInfo.minImageCount            = desiredImageCount;
         createInfo.imageFormat              = m_format.format;
         createInfo.imageColorSpace          = m_format.colorSpace;
         createInfo.imageExtent              = m_extent;
@@ -170,12 +209,20 @@ namespace DigitalTwin
         createInfo.compositeAlpha           = VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR;
         createInfo.presentMode              = m_presentMode;
         createInfo.clipped                  = VK_TRUE;
+        createInfo.oldSwapchain             = oldSwapchain;
 
-        if( api.vkCreateSwapchainKHR( device, &createInfo, nullptr, &m_swapchain ) != VK_SUCCESS )
+        VkSwapchainKHR newSwapchain = VK_NULL_HANDLE;
+        if( api.vkCreateSwapchainKHR( device, &createInfo, nullptr, &newSwapchain ) != VK_SUCCESS )
         {
             DT_ERROR( "Failed to create Swapchain!" );
             return Result::FAIL;
         }
+
+        // Destroy the old swapchain AFTER the new one has been created — the driver needs
+        // the old handle alive up to this point so it can inherit/retire state cleanly.
+        if( oldSwapchain != VK_NULL_HANDLE )
+            api.vkDestroySwapchainKHR( device, oldSwapchain, nullptr );
+        m_swapchain = newSwapchain;
 
         // --- Retrieve Images ---
         api.vkGetSwapchainImagesKHR( device, m_swapchain, &MAX_FRAMES_IN_FLIGHT, nullptr );

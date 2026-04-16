@@ -590,6 +590,11 @@ namespace DigitalTwin
             // 3. Acquire Image (Windowed Only)
             if( !m_config.headless )
             {
+                // Apply any pending VSync change BEFORE acquiring the next image.
+                // The fence wait above guarantees no frames are in flight, so it is
+                // safe to destroy and recreate the swapchain here.
+                m_swapchain->ApplyVSyncIfDirty();
+
                 VkSemaphore sem = m_swapchain->GetImageAvailableSemaphore( m_flightIndex );
                 m_swapchain->AcquireNextImage( &m_currentImageIndex, sem );
             }
@@ -1057,6 +1062,19 @@ namespace DigitalTwin
         if( m_impl->m_device )
             return m_impl->m_device->IsSampleCountSupported( VK_SAMPLE_COUNT_4_BIT ) ? 4u : 1u;
         return 1;
+    }
+
+    void DigitalTwin::SetVSync( bool vsync )
+    {
+        if( m_impl->m_swapchain )
+            m_impl->m_swapchain->SetVSync( vsync );
+    }
+
+    bool DigitalTwin::GetVSync() const
+    {
+        if( m_impl->m_swapchain )
+            return m_impl->m_swapchain->GetVSync();
+        return true;
     }
 
     void DigitalTwin::SetGridVisualization( const GridVisualizationSettings& settings )

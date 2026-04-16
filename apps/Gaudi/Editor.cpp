@@ -364,6 +364,13 @@ namespace Gaudi
                         m_consolePanel->SetVisible( showConsole );
                 }
 
+                if( m_renderSettingsPanel )
+                {
+                    bool show = m_renderSettingsPanel->IsVisible();
+                    if( ImGui::MenuItem( "Render Settings", nullptr, &show ) )
+                        m_renderSettingsPanel->SetVisible( show );
+                }
+
                 ImGui::EndMenu();
             }
 

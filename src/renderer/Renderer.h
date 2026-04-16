@@ -120,11 +120,19 @@ namespace DigitalTwin
         uint32_t m_viewportHeight = 600;
 
         // Current MSAA sample count (VK_SAMPLE_COUNT_1_BIT = off, VK_SAMPLE_COUNT_4_BIT = 4x)
-        VkSampleCountFlagBits m_sampleCount = VK_SAMPLE_COUNT_1_BIT;
+        VkSampleCountFlagBits m_sampleCount = VK_SAMPLE_COUNT_4_BIT;
+
+        // Deferred MSAA rebuild: SetMSAA() stores intent here; ApplyMSAAIfDirty() in
+        // BeginUI() does the actual GPU work before ImGui::NewFrame() so no in-flight
+        // ImGui draw data can reference the old scene texture descriptor set.
+        bool m_msaaDirty = false;
 
         // Default global resources
         SamplerHandle m_defaultSampler;
         void*         m_imguiDescriptorPool = nullptr;
+
+        // Apply a pending MSAA change (called at the start of BeginUI, before ImGui::NewFrame)
+        void ApplyMSAAIfDirty();
     };
 
 } // namespace DigitalTwin

@@ -55,6 +55,9 @@ namespace DigitalTwin
         /// Returns the maximum MSAA sample count supported by the current GPU (1 or 4).
         uint32_t GetMaxMSAA() const;
 
+        void SetVSync( bool vsync );
+        bool GetVSync() const;
+
         void                             SetGridVisualization( const GridVisualizationSettings& settings );
         const GridVisualizationSettings& GetGridVisualization() const;
         void                               SetVesselVisualization( const VesselVisualizationSettings& settings );

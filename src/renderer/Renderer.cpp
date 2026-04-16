@@ -130,17 +130,27 @@ namespace DigitalTwin
 
         // Note: Font upload is handled automatically by ImGui 1.91+ in NewFrame()
 
-        // 4. Initialize Per-Frame Resources (Render Targets and UBOs)
+        // 4. Clamp the initial MSAA sample count against device support.
+        // The member default may request 4x MSAA, but not every GPU exposes it — fall back
+        // to Off if unsupported. Without this clamp the RenderTarget and pipelines below
+        // would be created at an unsupported sample count and Vulkan would reject them.
+        if( m_sampleCount != VK_SAMPLE_COUNT_1_BIT && !m_device->IsSampleCountSupported( m_sampleCount ) )
+        {
+            DT_WARN( "Renderer: {}x MSAA not supported by this GPU — falling back to Off.", static_cast<uint32_t>( m_sampleCount ) );
+            m_sampleCount = VK_SAMPLE_COUNT_1_BIT;
+        }
+
+        // 5. Initialize Per-Frame Resources (Render Targets and UBOs)
         for( uint32_t i = 0; i < FRAMES_IN_FLIGHT; ++i )
         {
-            m_renderTargets[ i ] = CreateScope<RenderTarget>( m_resourceManager, m_viewportWidth, m_viewportHeight );
+            m_renderTargets[ i ] = CreateScope<RenderTarget>( m_resourceManager, m_viewportWidth, m_viewportHeight, m_sampleCount );
 
             // Uniform Buffer for Camera Matrices (viewProj + invViewProj)
             BufferDesc uboDesc{ sizeof( glm::mat4 ) * 2, BufferType::UNIFORM };
             m_cameraUBOs[ i ] = m_resourceManager->CreateBuffer( uboDesc );
         }
 
-        // 5. Initialize Render Passes
+        // 6. Initialize Render Passes
         m_buildIndirectPass = CreateScope<BuildIndirectPass>( m_device, m_resourceManager );
         if( m_buildIndirectPass->Initialize() != Result::SUCCESS )
         {
@@ -226,6 +236,11 @@ namespace DigitalTwin
 
     void Renderer::BeginUI()
     {
+        // Apply any pending MSAA change BEFORE ImGui::NewFrame().
+        // At this point no ImGui draw data exists for the current frame, so it is safe
+        // to remove and recreate the scene-texture descriptor set used by the viewport.
+        ApplyMSAAIfDirty();
+
         ImGui_ImplVulkan_NewFrame();
         ImGui_ImplGlfw_NewFrame();
         ImGui::NewFrame();
@@ -491,13 +506,26 @@ namespace DigitalTwin
         if( samples == m_sampleCount )
             return;
 
+        // Store intent — actual GPU work happens in ApplyMSAAIfDirty(), called at the
+        // start of BeginUI() before ImGui::NewFrame().  Doing it here (mid-frame, after
+        // ImGui::Image() has already recorded the old scene texture) would free a descriptor
+        // set that ImGui still intends to bind, producing VVL "Invalid VkDescriptorSet".
         m_sampleCount = samples;
+        m_msaaDirty   = true;
+    }
+
+    void Renderer::ApplyMSAAIfDirty()
+    {
+        if( !m_msaaDirty )
+            return;
+        m_msaaDirty = false;
+
         m_device->WaitIdle();
 
-        // Recreate render targets with the new sample count
+        // Invalidate the cached ImGui scene-texture descriptors.  We are inside BeginUI,
+        // BEFORE ImGui::NewFrame(), so no draw-list entries reference these yet.
         for( uint32_t i = 0; i < FRAMES_IN_FLIGHT; ++i )
         {
-            // Invalidate the cached ImGui texture — it points at the old resolved image
             if( m_cachedImGuiTextures[ i ] )
             {
                 ImGui_ImplVulkan_RemoveTexture( ( VkDescriptorSet )m_cachedImGuiTextures[ i ] );

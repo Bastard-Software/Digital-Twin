@@ -20,7 +20,7 @@ namespace DigitalTwin
     {
     }
 
-    Result GridVisualizationPass::Initialize( VkFormat colorFormat, VkFormat depthFormat )
+    Result GridVisualizationPass::Initialize( VkFormat colorFormat, VkFormat depthFormat, VkSampleCountFlagBits sampleCount )
     {
         m_vertShader = m_resourceManager->CreateShader( "shaders/graphics/grid_overlay.vert" );
         m_fragShader = m_resourceManager->CreateShader( "shaders/graphics/grid_overlay.frag" );
@@ -30,6 +30,7 @@ namespace DigitalTwin
         desc.fragmentShader         = m_fragShader;
         desc.colorAttachmentFormats = { colorFormat };
         desc.depthAttachmentFormat  = depthFormat;
+        desc.sampleCount            = sampleCount;
         desc.depthTestEnable        = false;             // We just overlay based on math, no depth test needed yet
         desc.depthWriteEnable       = false;             // Do not write transparent cloud to depth buffer
         desc.cullMode               = VK_CULL_MODE_NONE; // Fullscreen quad

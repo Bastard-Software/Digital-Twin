@@ -21,7 +21,7 @@ namespace DigitalTwin
     {
     }
 
-    Result GeometryPass::Initialize()
+    Result GeometryPass::Initialize( VkSampleCountFlagBits sampleCount )
     {
         // Shaders
         m_vertShader = m_resourceManager->CreateShader( "shaders/graphics/geometry.vert" );
@@ -36,6 +36,7 @@ namespace DigitalTwin
         desc.depthTestEnable        = true;
         desc.depthWriteEnable       = true;
         desc.cullMode               = VK_CULL_MODE_BACK_BIT;
+        desc.sampleCount            = sampleCount;
 
         m_pipeline = m_resourceManager->CreatePipeline( desc );
         if( !m_pipeline.IsValid() )

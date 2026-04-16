@@ -61,13 +61,6 @@ namespace DigitalTwin
         uint32_t              GetWidth() const { return m_width; }
         uint32_t              GetHeight() const { return m_height; }
 
-        // Backward-compat accessors — Step 3 (Renderer wiring) will replace call sites
-        // with GetColorAttachmentView / GetDepthAttachmentView / GetSampledTexture.
-        TextureHandle GetColorTexture() const { return GetSampledTexture(); }
-        TextureHandle GetDepthTexture() const
-        {
-            return m_sampleCount > VK_SAMPLE_COUNT_1_BIT ? m_msaaDepthHandle : m_depthHandle;
-        }
 
     private:
         void CreateResources();

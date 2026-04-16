@@ -20,7 +20,7 @@ namespace DigitalTwin
     {
     }
 
-    Result VesselVisualizationPass::Initialize( VkFormat colorFormat, VkFormat depthFormat )
+    Result VesselVisualizationPass::Initialize( VkFormat colorFormat, VkFormat depthFormat, VkSampleCountFlagBits sampleCount )
     {
         m_vertShader = m_resourceManager->CreateShader( "shaders/graphics/vessel_lines.vert" );
         m_fragShader = m_resourceManager->CreateShader( "shaders/graphics/vessel_lines.frag" );
@@ -30,6 +30,7 @@ namespace DigitalTwin
         desc.fragmentShader         = m_fragShader;
         desc.colorAttachmentFormats = { colorFormat };
         desc.depthAttachmentFormat  = depthFormat;
+        desc.sampleCount            = sampleCount;
         desc.topology               = VK_PRIMITIVE_TOPOLOGY_LINE_LIST;
         desc.depthTestEnable        = true;
         desc.depthWriteEnable       = false;

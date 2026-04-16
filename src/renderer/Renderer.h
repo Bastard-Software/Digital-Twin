@@ -79,6 +79,14 @@ namespace DigitalTwin
         void                               SetVesselVisualization( const VesselVisualizationSettings& settings ) { m_vesselVisSettings = settings; }
         const VesselVisualizationSettings& GetVesselVisualization() const { return m_vesselVisSettings; }
 
+        /**
+         * @brief Hot-swap MSAA sample count. Triggers vkDeviceWaitIdle, recreates
+         * RenderTargets, and rebuilds all graphics pipelines. Safe at any engine state.
+         * @param samples VK_SAMPLE_COUNT_1_BIT (off) or VK_SAMPLE_COUNT_4_BIT (4x MSAA).
+         */
+        void                  SetMSAA( VkSampleCountFlagBits samples );
+        VkSampleCountFlagBits GetMSAA() const { return m_sampleCount; }
+
     private:
         Device*           m_device;
         Swapchain*        m_swapchain;
@@ -110,6 +118,9 @@ namespace DigitalTwin
         // Desired viewport size for the scene
         uint32_t m_viewportWidth  = 800;
         uint32_t m_viewportHeight = 600;
+
+        // Current MSAA sample count (VK_SAMPLE_COUNT_1_BIT = off, VK_SAMPLE_COUNT_4_BIT = 4x)
+        VkSampleCountFlagBits m_sampleCount = VK_SAMPLE_COUNT_1_BIT;
 
         // Default global resources
         SamplerHandle m_defaultSampler;

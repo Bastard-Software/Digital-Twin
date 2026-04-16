@@ -149,21 +149,21 @@ namespace DigitalTwin
         }
 
         m_geometryPass = CreateScope<GeometryPass>( m_device, m_resourceManager );
-        if( m_geometryPass->Initialize() != Result::SUCCESS )
+        if( m_geometryPass->Initialize( m_sampleCount ) != Result::SUCCESS )
         {
             DT_ERROR( "Failed to initialize GeometryPass." );
             return Result::FAIL;
         }
 
         m_gridVisPass = CreateScope<GridVisualizationPass>( m_device, m_resourceManager );
-        if( m_gridVisPass->Initialize( VK_FORMAT_R8G8B8A8_UNORM, VK_FORMAT_D32_SFLOAT ) != Result::SUCCESS )
+        if( m_gridVisPass->Initialize( VK_FORMAT_R8G8B8A8_UNORM, VK_FORMAT_D32_SFLOAT, m_sampleCount ) != Result::SUCCESS )
         {
             DT_ERROR( "Failed to initialize GridVisualizationPass." );
             return Result::FAIL;
         }
 
         m_vesselVisPass = CreateScope<VesselVisualizationPass>( m_device, m_resourceManager );
-        if( m_vesselVisPass->Initialize( VK_FORMAT_R8G8B8A8_UNORM, VK_FORMAT_D32_SFLOAT ) != Result::SUCCESS )
+        if( m_vesselVisPass->Initialize( VK_FORMAT_R8G8B8A8_UNORM, VK_FORMAT_D32_SFLOAT, m_sampleCount ) != Result::SUCCESS )
         {
             DT_ERROR( "Failed to initialize VesselVisualizationPass." );
             return Result::FAIL;
@@ -267,8 +267,8 @@ namespace DigitalTwin
             // Recreate color/depth textures
             m_renderTargets[ flightIndex ]->Resize( m_viewportWidth, m_viewportHeight );
 
-            // Add new descriptor
-            Texture* tex     = m_resourceManager->GetTexture( m_renderTargets[ flightIndex ]->GetColorTexture() );
+            // Add new descriptor — always sample from the resolved (single-sample) texture
+            Texture* tex     = m_resourceManager->GetTexture( m_renderTargets[ flightIndex ]->GetSampledTexture() );
             Sampler* sampler = m_resourceManager->GetSampler( m_defaultSampler );
             m_cachedImGuiTextures[ flightIndex ] =
                 ImGui_ImplVulkan_AddTexture( sampler->GetHandle(), tex->GetView(), VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL );
@@ -276,7 +276,7 @@ namespace DigitalTwin
         else if( !m_cachedImGuiTextures[ flightIndex ] )
         {
             // First time initialization
-            Texture* tex     = m_resourceManager->GetTexture( m_renderTargets[ flightIndex ]->GetColorTexture() );
+            Texture* tex     = m_resourceManager->GetTexture( m_renderTargets[ flightIndex ]->GetSampledTexture() );
             Sampler* sampler = m_resourceManager->GetSampler( m_defaultSampler );
             m_cachedImGuiTextures[ flightIndex ] =
                 ImGui_ImplVulkan_AddTexture( sampler->GetHandle(), tex->GetView(), VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL );
@@ -310,33 +310,40 @@ namespace DigitalTwin
         // 2. Prepare RenderTarget textures for writing
         m_renderTargets[ flightIndex ]->TransitionForRendering( cmd );
 
-        // 3. Build Rendering Info Safely (Local variables, pointers valid during cmd call)
-        Texture* colorTex = m_resourceManager->GetTexture( m_renderTargets[ flightIndex ]->GetColorTexture() );
-        Texture* depthTex = m_resourceManager->GetTexture( m_renderTargets[ flightIndex ]->GetDepthTexture() );
+        // 3. Build Rendering Info (MSAA-aware)
+        RenderTarget* rt   = m_renderTargets[ flightIndex ].get();
+        bool          msaa = rt->GetSampleCount() > VK_SAMPLE_COUNT_1_BIT;
 
         VkRenderingAttachmentInfo colorAttachment = { VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO };
-        colorAttachment.imageView                 = colorTex->GetView();
+        colorAttachment.imageView                 = rt->GetColorAttachmentView();
         colorAttachment.imageLayout               = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
         colorAttachment.loadOp                    = VK_ATTACHMENT_LOAD_OP_CLEAR;
         colorAttachment.storeOp                   = VK_ATTACHMENT_STORE_OP_STORE;
         colorAttachment.clearValue                = { { 0.1f, 0.1f, 0.15f, 1.0f } };
+        if( msaa )
+        {
+            // Resolve multisampled colour into the single-sample image at EndRendering
+            colorAttachment.resolveMode        = VK_RESOLVE_MODE_AVERAGE_BIT;
+            colorAttachment.resolveImageView   = rt->GetResolveAttachmentView();
+            colorAttachment.resolveImageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+        }
 
         VkRenderingAttachmentInfo depthAttachment = { VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO };
-        depthAttachment.imageView                 = depthTex->GetView();
+        depthAttachment.imageView                 = rt->GetDepthAttachmentView();
         depthAttachment.imageLayout               = VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL;
         depthAttachment.loadOp                    = VK_ATTACHMENT_LOAD_OP_CLEAR;
         depthAttachment.storeOp                   = VK_ATTACHMENT_STORE_OP_DONT_CARE;
         depthAttachment.clearValue.depthStencil   = { 1.0f, 0 };
 
         VkRenderingInfo renderInfo      = { VK_STRUCTURE_TYPE_RENDERING_INFO };
-        renderInfo.renderArea           = { { 0, 0 }, { m_renderTargets[ flightIndex ]->GetWidth(), m_renderTargets[ flightIndex ]->GetHeight() } };
+        renderInfo.renderArea           = { { 0, 0 }, { rt->GetWidth(), rt->GetHeight() } };
         renderInfo.layerCount           = 1;
         renderInfo.colorAttachmentCount = 1;
         renderInfo.pColorAttachments    = &colorAttachment;
         renderInfo.pDepthAttachment     = &depthAttachment;
 
-        cmd->SetViewport( 0.0f, 0.0f, ( float )m_renderTargets[ flightIndex ]->GetWidth(), ( float )m_renderTargets[ flightIndex ]->GetHeight() );
-        cmd->SetScissor( 0, 0, m_renderTargets[ flightIndex ]->GetWidth(), m_renderTargets[ flightIndex ]->GetHeight() );
+        cmd->SetViewport( 0.0f, 0.0f, ( float )rt->GetWidth(), ( float )rt->GetHeight() );
+        cmd->SetScissor( 0, 0, rt->GetWidth(), rt->GetHeight() );
 
         // 4. Execute passes
         if( state != nullptr && state->IsValid() )
@@ -470,6 +477,37 @@ namespace DigitalTwin
         barrier2.subresourceRange      = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1 };
 
         cmd->PipelineBarrier( 0, 0, 0, 0, nullptr, 0, nullptr, 1, &barrier2 );
+    }
+
+    void Renderer::SetMSAA( VkSampleCountFlagBits samples )
+    {
+        if( samples == m_sampleCount )
+            return;
+
+        m_sampleCount = samples;
+        m_device->WaitIdle();
+
+        // Recreate render targets with the new sample count
+        for( uint32_t i = 0; i < FRAMES_IN_FLIGHT; ++i )
+        {
+            // Invalidate the cached ImGui texture — it points at the old resolved image
+            if( m_cachedImGuiTextures[ i ] )
+            {
+                ImGui_ImplVulkan_RemoveTexture( ( VkDescriptorSet )m_cachedImGuiTextures[ i ] );
+                m_cachedImGuiTextures[ i ] = nullptr;
+            }
+            m_renderTargets[ i ]->Resize( m_renderTargets[ i ]->GetWidth(), m_renderTargets[ i ]->GetHeight(), m_sampleCount );
+        }
+
+        // Rebuild all graphics pipelines with the new sample count
+        m_geometryPass->Shutdown();
+        m_geometryPass->Initialize( m_sampleCount );
+
+        m_gridVisPass->Shutdown();
+        m_gridVisPass->Initialize( VK_FORMAT_R8G8B8A8_UNORM, VK_FORMAT_D32_SFLOAT, m_sampleCount );
+
+        m_vesselVisPass->Shutdown();
+        m_vesselVisPass->Initialize( VK_FORMAT_R8G8B8A8_UNORM, VK_FORMAT_D32_SFLOAT, m_sampleCount );
     }
 
 } // namespace DigitalTwin

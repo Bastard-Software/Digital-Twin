@@ -3711,6 +3711,236 @@ TEST_F( SimulationBuilderTest, EC2DMatrigelDemo_BuildsWithoutExplosion )
     state.Destroy( m_resourceManager.get() );
 }
 
+// Step C — ECTubeDemo (3D ECM placeholder) basic sanity. 4-plate channel; 1 s
+// of simulation; cluster must stay bounded, no NaN, agent count preserved.
+// This test uses the Gaudi Demos:: setup function directly, exercising the
+// multi-plate builder path with 4 BasementMembrane behaviours at once.
+TEST_F( SimulationBuilderTest, ECTubeDemo_BuildsWithMultiplePlates_WithoutExplosion )
+{
+    if( !m_device )
+        GTEST_SKIP();
+
+    // Mirror ECTubeDemo's 4-plate channel configuration in a test blueprint.
+    SimulationBlueprint blueprint;
+    blueprint.SetName( "ECTubeDemo test" );
+    blueprint.SetDomainSize( glm::vec3( 40.0f ), 1.5f );
+    blueprint.ConfigureSpatialPartitioning()
+        .SetMethod( SpatialPartitioningMethod::HashGrid )
+        .SetCellSize( 3.0f )
+        .SetMaxDensity( 64 )
+        .SetComputeHz( 60.0f );
+
+    const float     radius     = 2.0f;
+    const float     halfLength = 6.0f;
+    const float     spacing    = 1.2f;
+    const glm::vec3 center     = glm::vec3( 0.0f, 2.5f, 0.0f );
+    const glm::vec3 axis       = glm::vec3( 1.0f, 0.0f, 0.0f );
+
+    auto positions = SpatialDistribution::LatticeInCylinder(
+        spacing, radius, halfLength, center, axis );
+    ASSERT_GT( positions.size(), 50u );
+    const uint32_t count = static_cast<uint32_t>( positions.size() );
+
+    AgentGroup& ecs = blueprint.AddAgentGroup( "Endothelial Cells" );
+    ecs.SetCount( count )
+        .SetMorphology( MorphologyGenerator::CreateCurvedTile( 20.0f, 1.05f, 0.25f, radius ) )
+        .SetDistribution( positions );
+
+    ecs.AddBehaviour( BiomechanicsGenerator::JKR()
+                          .SetYoungsModulus( 20.0f )
+                          .SetPoissonRatio( 0.4f )
+                          .SetAdhesionEnergy( 5.0f )
+                          .SetMaxInteractionRadius( 0.75f )
+                          .SetDampingCoefficient( 150.0f )
+                          .SetCorticalTension( 0.5f )
+                          .SetLateralAdhesionScale( 0.15f )
+                          .Build() )
+        .SetHz( 60.0f );
+    ecs.AddBehaviour( Behaviours::CadherinAdhesion{
+                          glm::vec4( 0.0f, 0.0f, 1.0f, 0.0f ), 0.05f, 0.001f, 2.0f } )
+        .SetHz( 60.0f );
+    Behaviours::CellPolarity polarity;
+    polarity.regulationRate      = 0.2f;
+    polarity.apicalRepulsion     = 0.3f;
+    polarity.basalAdhesion       = 1.5f;
+    polarity.propagationStrength = 1.0f;
+    ecs.AddBehaviour( polarity ).SetHz( 60.0f );
+    ecs.AddBehaviour( Behaviours::BrownianMotion{ 0.1f } ).SetHz( 60.0f );
+
+    // Four-plate channel — floor + ceiling + two Z walls.
+    auto addPlate = [&]( glm::vec3 normal, float height ) {
+        Behaviours::BasementMembrane plate;
+        plate.planeNormal       = normal;
+        plate.height            = height;
+        plate.contactStiffness  = 15.0f;
+        plate.integrinAdhesion  = 1.5f;
+        plate.anchorageDistance = 4.0f;
+        plate.polarityBias      = 2.0f;
+        ecs.AddBehaviour( plate ).SetHz( 60.0f );
+    };
+    addPlate( glm::vec3(  0.0f,  1.0f,  0.0f ),  0.0f );
+    addPlate( glm::vec3(  0.0f, -1.0f,  0.0f ), -5.0f );
+    addPlate( glm::vec3(  0.0f,  0.0f,  1.0f ), -3.0f );
+    addPlate( glm::vec3(  0.0f,  0.0f, -1.0f ), -3.0f );
+
+    SimulationBuilder builder( m_resourceManager.get(), m_streamingManager.get() );
+    SimulationState   state = builder.Build( blueprint );
+
+    // Must allocate basement membrane buffer (multi-plate).
+    EXPECT_TRUE( state.basementMembraneBuffer.IsValid() )
+        << "Multi-plate buffer must be allocated even with 4 BasementMembrane behaviours";
+
+    auto compCtxHandle = m_device->CreateThreadContext( QueueType::COMPUTE );
+    auto compCtx       = m_device->GetThreadContext( compCtxHandle );
+    auto compCmd       = compCtx->GetCommandBuffer( compCtx->CreateCommandBuffer() );
+
+    GraphDispatcher dispatcher;
+    const float     dt        = 1.0f / 60.0f;
+    uint32_t        activeIdx = 0;
+    for( int frame = 0; frame < 60; ++frame )
+    {
+        compCmd->Begin();
+        activeIdx = dispatcher.Dispatch( &state.computeGraph, compCmd, nullptr, dt, dt * static_cast<float>( frame ), activeIdx );
+        compCmd->End();
+        m_device->GetComputeQueue()->Submit( { compCmd } );
+        m_device->GetComputeQueue()->WaitIdle();
+    }
+
+    std::vector<glm::vec4> finalPositions( count );
+    m_streamingManager->ReadbackBufferImmediate(
+        state.agentBuffers[ activeIdx ], finalPositions.data(), count * sizeof( glm::vec4 ) );
+
+    uint32_t aliveCount = 0;
+    for( uint32_t i = 0; i < count; ++i )
+    {
+        glm::vec3 p = glm::vec3( finalPositions[ i ] );
+        EXPECT_FALSE( std::isnan( p.x ) || std::isnan( p.y ) || std::isnan( p.z ) )
+            << "Agent " << i << " position went NaN";
+        // All agents must stay within channel bounds (plus some dynamics slack).
+        EXPECT_LT( std::abs( p.x ), 20.0f ) << "Agent " << i << " escaped X bounds";
+        EXPECT_LT( std::abs( p.y ), 20.0f ) << "Agent " << i << " escaped Y bounds";
+        EXPECT_LT( std::abs( p.z ), 20.0f ) << "Agent " << i << " escaped Z bounds";
+        if( finalPositions[ i ].w > 0.0f ) ++aliveCount;
+    }
+    EXPECT_EQ( aliveCount, count ) << "Agent count changed during 1 s of simulation";
+
+    state.Destroy( m_resourceManager.get() );
+}
+
+// Step C — ECTubeDemo cells with multi-plate channel should polarise with
+// non-zero mean magnitude (BM contact from multiple sides activates the
+// integrin-gated polarity model). Contrast with ECBlobDemo which has NO
+// plates and thus no cell ever polarises.
+TEST_F( SimulationBuilderTest, ECTubeDemo_MultiPlate_ProducesPolarisedInterior )
+{
+    if( !m_device )
+        GTEST_SKIP();
+
+    SimulationBlueprint blueprint;
+    blueprint.SetName( "ECTubeDemo polarity test" );
+    blueprint.SetDomainSize( glm::vec3( 40.0f ), 1.5f );
+    blueprint.ConfigureSpatialPartitioning()
+        .SetMethod( SpatialPartitioningMethod::HashGrid )
+        .SetCellSize( 3.0f )
+        .SetMaxDensity( 64 )
+        .SetComputeHz( 60.0f );
+
+    const float     radius     = 2.0f;
+    const float     halfLength = 6.0f;
+    const float     spacing    = 1.2f;
+    const glm::vec3 center     = glm::vec3( 0.0f, 2.5f, 0.0f );
+    const glm::vec3 axis       = glm::vec3( 1.0f, 0.0f, 0.0f );
+
+    auto positions = SpatialDistribution::LatticeInCylinder(
+        spacing, radius, halfLength, center, axis );
+    const uint32_t count = static_cast<uint32_t>( positions.size() );
+
+    AgentGroup& ecs = blueprint.AddAgentGroup( "Endothelial Cells" );
+    ecs.SetCount( count )
+        .SetMorphology( MorphologyGenerator::CreateCurvedTile( 20.0f, 1.05f, 0.25f, radius ) )
+        .SetDistribution( positions );
+
+    ecs.AddBehaviour( BiomechanicsGenerator::JKR()
+                          .SetYoungsModulus( 20.0f )
+                          .SetPoissonRatio( 0.4f )
+                          .SetAdhesionEnergy( 5.0f )
+                          .SetMaxInteractionRadius( 0.75f )
+                          .SetDampingCoefficient( 150.0f )
+                          .SetCorticalTension( 0.5f )
+                          .SetLateralAdhesionScale( 0.15f )
+                          .Build() )
+        .SetHz( 60.0f );
+    ecs.AddBehaviour( Behaviours::CadherinAdhesion{
+                          glm::vec4( 0.0f, 0.0f, 1.0f, 0.0f ), 0.05f, 0.001f, 2.0f } )
+        .SetHz( 60.0f );
+    Behaviours::CellPolarity polarity;
+    polarity.regulationRate      = 0.5f;  // faster cascade for test
+    polarity.apicalRepulsion     = 0.3f;
+    polarity.basalAdhesion       = 1.5f;
+    polarity.propagationStrength = 1.0f;
+    ecs.AddBehaviour( polarity ).SetHz( 60.0f );
+    ecs.AddBehaviour( Behaviours::BrownianMotion{ 0.1f } ).SetHz( 60.0f );
+
+    auto addPlate = [&]( glm::vec3 normal, float height ) {
+        Behaviours::BasementMembrane plate;
+        plate.planeNormal       = normal;
+        plate.height            = height;
+        plate.contactStiffness  = 15.0f;
+        plate.integrinAdhesion  = 1.5f;
+        plate.anchorageDistance = 4.0f;
+        plate.polarityBias      = 2.0f;
+        ecs.AddBehaviour( plate ).SetHz( 60.0f );
+    };
+    addPlate( glm::vec3(  0.0f,  1.0f,  0.0f ),  0.0f );
+    addPlate( glm::vec3(  0.0f, -1.0f,  0.0f ), -5.0f );
+    addPlate( glm::vec3(  0.0f,  0.0f,  1.0f ), -3.0f );
+    addPlate( glm::vec3(  0.0f,  0.0f, -1.0f ), -3.0f );
+
+    SimulationBuilder builder( m_resourceManager.get(), m_streamingManager.get() );
+    SimulationState   state = builder.Build( blueprint );
+
+    auto compCtxHandle = m_device->CreateThreadContext( QueueType::COMPUTE );
+    auto compCtx       = m_device->GetThreadContext( compCtxHandle );
+    auto compCmd       = compCtx->GetCommandBuffer( compCtx->CreateCommandBuffer() );
+
+    GraphDispatcher dispatcher;
+    const float     dt        = 1.0f / 60.0f;
+    uint32_t        activeIdx = 0;
+    for( int frame = 0; frame < 300; ++frame )  // 5 s — enough for polarity to saturate
+    {
+        compCmd->Begin();
+        activeIdx = dispatcher.Dispatch( &state.computeGraph, compCmd, nullptr, dt, dt * static_cast<float>( frame ), activeIdx );
+        compCmd->End();
+        m_device->GetComputeQueue()->Submit( { compCmd } );
+        m_device->GetComputeQueue()->WaitIdle();
+    }
+
+    std::vector<glm::vec4> finalPolarities( count );
+    m_streamingManager->ReadbackBufferImmediate(
+        state.polarityBuffer, finalPolarities.data(), count * sizeof( glm::vec4 ) );
+
+    // Under the 4-plate channel, cells within the channel volume should have
+    // BM contact from at least one side → non-zero polarity magnitude from
+    // the plate cue. Compute mean magnitude over all live cells.
+    double sum   = 0.0;
+    size_t alive = 0;
+    for( uint32_t i = 0; i < count; ++i )
+    {
+        if( finalPolarities[ i ].w > 0.0f || true ) {  // sum all cells (no dead-cell check needed for polarity)
+            sum += finalPolarities[ i ].w;
+            ++alive;
+        }
+    }
+    float meanMag = alive > 0 ? static_cast<float>( sum / static_cast<double>( alive ) ) : 0.0f;
+
+    EXPECT_GT( meanMag, 0.3f )
+        << "Multi-plate channel must activate polarity on most cells "
+           "(mean magnitude " << meanMag << " should be > 0.3 — under the 4-plate "
+           "channel all cells have at least one plate within anchorageDistance).";
+
+    state.Destroy( m_resourceManager.get() );
+}
+
 // 9. Phase 2 prediction: an EC2DMatrigelDemo-style blueprint with BasementMembrane
 //    at z=0 (+z normal) should let cells settle ONTO the plate. Starting all
 //    cells above the plate, after N seconds we expect the cluster centroid to

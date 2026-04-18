@@ -798,44 +798,59 @@ namespace DigitalTwin
         // (binding 12) always have a valid binding. Flags.x = 0 → shader skips
         // the plate block entirely; flags.x = 1 → plate active with params below.
         {
-            struct GPUPlate {
-                glm::vec4  normalHeight; // xyz=normal, w=height
-                glm::vec4  params;       // x=contactStiff, y=integrinAdh, z=anchorageDist, w=polarityBias
-                glm::uvec4 flags;        // x=active
+            // Step B — multi-plate buffer. Layout (matches shader PlateBuf):
+            //   meta.x = plate count (0 = no plates)
+            //   plates[2i+0] = (normal.xyz, height)
+            //   plates[2i+1] = (contactStiffness, integrinAdhesion, anchorageDistance, polarityBias)
+            // All BasementMembrane behaviours across all groups are collected
+            // into the array, up to MAX_PLATES. This lifts the "one plate per
+            // simulation" limit and enables channel / box / slab geometries
+            // for ECTubeDemo and future 3D-ECM demos.
+            constexpr uint32_t kMaxPlates = 8;
+            struct GPUPlateBuffer {
+                glm::uvec4 meta;                  // .x = count
+                glm::vec4  plates[ 2 * kMaxPlates ];
             };
-            GPUPlate plateData{};
-            plateData.normalHeight = glm::vec4( 0.0f, 0.0f, 1.0f, 0.0f );
-            plateData.params       = glm::vec4( 0.0f );
-            plateData.flags        = glm::uvec4( 0u );
+            GPUPlateBuffer buf{};
+            buf.meta = glm::uvec4( 0u );
 
+            uint32_t plateCount = 0;
             for( const auto& g : blueprint.GetGroups() )
             {
-                bool found = false;
                 for( const auto& r : g.GetBehaviours() )
                 {
                     if( const auto* bm = std::get_if<Behaviours::BasementMembrane>( &r.behaviour ) )
                     {
+                        if( plateCount >= kMaxPlates )
+                        {
+                            DT_WARN( "[SimulationBuilder] Exceeded MAX_PLATES=" + std::to_string( kMaxPlates ) +
+                                     " — dropping extra BasementMembrane behaviours." );
+                            break;
+                        }
                         glm::vec3 n    = bm->planeNormal;
                         float     nLen = glm::length( n );
                         if( nLen > 0.0001f ) n /= nLen;
 
-                        plateData.normalHeight = glm::vec4( n, bm->height );
-                        plateData.params       = glm::vec4( bm->contactStiffness,
-                                                            bm->integrinAdhesion,
-                                                            bm->anchorageDistance,
-                                                            bm->polarityBias );
-                        plateData.flags        = glm::uvec4( 1u, 0u, 0u, 0u );
-                        found = true;
-                        break;
+                        buf.plates[ 2 * plateCount + 0 ] = glm::vec4( n, bm->height );
+                        buf.plates[ 2 * plateCount + 1 ] = glm::vec4( bm->contactStiffness,
+                                                                      bm->integrinAdhesion,
+                                                                      bm->anchorageDistance,
+                                                                      bm->polarityBias );
+                        ++plateCount;
                     }
                 }
-                if( found ) break;
+                if( plateCount >= kMaxPlates ) break;
             }
+            buf.meta.x = plateCount;
 
             outState.basementMembraneBuffer = m_resourceManager->CreateBuffer(
-                { sizeof( GPUPlate ), BufferType::STORAGE, "BasementMembraneBuffer" } );
+                { sizeof( GPUPlateBuffer ), BufferType::STORAGE, "BasementMembraneBuffer" } );
             m_streamingManager->UploadBufferImmediate(
-                { { outState.basementMembraneBuffer, &plateData, sizeof( GPUPlate ), 0 } } );
+                { { outState.basementMembraneBuffer, &buf, sizeof( GPUPlateBuffer ), 0 } } );
+
+            if( plateCount > 0 )
+                DT_INFO( "[SimulationBuilder] Compiled " + std::to_string( plateCount ) +
+                         " BasementMembrane plate(s)." );
         }
 
         // Pre-pass: allocate polarity buffer. Always allocated so JKR binding 9 is always valid.
@@ -2496,49 +2511,46 @@ namespace DigitalTwin
             groupIndex++;
         }
 
-        // ── Basement-membrane plate (hot reload) ──────────────────────────────
-        // Scan for a BasementMembrane behaviour. If found, re-upload the plate
-        // SSBO with current parameters. If none, re-upload with flags.x = 0 so
-        // the shader branch stays disabled — enables toggling the plate off
-        // without rebuild.
+        // ── Basement-membrane plates (hot reload, Step B) ─────────────────────
+        // Scan for ALL BasementMembrane behaviours across all groups. Re-upload
+        // the plate buffer with current parameters. Enables multi-plate live-
+        // editing and toggling plates off by removing behaviours between reloads.
         if( state.basementMembraneBuffer.IsValid() )
         {
-            struct GPUPlate {
-                glm::vec4  normalHeight;
-                glm::vec4  params;
-                glm::uvec4 flags;
+            constexpr uint32_t kMaxPlates = 8;
+            struct GPUPlateBuffer {
+                glm::uvec4 meta;
+                glm::vec4  plates[ 2 * kMaxPlates ];
             };
-            GPUPlate plateData{};
-            plateData.normalHeight = glm::vec4( 0.0f, 0.0f, 1.0f, 0.0f );
-            plateData.params       = glm::vec4( 0.0f );
-            plateData.flags        = glm::uvec4( 0u );
+            GPUPlateBuffer buf{};
+            buf.meta = glm::uvec4( 0u );
 
+            uint32_t plateCount = 0;
             for( const auto& g : blueprint.GetGroups() )
             {
-                bool found = false;
                 for( const auto& r : g.GetBehaviours() )
                 {
                     if( const auto* bm = std::get_if<Behaviours::BasementMembrane>( &r.behaviour ) )
                     {
+                        if( plateCount >= kMaxPlates ) break;
                         glm::vec3 n    = bm->planeNormal;
                         float     nLen = glm::length( n );
                         if( nLen > 0.0001f ) n /= nLen;
 
-                        plateData.normalHeight = glm::vec4( n, bm->height );
-                        plateData.params       = glm::vec4( bm->contactStiffness,
-                                                            bm->integrinAdhesion,
-                                                            bm->anchorageDistance,
-                                                            bm->polarityBias );
-                        plateData.flags        = glm::uvec4( 1u, 0u, 0u, 0u );
-                        found = true;
-                        break;
+                        buf.plates[ 2 * plateCount + 0 ] = glm::vec4( n, bm->height );
+                        buf.plates[ 2 * plateCount + 1 ] = glm::vec4( bm->contactStiffness,
+                                                                      bm->integrinAdhesion,
+                                                                      bm->anchorageDistance,
+                                                                      bm->polarityBias );
+                        ++plateCount;
                     }
                 }
-                if( found ) break;
+                if( plateCount >= kMaxPlates ) break;
             }
+            buf.meta.x = plateCount;
 
             m_streamingManager->UploadBufferImmediate(
-                { { state.basementMembraneBuffer, &plateData, sizeof( GPUPlate ), 0 } } );
+                { { state.basementMembraneBuffer, &buf, sizeof( GPUPlateBuffer ), 0 } } );
         }
     }
 

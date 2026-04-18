@@ -20,6 +20,7 @@ namespace Gaudi::Demos
     void SetupTissueSortingDemo    ( DigitalTwin::SimulationBlueprint& blueprint );
     void SetupECBlobDemo           ( DigitalTwin::SimulationBlueprint& blueprint );
     void SetupEC2DMatrigelDemo     ( DigitalTwin::SimulationBlueprint& blueprint );
+    void SetupECTubeDemo           ( DigitalTwin::SimulationBlueprint& blueprint );
     void SetupECContactDemo        ( DigitalTwin::SimulationBlueprint& blueprint );
     void SetupCellMechanicsZooDemo ( DigitalTwin::SimulationBlueprint& blueprint );
     void SetupStressTestDemo       ( DigitalTwin::SimulationBlueprint& blueprint );

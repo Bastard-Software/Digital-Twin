@@ -762,11 +762,11 @@ TEST_F( ComputeTest, Shader_JKRForces_Logic )
     ContactHullGPU dummyHull{};
     BufferHandle contactHullDummy = m_rm->CreateBuffer( { sizeof( ContactHullGPU ), BufferType::STORAGE, "JKRContactHullDummy" } );
     m_stream->UploadBufferImmediate( { { contactHullDummy, &dummyHull, sizeof( ContactHullGPU ) } } );
-    // Dummy plate buffer for binding 12 (activeFlag=0 → plate block skipped)
-    struct PlateGPU { glm::vec4 normalHeight; glm::vec4 params; glm::uvec4 flags; };
-    PlateGPU plateDummy{};
-    BufferHandle plateDummyBuf = m_rm->CreateBuffer( { sizeof( PlateGPU ), BufferType::STORAGE, "JKRPlateDummy" } );
-    m_stream->UploadBufferImmediate( { { plateDummyBuf, &plateDummy, sizeof( PlateGPU ) } } );
+    // Dummy plate buffer for binding 12 (Step B — multi-plate layout; count=0 → all plate blocks skipped)
+    struct PlateBufferGPU { glm::uvec4 meta; glm::vec4 plates[16]; };
+    PlateBufferGPU plateDummy{};
+    BufferHandle plateDummyBuf = m_rm->CreateBuffer( { sizeof( PlateBufferGPU ), BufferType::STORAGE, "JKRPlateDummy" } );
+    m_stream->UploadBufferImmediate( { { plateDummyBuf, &plateDummy, sizeof( PlateBufferGPU ) } } );
 
     BindingGroupHandle bgHandle = m_rm->CreateBindingGroup( pipeHandle, 0 );
     BindingGroup*      bg       = m_rm->GetBindingGroup( bgHandle );
@@ -5620,16 +5620,17 @@ static std::pair<float, float> RunJKRCadherin(
     BufferHandle hullBuf = rm->CreateBuffer( { sizeof( ContactHullGPU ), BufferType::STORAGE, "JKRHullDummy" } );
     stream->UploadBufferImmediate( { { hullBuf, &dummyHull, sizeof( ContactHullGPU ) } } );
 
-    // Plate buffer (binding 12) — shader reads this unconditionally; the plate
-    // branch is gated on flags.x. Default plate = disabled (activeFlag = 0u).
-    struct PlateGPU { glm::vec4 normalHeight; glm::vec4 params; glm::uvec4 flags; };
-    PlateGPU plateData{};
-    plateData.normalHeight = glm::vec4( plate.normal, plate.height );
-    plateData.params       = glm::vec4( plate.contactStiffness, plate.integrinAdhesion,
+    // Plate buffer (binding 12) — Step B multi-plate layout. meta.x = plate
+    // count (0 = disabled, loops skip entirely). We always pack the single
+    // test plate into plates[0/1]; activeFlag becomes count in {0, 1}.
+    struct PlateBufferGPU { glm::uvec4 meta; glm::vec4 plates[16]; };
+    PlateBufferGPU plateData{};
+    plateData.meta         = glm::uvec4( plate.activeFlag, 0u, 0u, 0u );
+    plateData.plates[ 0 ]  = glm::vec4( plate.normal, plate.height );
+    plateData.plates[ 1 ]  = glm::vec4( plate.contactStiffness, plate.integrinAdhesion,
                                         plate.anchorageDistance, plate.polarityBias );
-    plateData.flags        = glm::uvec4( plate.activeFlag, 0u, 0u, 0u );
-    BufferHandle plateBuf = rm->CreateBuffer( { sizeof( PlateGPU ), BufferType::STORAGE, "JKRPlateBuf" } );
-    stream->UploadBufferImmediate( { { plateBuf, &plateData, sizeof( PlateGPU ) } } );
+    BufferHandle plateBuf = rm->CreateBuffer( { sizeof( PlateBufferGPU ), BufferType::STORAGE, "JKRPlateBuf" } );
+    stream->UploadBufferImmediate( { { plateBuf, &plateData, sizeof( PlateBufferGPU ) } } );
 
     BindingGroup* bg = rm->GetBindingGroup( rm->CreateBindingGroup( pipeHandle, 0 ) );
     bg->Bind( 0, rm->GetBuffer( inBuf ) );
@@ -5730,13 +5731,13 @@ static glm::vec3 RunJKRWithPlate(
     ContactHullGPU dummyHull{};
     BufferHandle hullBuf  = rm->CreateBuffer( { sizeof( ContactHullGPU ),        BufferType::STORAGE,  "PlateHullBuf" } );
 
-    struct PlateGPU { glm::vec4 normalHeight; glm::vec4 params; glm::uvec4 flags; };
-    PlateGPU plateData{};
-    plateData.normalHeight = glm::vec4( plate.normal, plate.height );
-    plateData.params       = glm::vec4( plate.contactStiffness, plate.integrinAdhesion,
+    struct PlateBufferGPU { glm::uvec4 meta; glm::vec4 plates[16]; };
+    PlateBufferGPU plateData{};
+    plateData.meta         = glm::uvec4( plate.activeFlag, 0u, 0u, 0u );
+    plateData.plates[ 0 ]  = glm::vec4( plate.normal, plate.height );
+    plateData.plates[ 1 ]  = glm::vec4( plate.contactStiffness, plate.integrinAdhesion,
                                         plate.anchorageDistance, plate.polarityBias );
-    plateData.flags        = glm::uvec4( plate.activeFlag, 0u, 0u, 0u );
-    BufferHandle plateBuf = rm->CreateBuffer( { sizeof( PlateGPU ),              BufferType::STORAGE,  "PlatePlateBuf" } );
+    BufferHandle plateBuf = rm->CreateBuffer( { sizeof( PlateBufferGPU ),         BufferType::STORAGE,  "PlatePlateBuf" } );
 
     glm::vec4     profile( 0.0f );
     glm::mat4     affinity( 1.0f );
@@ -5755,7 +5756,7 @@ static glm::vec3 RunJKRWithPlate(
     stream->UploadBufferImmediate( { { polBuf,    &polarity,      sizeof( glm::vec4 ) } } );
     stream->UploadBufferImmediate( { { orientBuf, &orient,        sizeof( glm::vec4 ) } } );
     stream->UploadBufferImmediate( { { hullBuf,   &dummyHull,     sizeof( ContactHullGPU ) } } );
-    stream->UploadBufferImmediate( { { plateBuf,  &plateData,     sizeof( PlateGPU ) } } );
+    stream->UploadBufferImmediate( { { plateBuf,  &plateData,     sizeof( PlateBufferGPU ) } } );
 
     ComputePipelineDesc pipeDesc{};
     pipeDesc.shader = rm->CreateShader( "shaders/compute/jkr_forces.comp" );
@@ -6131,13 +6132,13 @@ static std::vector<glm::vec4> RunPolarityUpdate(
     BufferHandle countBuf  = rm->CreateBuffer( { sizeof( uint32_t ),                    BufferType::INDIRECT, "PolUpdCountBuf" } );
     BufferHandle phenoBuf  = rm->CreateBuffer( { agentCount * sizeof( PhenotypeData ),  BufferType::STORAGE,  "PolUpdPhenoBuf" } );
 
-    struct PlateGPU { glm::vec4 normalHeight; glm::vec4 params; glm::uvec4 flags; };
-    PlateGPU plateData{};
-    plateData.normalHeight = glm::vec4( plate.normal, plate.height );
-    plateData.params       = glm::vec4( plate.contactStiffness, plate.integrinAdhesion,
+    struct PlateBufferGPU { glm::uvec4 meta; glm::vec4 plates[16]; };
+    PlateBufferGPU plateData{};
+    plateData.meta         = glm::uvec4( plate.activeFlag, 0u, 0u, 0u );
+    plateData.plates[ 0 ]  = glm::vec4( plate.normal, plate.height );
+    plateData.plates[ 1 ]  = glm::vec4( plate.contactStiffness, plate.integrinAdhesion,
                                         plate.anchorageDistance, plate.polarityBias );
-    plateData.flags        = glm::uvec4( plate.activeFlag, 0u, 0u, 0u );
-    BufferHandle plateBuf  = rm->CreateBuffer( { sizeof( PlateGPU ),                    BufferType::STORAGE,  "PolUpdPlateBuf" } );
+    BufferHandle plateBuf  = rm->CreateBuffer( { sizeof( PlateBufferGPU ),             BufferType::STORAGE,  "PolUpdPlateBuf" } );
 
     stream->UploadBufferImmediate( { { inBuf,     initialPositions.data(),  agentCount * sizeof( glm::vec4 ) } } );
     stream->UploadBufferImmediate( { { polBuf,    initialPolarities.data(), agentCount * sizeof( glm::vec4 ) } } );
@@ -6145,7 +6146,7 @@ static std::vector<glm::vec4> RunPolarityUpdate(
     stream->UploadBufferImmediate( { { offsetBuf, cellOffsets.data(),       offsetArraySize * sizeof( uint32_t ) } } );
     stream->UploadBufferImmediate( { { countBuf,  &agentCount,              sizeof( uint32_t ) } } );
     stream->UploadBufferImmediate( { { phenoBuf,  phenotypes.data(),        agentCount * sizeof( PhenotypeData ) } } );
-    stream->UploadBufferImmediate( { { plateBuf,  &plateData,               sizeof( PlateGPU ) } } );
+    stream->UploadBufferImmediate( { { plateBuf,  &plateData,               sizeof( PlateBufferGPU ) } } );
 
     // Pipeline
     ComputePipelineDesc pipeDesc{};
@@ -6728,10 +6729,10 @@ static RigidBodyResult RunJKRRigidBody(
 
     // Plate buffer (binding 12) — rigid-body tests don't exercise the plate, so
     // allocate a disabled dummy so validation layers don't complain about an
-    // unbound descriptor. activeFlag = 0 → shader skips the plate block.
-    struct PlateGPU { glm::vec4 normalHeight; glm::vec4 params; glm::uvec4 flags; };
-    PlateGPU plateData{};
-    BufferHandle plateBuf  = rm->CreateBuffer( { sizeof( PlateGPU ),                     BufferType::STORAGE,  "RBPlateBuf" } );
+    // unbound descriptor. Step B: meta.x = 0 (count) → shader skips plate loop.
+    struct PlateBufferGPU { glm::uvec4 meta; glm::vec4 plates[16]; };
+    PlateBufferGPU plateData{};
+    BufferHandle plateBuf  = rm->CreateBuffer( { sizeof( PlateBufferGPU ),              BufferType::STORAGE,  "RBPlateBuf" } );
 
     stream->UploadBufferImmediate( { { inBuf,     inPositions.data(),    agentCount * sizeof( glm::vec4 ) } } );
     stream->UploadBufferImmediate( { { hashBuf,   sortedHashes.data(),   agentCount * sizeof( AgentHash ) } } );
@@ -6745,7 +6746,7 @@ static RigidBodyResult RunJKRRigidBody(
     stream->UploadBufferImmediate( { { polBuf,    zeros.data(),          agentCount * sizeof( glm::vec4 ) } } );
     stream->UploadBufferImmediate( { { orientBuf, inOrientations.data(), agentCount * sizeof( glm::vec4 ) } } );
     stream->UploadBufferImmediate( { { hullBuf,   &hullGPU,             sizeof( ContactHullGPU ) } } );
-    stream->UploadBufferImmediate( { { plateBuf,  &plateData,           sizeof( PlateGPU ) } } );
+    stream->UploadBufferImmediate( { { plateBuf,  &plateData,           sizeof( PlateBufferGPU ) } } );
 
     ComputePipelineDesc   pipeDesc{};
     pipeDesc.shader                  = rm->CreateShader( "shaders/compute/jkr_forces.comp" );

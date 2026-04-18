@@ -247,10 +247,28 @@ namespace Gaudi
               "integrin, flatten into a MONOLAYER, and form cord-\n"
               "like networks over 4-24 h. NO hollow tube with lumen\n"
               "— that phenotype requires 3D collagen gel (future\n"
-              "ECTubeDemo, roadmap item 5).\n\n"
+              "ECTubeDemo with volumetric ECM, roadmap item 5).\n\n"
               "Positive control for EC Blob: the ONLY difference\n"
               "between the two demos is the plate.",
               &Demos::SetupEC2DMatrigelDemo },
+
+            { "EC Tube (3D ECM placeholder)",
+              "Same ~100-cell drop as EC Blob, now inside a four-\n"
+              "plate channel along +X. Floor + ceiling + two Z\n"
+              "walls frame the cluster, providing BM contact on\n"
+              "2-4 sides per cell.\n\n"
+              "Biology: 3D-ECM placeholder. Approximates the\n"
+              "collagen-gel environment where endothelial cords\n"
+              "can undergo hollowing (Strilic 2009). The flat-plate\n"
+              "channel is NOT a true 3D ECM — a volumetric ECM\n"
+              "primitive lands with roadmap item 5.\n\n"
+              "All three EC demos use IDENTICAL cell parameters;\n"
+              "phenotypic divergence comes purely from the\n"
+              "environment (no plate / one plate / four-plate\n"
+              "channel). Same cells, different substrates — the\n"
+              "classical positive/negative control experimental\n"
+              "design.",
+              &Demos::SetupECTubeDemo },
 
             { "Stress Test",
               "100,000 agents across 3 groups in a 250-unit domain.\n"

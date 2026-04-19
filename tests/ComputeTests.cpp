@@ -5561,7 +5561,9 @@ static std::pair<float, float> RunJKRCadherin(
     float             apicalRepulsion = 0.5f,
     float             basalAdhesion   = 1.5f,
     PlateTestParams   plate           = {},
-    float             corticalTension = 0.0f )
+    float             corticalTension = 0.0f,
+    float             catchBondStrength = 0.0f,   // Phase 5 — Rakshit 2012 catch-bond multiplier
+    float             catchBondPeakLoad = 0.3f )
 {
     uint32_t agentCount = 2;
 
@@ -5648,12 +5650,17 @@ static std::pair<float, float> RunJKRCadherin(
     bg->Bind( 12, rm->GetBuffer( plateBuf ) );
     bg->Build();
 
-    uint32_t couplingBits  = 0u;
-    std::memcpy( &couplingBits, &couplingStrength, sizeof( float ) );
     uint32_t polarityBits  = glm::packHalf2x16( glm::vec2( apicalRepulsion, basalAdhesion ) );
-    // gridSize.x packs cadherinFlag (bit 0) with half-float corticalTension in the upper 16 bits.
+    // Phase 5 encoding:
+    //   gridSize.x: bit 0       = cadherinFlag
+    //               bits 1..8   = catchBondStrength × 51 (8-bit fixed-point mapping [0, 5])
+    //               bits 16..31 = corticalTension (half-float upper)
+    //   gridSize.y: packHalf2x16(catchBondPeakLoad, couplingStrength)
     uint32_t tensionPacked = glm::packHalf2x16( glm::vec2( 0.0f, corticalTension ) );
-    uint32_t gridSizeX     = ( cadherinFlag & 1u ) | ( tensionPacked & 0xFFFF0000u );
+    float    catchClamped      = glm::clamp( catchBondStrength / 5.0f, 0.0f, 1.0f );
+    uint32_t catchStrengthBits = static_cast<uint32_t>( catchClamped * 255.0f + 0.5f ) & 0xFFu;
+    uint32_t gridSizeX = ( cadherinFlag & 1u ) | ( catchStrengthBits << 1 ) | ( tensionPacked & 0xFFFF0000u );
+    uint32_t gridSizeY = glm::packHalf2x16( glm::vec2( catchBondPeakLoad, couplingStrength ) );
 
     ComputePushConstants pc{};
     pc.dt          = 1.0f;
@@ -5668,7 +5675,7 @@ static std::pair<float, float> RunJKRCadherin(
     pc.uParam0     = offsetArraySize;
     pc.uParam1     = 0;
     pc.domainSize  = glm::vec4( 100.0f, 100.0f, 100.0f, maxRadius * 2.0f + 1.0f ); // cellSize spans both agents
-    pc.gridSize    = glm::uvec4( gridSizeX, couplingBits, polarityFlag, polarityBits );
+    pc.gridSize    = glm::uvec4( gridSizeX, gridSizeY, polarityFlag, polarityBits );
 
     auto ctx = device->GetThreadContext( device->CreateThreadContext( QueueType::COMPUTE ) );
     auto cmd = ctx->GetCommandBuffer( ctx->CreateCommandBuffer() );
@@ -6081,6 +6088,206 @@ TEST_F( ComputeTest, Shader_JKR_CorticalTension_OpposesAdhesion )
     EXPECT_GT( disp_ten, disp_base )
         << "Cortical tension must oppose adhesion: pair separation with tension ("
         << disp_ten << ") must exceed baseline (" << disp_base << ")";
+}
+
+// =============================================================================
+// Phase 5 — Rakshit 2012 VE-cadherin catch-bond multiplier tests
+// =============================================================================
+//
+// REFORMULATION v3 (2026-04-19) — catch-bond activates based on EXTERNAL
+// tensile load (corticalTension / adhesion ratio), gated on attractive pairs
+// (polMod > 0 AND cadA > 0), with a squared-smoothstep activation curve that
+// keeps the mechanism essentially inert below peak load. Matches Rakshit
+// 2012 single-molecule biology: X-dimer catch-bond has a genuine activation
+// threshold and stabilises ATTRACTIVE bonds under stress.
+
+// When the pair is under external tensile load (here: cortical tension
+// matching the peak), enabling catch-bond must strengthen cadherin adhesion
+// vs the no-catch-bond baseline — cells end up closer after one integration
+// step.
+TEST_F( ComputeTest, Shader_JKR_CatchBond_StrengthensUnderLoad )
+{
+    if( !m_device )
+        GTEST_SKIP();
+
+    float repulsion = 5.0f;
+    float adhesion  = 10.0f;
+    float maxRadius = 1.5f;
+
+    glm::vec4 profile( 0.0f, 0.0f, 1.0f, 0.0f );
+    glm::mat4 identity( 1.0f );
+
+    // Cortical tension = 3.0 → loadSignal = 3/10 = 0.3 (at peak).
+    // activated = smoothstep(0, 0.3, 0.3)² = 1² = 1. catchMul = 1 + 2·1 = 3.
+    float corticalTension = 3.0f;
+
+    // Baseline: catch-bond disabled, cortical tension on.
+    auto [x0_base, x1_base] = RunJKRCadherin(
+        m_device.get(), m_rm.get(), m_stream.get(),
+        1.0f, 2.0f, repulsion, adhesion, maxRadius,
+        profile, profile, identity,
+        1u, 1.0f,                                   // cadherin ON, coupling 1
+        0u, glm::vec4( 0.0f ), glm::vec4( 0.0f ),   // polarity OFF → polMod=1
+        0.5f, 1.5f, PlateTestParams{},
+        corticalTension,
+        0.0f, 0.3f );
+
+    // Catch-bond strength 2 with external tension at peak.
+    auto [x0_catch, x1_catch] = RunJKRCadherin(
+        m_device.get(), m_rm.get(), m_stream.get(),
+        1.0f, 2.0f, repulsion, adhesion, maxRadius,
+        profile, profile, identity,
+        1u, 1.0f,
+        0u, glm::vec4( 0.0f ), glm::vec4( 0.0f ),
+        0.5f, 1.5f, PlateTestParams{},
+        corticalTension,
+        2.0f, 0.3f );
+
+    float disp_base  = x1_base  - x0_base;
+    float disp_catch = x1_catch - x0_catch;
+
+    EXPECT_LT( disp_catch, disp_base )
+        << "Catch-bond must strengthen adhesion under external tensile load: "
+           "separation with catch-bond (" << disp_catch << ") must be less than "
+           "baseline (" << disp_base << ")";
+}
+
+// Zero external load (no cortical tension) must leave catch-bond inert even
+// with catchBondStrength > 0. Critical biology: at rest, the bond behaves
+// as normal cadherin.
+TEST_F( ComputeTest, Shader_JKR_CatchBond_InertAtZeroExternalLoad )
+{
+    if( !m_device )
+        GTEST_SKIP();
+
+    float repulsion = 5.0f;
+    float adhesion  = 10.0f;
+    float maxRadius = 1.5f;
+
+    glm::vec4 profile( 0.0f, 0.0f, 1.0f, 0.0f );
+    glm::mat4 identity( 1.0f );
+
+    // No cortical tension → loadSignal = 0 → activated = 0 → catchMul = 1.
+    auto [x0_base, x1_base] = RunJKRCadherin(
+        m_device.get(), m_rm.get(), m_stream.get(),
+        1.0f, 2.0f, repulsion, adhesion, maxRadius,
+        profile, profile, identity,
+        1u, 1.0f,
+        0u, glm::vec4( 0.0f ), glm::vec4( 0.0f ),
+        0.5f, 1.5f, PlateTestParams{},
+        0.0f,
+        0.0f, 0.3f );
+
+    // Catch-bond "enabled" at extreme strength but no external load → inert.
+    auto [x0_catch, x1_catch] = RunJKRCadherin(
+        m_device.get(), m_rm.get(), m_stream.get(),
+        1.0f, 2.0f, repulsion, adhesion, maxRadius,
+        profile, profile, identity,
+        1u, 1.0f,
+        0u, glm::vec4( 0.0f ), glm::vec4( 0.0f ),
+        0.5f, 1.5f, PlateTestParams{},
+        0.0f,
+        5.0f, 0.3f );                               // extreme strength
+
+    EXPECT_FLOAT_EQ( x0_base, x0_catch )
+        << "Catch-bond must be inert at zero external load (bond at rest)";
+    EXPECT_FLOAT_EQ( x1_base, x1_catch )
+        << "Catch-bond must be inert at zero external load (bond at rest)";
+}
+
+// Apical-repulsion regime (polMod < 0): catch-bond MUST NOT fire. Biology:
+// on apical-apical contacts in the Strilic cord-hollowing regime, polarity
+// is actively repelling — there is no attractive cadherin bond to stabilise.
+// Catch-bond strengthening repulsion would tear the cord apart, which is the
+// OPPOSITE of its function. The polMod > 0 gate enforces this.
+TEST_F( ComputeTest, Shader_JKR_CatchBond_InactiveWhenRepulsive )
+{
+    if( !m_device )
+        GTEST_SKIP();
+
+    float repulsion = 5.0f;
+    float adhesion  = 10.0f;
+    float maxRadius = 1.5f;
+
+    glm::vec4 profile( 0.0f, 0.0f, 1.0f, 0.0f );
+    glm::mat4 identity( 1.0f );
+
+    // Two cells with polarity configured for apical-apical contact in Strilic
+    // regime: cell 0 basal points -X (so apical faces +X toward neighbor),
+    // cell 1 basal points +X (apical faces -X toward neighbor). Both fully
+    // polarised (w=1). With apical=-1.0, polMod = mix(1.0, -1.0, 1) = -1.0
+    // → gate (polMod > 0) fails → catch-bond inert regardless of strength.
+    glm::vec4 pol0( -1.0f, 0.0f, 0.0f, 1.0f );     // cell 0 basal = -X
+    glm::vec4 pol1( +1.0f, 0.0f, 0.0f, 1.0f );     // cell 1 basal = +X
+    float corticalTension = 3.0f;                   // load high enough to activate
+
+    auto [x0_base, x1_base] = RunJKRCadherin(
+        m_device.get(), m_rm.get(), m_stream.get(),
+        1.0f, 2.0f, repulsion, adhesion, maxRadius,
+        profile, profile, identity,
+        1u, 1.0f,
+        1u, pol0, pol1,                             // polarity ON, apical-apical
+        -1.0f, 2.5f,                                // Strilic regime: apical=-1
+        PlateTestParams{},
+        corticalTension,
+        0.0f, 0.3f );                               // catch-bond OFF
+
+    auto [x0_catch, x1_catch] = RunJKRCadherin(
+        m_device.get(), m_rm.get(), m_stream.get(),
+        1.0f, 2.0f, repulsion, adhesion, maxRadius,
+        profile, profile, identity,
+        1u, 1.0f,
+        1u, pol0, pol1,
+        -1.0f, 2.5f,
+        PlateTestParams{},
+        corticalTension,
+        5.0f, 0.3f );                               // catch-bond ON (strong)
+
+    EXPECT_FLOAT_EQ( x0_base, x0_catch )
+        << "Catch-bond must not fire on polarity-repulsive contacts (polMod<0)";
+    EXPECT_FLOAT_EQ( x1_base, x1_catch )
+        << "Catch-bond must not fire on polarity-repulsive contacts (polMod<0)";
+}
+
+// Default catchBondStrength = 0 means the catch-bond code path is inert.
+// Output must be identical to running without the Phase 5 mechanism.
+TEST_F( ComputeTest, Shader_JKR_CatchBond_ZeroStrengthIsBackwardsCompatible )
+{
+    if( !m_device )
+        GTEST_SKIP();
+
+    float repulsion = 5.0f;
+    float adhesion  = 10.0f;
+    float maxRadius = 1.5f;
+
+    glm::vec4 profile( 0.0f, 0.0f, 1.0f, 0.0f );
+    glm::mat4 identity( 1.0f );
+
+    // Explicit catchBondStrength = 0 with a non-default peak-load. Include
+    // nonzero tension to prove the zero-strength gate (not the zero-load gate)
+    // disables catch-bond.
+    auto [x0_off, x1_off] = RunJKRCadherin(
+        m_device.get(), m_rm.get(), m_stream.get(),
+        1.0f, 2.0f, repulsion, adhesion, maxRadius,
+        profile, profile, identity,
+        1u, 1.0f,
+        0u, glm::vec4( 0.0f ), glm::vec4( 0.0f ),
+        0.5f, 1.5f, PlateTestParams{},
+        2.0f,                                       // cortical tension ON
+        0.0f, 0.7f );                               // strength=0, peak=0.7 (non-default)
+
+    // Same run with catch-bond args omitted (defaults to strength=0, peak=0.3).
+    auto [x0_def, x1_def] = RunJKRCadherin(
+        m_device.get(), m_rm.get(), m_stream.get(),
+        1.0f, 2.0f, repulsion, adhesion, maxRadius,
+        profile, profile, identity,
+        1u, 1.0f,
+        0u, glm::vec4( 0.0f ), glm::vec4( 0.0f ),
+        0.5f, 1.5f, PlateTestParams{},
+        2.0f );                                     // cortical tension, default catch-bond
+
+    EXPECT_FLOAT_EQ( x0_off, x0_def );
+    EXPECT_FLOAT_EQ( x1_off, x1_def );
 }
 
 // =============================================================================

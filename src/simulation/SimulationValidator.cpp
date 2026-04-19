@@ -633,6 +633,26 @@ namespace DigitalTwin
                 expr.w < 0.0f || expr.w > 1.0f )
                 result.AddError( "AgentGroup '" + group.GetName() +
                                  "': CadherinAdhesion targetExpression components must be in [0, 1]." );
+
+            // Phase 5 — catch-bond validation. catchBondStrength is stored as 8-bit
+            // fixed-point in [0, 5] on the GPU; values outside that range clamp
+            // silently. catchBondPeakLoad is a normalised load (0-1) — outside
+            // this range the smoothstep collapses to 0 or 1 and the catch-bond
+            // effect becomes unphysical. Negative strength is rejected (would
+            // model repulsive cadherin under load — not biological).
+            if( cadherin->catchBondStrength < 0.0f )
+                result.AddError( "AgentGroup '" + group.GetName() +
+                                 "': CadherinAdhesion catchBondStrength must be >= 0 (got: " +
+                                 std::to_string( cadherin->catchBondStrength ) + ")." );
+            if( cadherin->catchBondStrength > 5.0f )
+                result.AddWarning( "AgentGroup '" + group.GetName() +
+                                   "': CadherinAdhesion catchBondStrength = " +
+                                   std::to_string( cadherin->catchBondStrength ) +
+                                   " exceeds 5.0 — will clamp on GPU (8-bit fixed-point range [0, 5])." );
+            if( cadherin->catchBondPeakLoad <= 0.0f || cadherin->catchBondPeakLoad > 1.0f )
+                result.AddError( "AgentGroup '" + group.GetName() +
+                                 "': CadherinAdhesion catchBondPeakLoad must be in (0, 1] (got: " +
+                                 std::to_string( cadherin->catchBondPeakLoad ) + ")." );
         }
 
         // Warn if any off-diagonal affinity matrix element is outside [-1, 1]

@@ -1170,9 +1170,13 @@ namespace DigitalTwin
                     // Cadherin-scaled adhesion: check if this group also has CadherinAdhesion.
                     // gridSize.x is a composite field:
                     //   bit 0       = cadherin active flag
+                    //   bits 1..8   = catchBondStrength × 51 (Phase 5; 8-bit fixed-point
+                    //                 mapping [0, 5] → [0, 255])
                     //   bits 16..31 = packHalf2x16 upper half = corticalTension (Biomechanics)
-                    // The low half of packHalf2x16 is forced to 0.0f (half encoding = 0x0000)
-                    // so bit 0 is reserved for the flag without collision.
+                    // gridSize.y:
+                    //   packHalf2x16(catchBondPeakLoad, couplingStrength) — both half-floats.
+                    //   couplingStrength precision drops from fp32 → fp16 (~3 decimal digits),
+                    //   acceptable for a multiplier typically in [0, 10].
                     {
                         const Behaviours::CadherinAdhesion* cadherin = nullptr;
                         for( const auto& r: group.GetBehaviours() )
@@ -1180,8 +1184,16 @@ namespace DigitalTwin
                                 { cadherin = c; break; }
                         uint32_t cadFlag       = cadherin ? 1u : 0u;
                         uint32_t tensionPacked = glm::packHalf2x16( glm::vec2( 0.0f, biomechanics.corticalTension ) );
-                        jkrPC.gridSize.x = cadFlag | ( tensionPacked & 0xFFFF0000u );
-                        jkrPC.gridSize.y = cadherin ? *reinterpret_cast<const uint32_t*>( &cadherin->couplingStrength ) : 0u;
+                        uint32_t catchStrengthBits = 0u;
+                        if( cadherin )
+                        {
+                            float   clamped = glm::clamp( cadherin->catchBondStrength / 5.0f, 0.0f, 1.0f );
+                            catchStrengthBits = static_cast<uint32_t>( clamped * 255.0f + 0.5f ) & 0xFFu;
+                        }
+                        jkrPC.gridSize.x = cadFlag | ( catchStrengthBits << 1 ) | ( tensionPacked & 0xFFFF0000u );
+                        jkrPC.gridSize.y = cadherin
+                            ? glm::packHalf2x16( glm::vec2( cadherin->catchBondPeakLoad, cadherin->couplingStrength ) )
+                            : 0u;
                     }
 
                     // Polarity-modulated adhesion: check if this group also has CellPolarity.
@@ -2313,9 +2325,12 @@ namespace DigitalTwin
                         pc.fParam4                = bio.dampingCoefficient;
                         pc.fParam5                = bio.maxRadius;
                         // domainSize.w holds the spatial hash cell size — do NOT overwrite with maxRadius
-                        // Update cadherin coupling flag in case couplingStrength changed via HotReload.
-                        // gridSize.x layout mirrors the initial compile path:
-                        //   bit 0 = cadherin active flag; bits 16..31 = corticalTension (half float).
+                        // Update cadherin coupling flag + Phase 5 catch-bond params in case
+                        // anything changed via HotReload. gridSize.x / .y layout mirrors the
+                        // initial compile path:
+                        //   x: bit 0 = cadherin flag; bits 1..8 = catchBondStrength × 51;
+                        //      bits 16..31 = corticalTension (half float).
+                        //   y: packHalf2x16(catchBondPeakLoad, couplingStrength)
                         {
                             const Behaviours::CadherinAdhesion* cadherin = nullptr;
                             for( const auto& r: group.GetBehaviours() )
@@ -2323,8 +2338,16 @@ namespace DigitalTwin
                                     { cadherin = c; break; }
                             uint32_t cadFlag       = cadherin ? 1u : 0u;
                             uint32_t tensionPacked = glm::packHalf2x16( glm::vec2( 0.0f, bio.corticalTension ) );
-                            pc.gridSize.x = cadFlag | ( tensionPacked & 0xFFFF0000u );
-                            pc.gridSize.y = cadherin ? *reinterpret_cast<const uint32_t*>( &cadherin->couplingStrength ) : 0u;
+                            uint32_t catchStrengthBits = 0u;
+                            if( cadherin )
+                            {
+                                float   clamped = glm::clamp( cadherin->catchBondStrength / 5.0f, 0.0f, 1.0f );
+                                catchStrengthBits = static_cast<uint32_t>( clamped * 255.0f + 0.5f ) & 0xFFu;
+                            }
+                            pc.gridSize.x = cadFlag | ( catchStrengthBits << 1 ) | ( tensionPacked & 0xFFFF0000u );
+                            pc.gridSize.y = cadherin
+                                ? glm::packHalf2x16( glm::vec2( cadherin->catchBondPeakLoad, cadherin->couplingStrength ) )
+                                : 0u;
                         }
                         // Update polarity flag + lateralAdhesionScale (Phase 4.5-B) in case
                         // any parameter changed via HotReload. gridSize.z: bit 0 = polarity
@@ -2346,10 +2369,11 @@ namespace DigitalTwin
                 }
                 else if( std::holds_alternative<Behaviours::CadherinAdhesion>( record.behaviour ) )
                 {
+                    const auto& cad = std::get<Behaviours::CadherinAdhesion>( record.behaviour );
+
                     ComputeTask* task = state.computeGraph.FindTask( "cadherin_expr" + tagBase );
                     if( task )
                     {
-                        const auto&          cad = std::get<Behaviours::CadherinAdhesion>( record.behaviour );
                         ComputePushConstants pc   = task->GetPushConstants();
                         pc.fParam0               = cad.expressionRate;
                         pc.fParam1               = cad.degradationRate;
@@ -2359,6 +2383,27 @@ namespace DigitalTwin
                         pc.fParam5               = cad.targetExpression.w;
                         pc.uParam0               = static_cast<uint32_t>( record.requiredLifecycleState );
                         task->UpdatePushConstants( pc );
+                    }
+
+                    // Phase 5 — propagate couplingStrength / catchBondStrength /
+                    // catchBondPeakLoad into the JKR task's push constants when the
+                    // user edits CadherinAdhesion via the inspector. Mirrors the
+                    // encoding in the initial-compile + Biomechanics hot-reload paths.
+                    ComputeTask* jkrTask = state.computeGraph.FindTask( "jkr" + tagBase );
+                    if( jkrTask )
+                    {
+                        ComputePushConstants pc = jkrTask->GetPushConstants();
+                        float corticalTension = 0.0f;
+                        float lateralScale    = 0.0f;
+                        for( const auto& r: group.GetBehaviours() )
+                            if( const auto* bio = std::get_if<Behaviours::Biomechanics>( &r.behaviour ) )
+                            { corticalTension = bio->corticalTension; lateralScale = bio->lateralAdhesionScale; break; }
+                        uint32_t tensionPacked = glm::packHalf2x16( glm::vec2( 0.0f, corticalTension ) );
+                        float    clamped = glm::clamp( cad.catchBondStrength / 5.0f, 0.0f, 1.0f );
+                        uint32_t catchStrengthBits = static_cast<uint32_t>( clamped * 255.0f + 0.5f ) & 0xFFu;
+                        pc.gridSize.x = 1u | ( catchStrengthBits << 1 ) | ( tensionPacked & 0xFFFF0000u );
+                        pc.gridSize.y = glm::packHalf2x16( glm::vec2( cad.catchBondPeakLoad, cad.couplingStrength ) );
+                        jkrTask->UpdatePushConstants( pc );
                     }
                 }
                 else if( std::holds_alternative<Behaviours::CellPolarity>( record.behaviour ) )

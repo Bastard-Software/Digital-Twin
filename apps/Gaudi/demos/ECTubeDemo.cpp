@@ -60,12 +60,18 @@ namespace Gaudi::Demos
                        .Build();
         ecs.AddBehaviour( jkr ).SetHz( 60.0f );
 
-        // VE-cadherin — identical to other demos
+        // VE-cadherin — identical to other demos. Phase 5 catch-bond included
+        // (Rakshit 2012 VE-cad X-dimer). In ECTubeDemo the 4-plate channel
+        // produces competing integrin pulls on interior cells; catch-bond
+        // strengthens the lateral junctions exactly where they're being
+        // stretched across the channel, stabilising the cord morphology.
         ecs.AddBehaviour( DigitalTwin::Behaviours::CadherinAdhesion{
                               glm::vec4( 0.0f, 0.0f, 1.0f, 0.0f ),
                               0.05f,
                               0.001f,
-                              2.0f
+                              2.0f,
+                              2.0f,   // catchBondStrength
+                              0.3f    // catchBondPeakLoad
                           } )
             .SetHz( 60.0f );
 

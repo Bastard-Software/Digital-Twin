@@ -96,7 +96,22 @@ namespace DigitalTwin::Behaviours
         float     expressionRate   = 0.01f;              // Up-regulation speed (1/s)
         float     degradationRate  = 0.001f;             // Down-regulation speed (1/s)
         float     couplingStrength = 1.0f;               // Global force scale
-        float     _pad             = 0.0f;               // Pad to 32 bytes
+        // Phase 5 — Rakshit et al. 2012 (PNAS) catch-bond multiplier. Under
+        // tensile load a VE-cadherin X-dimer bond transiently STRENGTHENS
+        // (conformational switch to a high-affinity state) until a peak
+        // ~30 pN, then rapidly weakens and ruptures (slip-bond tail).
+        // Modelled here as a multiplier on the cadherin affinity A:
+        //   loadNorm = dist / interactDist  (0 = compressed, 1 = just breaking)
+        //   catchMul = 1 + catchBondStrength * smoothstep(0, peak, loadNorm)
+        //   if loadNorm > peak: catchMul *= (1 - smoothstep(peak, 1, loadNorm))
+        //   A *= catchMul
+        // Biological effect: vessel walls, cords, and monolayers resist tearing
+        // under active mechanical stress (cord hollowing, sprout migration,
+        // flow shear) without needing a stiffer baseline adhesion, which would
+        // instead produce overly-compact aggregates. Disabled (= 0) preserves
+        // pre-Phase-5 behaviour bit-exact.
+        float     catchBondStrength = 0.0f;              // peak multiplier under tensile load (2.0 = VE-cad X-dimer calibrated)
+        float     catchBondPeakLoad = 0.3f;              // normalised load at peak (0-1); beyond this, slip-bond rupture tail
     };
 
     /**

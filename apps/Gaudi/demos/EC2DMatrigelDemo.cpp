@@ -59,11 +59,20 @@ namespace Gaudi::Demos
                        .Build();
         ecs.AddBehaviour( jkr ).SetHz( 60.0f );
 
+        // Phase 5 — catch-bond parameters unified across all three demos.
+        // Same VE-cadherin X-dimer kinetics (Rakshit 2012). In EC2DMatrigelDemo
+        // the integrin pull produces tensile load on bottom-layer lateral
+        // junctions as cells spread on the plate; the catch-bond strengthens
+        // VE-cad there, stabilising the monolayer against basal-pull-induced
+        // fracture while keeping the compressed-state baseline identical to
+        // ECBlobDemo.
         ecs.AddBehaviour( DigitalTwin::Behaviours::CadherinAdhesion{
                               glm::vec4( 0.0f, 0.0f, 1.0f, 0.0f ),
                               0.05f,
                               0.001f,
-                              2.0f
+                              2.0f,
+                              2.0f,   // catchBondStrength
+                              0.3f    // catchBondPeakLoad
                           } )
             .SetHz( 60.0f );
 

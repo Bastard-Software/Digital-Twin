@@ -4169,7 +4169,9 @@ static std::pair<std::vector<glm::vec4>, std::vector<glm::vec4>> RunECDemoPhase3
     float             corticalTension      =  0.0f,  // Phase 4 — default off for regression tests
     float             propagationStrength  =  0.0f,  // Phase 4.5 — default off preserves Phase 3/4 tests
     float             regulationRate       =  0.2f,  // Phase 4.5 — demo-local rate override
-    float             lateralAdhesionScale =  0.0f ) // Phase 4.5-B — default off preserves earlier tests
+    float             lateralAdhesionScale =  0.0f,  // Phase 4.5-B — default off preserves earlier tests
+    float             catchBondStrength    =  0.0f,  // Phase 5 — default off preserves earlier tests
+    float             catchBondPeakLoad    =  0.3f ) // Phase 5 — VE-cad Rakshit 2012 peak
 {
     SimulationBlueprint blueprint;
     blueprint.SetDomainSize( glm::vec3( 40.0f ), 1.5f );
@@ -4205,7 +4207,9 @@ static std::pair<std::vector<glm::vec4>, std::vector<glm::vec4>> RunECDemoPhase3
                           .Build() )
         .SetHz( 60.0f );
     ecs.AddBehaviour( Behaviours::CadherinAdhesion{
-                          glm::vec4( 0.0f, 0.0f, 1.0f, 0.0f ), 0.05f, 0.001f, 2.0f } )
+                          glm::vec4( 0.0f, 0.0f, 1.0f, 0.0f ),
+                          0.05f, 0.001f, 2.0f,
+                          catchBondStrength, catchBondPeakLoad } )
         .SetHz( 60.0f );
     Behaviours::CellPolarity polarity;
     polarity.regulationRate      = regulationRate;
@@ -4527,6 +4531,99 @@ TEST_F( SimulationBuilderTest, ECBlobDemo_LateralAdhesion_ProducesTighterPacking
     EXPECT_LT( dLat, dBase )
         << "Lateral adhesion must reduce mean pairwise distance "
            "(lateral=" << dLat << " vs baseline=" << dBase << ")";
+}
+
+// 14c. Phase 5 — catch-bond integration. After the 2026-04-19 reformulation,
+//      catch-bond is load-gated: it only activates when there's external
+//      tensile drive (cortical tension or apical polarity deficit). At rest
+//      it's inert. This test exercises the high-stress regime: crank up
+//      cortical tension so loadSignal enters the peak zone, and verify the
+//      catch-bond mechanism then measurably affects aggregate geometry.
+//      Guards against bit-packing bugs that silently inert the GPU path.
+TEST_F( SimulationBuilderTest, ECBlobDemo_CatchBond_MechanismActivates )
+{
+    if( !m_device )
+        GTEST_SKIP();
+
+    // High cortical tension (3.0) + modest adhesion (via AdhesionEnergy=5 →
+    // adhesion push-constant ~10) → loadSignal ≈ 0.3 → catchMul near peak.
+    float highTension = 3.0f;
+
+    auto [posCatch, polCatch] = RunECDemoPhase3(
+        m_device.get(), m_resourceManager.get(), m_streamingManager.get(),
+        /*withPlate=*/false, /*frames=*/200,
+        /*apicalRepulsion=*/0.3f, /*basalAdhesion=*/1.5f,
+        /*corticalTension=*/highTension,
+        /*propagationStrength=*/0.0f,
+        /*regulationRate=*/0.2f,
+        /*lateralAdhesionScale=*/0.15f,
+        /*catchBondStrength=*/2.0f,
+        /*catchBondPeakLoad=*/0.3f );
+    float dCatch = MeanPairwiseDistance( posCatch );
+
+    // Baseline: catch-bond OFF, same high tension.
+    auto [posBase, polBase] = RunECDemoPhase3(
+        m_device.get(), m_resourceManager.get(), m_streamingManager.get(),
+        /*withPlate=*/false, /*frames=*/200,
+        /*apicalRepulsion=*/0.3f, /*basalAdhesion=*/1.5f,
+        /*corticalTension=*/highTension,
+        /*propagationStrength=*/0.0f,
+        /*regulationRate=*/0.2f,
+        /*lateralAdhesionScale=*/0.15f,
+        /*catchBondStrength=*/0.0f );
+    float dBase = MeanPairwiseDistance( posBase );
+
+    float relDiff = std::abs( dCatch - dBase ) / dBase;
+    EXPECT_GT( relDiff, 0.02f )
+        << "Catch-bond mechanism must perturb the aggregate by >2% under high "
+           "cortical tension to confirm end-to-end pipeline (catch=" << dCatch
+        << " vs baseline=" << dBase << ", relDiff=" << relDiff << ")";
+}
+
+// 14d. Phase 5 — catch-bond is INERT at demo-default parameters. Confirms the
+//      key biological property: a relaxed aggregate (no aggressive cortical
+//      tension, no apical repulsion) feels baseline cadherin regardless of
+//      whether catch-bond is enabled. This is the guard against the Phase 4.5
+//      aesthetic regression the user flagged — beauty of the edge-to-edge
+//      monolayer must survive the mere PRESENCE of catch-bond in the shader.
+TEST_F( SimulationBuilderTest, ECBlobDemo_CatchBond_InertAtDemoDefaults )
+{
+    if( !m_device )
+        GTEST_SKIP();
+
+    // Demo-default values: corticalTension = 0.5 (mild), apical = 0.3 (no
+    // repulsion), polMod ≈ 1 → loadSignal ≈ 0.05 → catchMul ≈ 1.14 at most.
+    auto [posCatch, polCatch] = RunECDemoPhase3(
+        m_device.get(), m_resourceManager.get(), m_streamingManager.get(),
+        /*withPlate=*/false, /*frames=*/200,
+        /*apicalRepulsion=*/0.3f, /*basalAdhesion=*/1.5f,
+        /*corticalTension=*/0.5f,
+        /*propagationStrength=*/0.0f,
+        /*regulationRate=*/0.2f,
+        /*lateralAdhesionScale=*/0.15f,
+        /*catchBondStrength=*/2.0f,
+        /*catchBondPeakLoad=*/0.3f );
+    float dCatch = MeanPairwiseDistance( posCatch );
+
+    auto [posBase, polBase] = RunECDemoPhase3(
+        m_device.get(), m_resourceManager.get(), m_streamingManager.get(),
+        /*withPlate=*/false, /*frames=*/200,
+        /*apicalRepulsion=*/0.3f, /*basalAdhesion=*/1.5f,
+        /*corticalTension=*/0.5f,
+        /*propagationStrength=*/0.0f,
+        /*regulationRate=*/0.2f,
+        /*lateralAdhesionScale=*/0.15f,
+        /*catchBondStrength=*/0.0f );
+    float dBase = MeanPairwiseDistance( posBase );
+
+    float relDiff = std::abs( dCatch - dBase ) / dBase;
+    // The aggregate shape must be within 5% — catch-bond's 14% strengthening
+    // at loadSignal=0.05 is small enough at aggregate level to preserve the
+    // Phase 4.5-B wall-forming phenotype.
+    EXPECT_LT( relDiff, 0.05f )
+        << "Catch-bond must be near-inert at demo defaults (no external load) "
+           "to preserve Phase 4.5-B aggregate geometry (catch=" << dCatch
+        << " vs baseline=" << dBase << ", relDiff=" << relDiff << ")";
 }
 
 // 15. Phase 4.5 — junctional propagation must polarise interior cells in

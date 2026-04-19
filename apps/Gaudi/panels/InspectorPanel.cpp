@@ -331,6 +331,10 @@ namespace Gaudi
                     changed |= ImGui::SliderFloat( "Expression Rate",   &b.expressionRate,   0.0f, 5.0f,  "%.4f" );
                     changed |= ImGui::SliderFloat( "Degradation Rate",  &b.degradationRate,  0.0f, 0.01f, "%.5f" );
                     changed |= ImGui::SliderFloat( "Coupling Strength", &b.couplingStrength, 0.0f, 5.0f );
+                    ImGui::Spacing();
+                    ImGui::SeparatorText( "Catch-Bond (Rakshit 2012)" );
+                    changed |= ImGui::SliderFloat( "Catch-Bond Strength",  &b.catchBondStrength, 0.0f, 5.0f );
+                    changed |= ImGui::SliderFloat( "Catch-Bond Peak Load", &b.catchBondPeakLoad, 0.05f, 1.0f );
                     ImGui::TextDisabled( "Affinity matrix set via blueprint API" );
                 }
                 else if constexpr( std::is_same_v<T, DigitalTwin::Behaviours::Biomechanics> )

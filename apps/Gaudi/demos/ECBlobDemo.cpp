@@ -190,11 +190,21 @@ namespace Gaudi::Demos
 
         // VE-cadherin (channel z) — homophilic EC–EC adhesion. Drives spheroid
         // formation through lateral junctional assembly (VE-cad belts).
+        //
+        // Phase 5 — catch-bond parameters unified across all three demos. Same
+        // molecular machinery (VE-cadherin X-dimer) → same catch-bond kinetics
+        // regardless of environment. Rakshit 2012: peak ~2× stiffening at ~30 pN.
+        // In ECBlobDemo (spheroid, minimal tensile load) the multiplier has
+        // little effect — the aggregate rest state hovers near the compressed
+        // regime where loadNorm is below the peak. The parameter is present so
+        // the three demos share byte-identical CadherinAdhesion configuration.
         ecs.AddBehaviour( DigitalTwin::Behaviours::CadherinAdhesion{
                               glm::vec4( 0.0f, 0.0f, 1.0f, 0.0f ),
                               0.05f,  // expressionRate
                               0.001f, // degradationRate
-                              2.0f    // couplingStrength
+                              2.0f,   // couplingStrength
+                              2.0f,   // catchBondStrength (Rakshit 2012 VE-cad X-dimer)
+                              0.3f    // catchBondPeakLoad
                           } )
             .SetHz( 60.0f );
 

@@ -584,51 +584,6 @@ TEST( SimulationValidatorTests, Chemotaxis_ZeroSaturation_NoError )
     EXPECT_TRUE( SimulationValidator::Validate( bp ).IsValid() );
 }
 
-// --- VesselSeed Validator Tests ---
-
-// VesselSeed with empty segmentCounts produces an error
-TEST( SimulationValidatorTests, VesselSeed_EmptySegmentCounts_ReturnsError )
-{
-    SimulationBlueprint bp;
-    bp.SetDomainSize( { 100.f, 100.f, 100.f }, 2.f );
-    Behaviours::VesselSeed seed; // segmentCounts is empty by default
-    bp.AddAgentGroup( "Vessel" ).SetCount( 10 ).AddBehaviour( seed );
-    EXPECT_FALSE( SimulationValidator::Validate( bp ).IsValid() );
-}
-
-// VesselSeed with a zero entry in segmentCounts produces an error
-TEST( SimulationValidatorTests, VesselSeed_ZeroSegmentCount_ReturnsError )
-{
-    SimulationBlueprint bp;
-    bp.SetDomainSize( { 100.f, 100.f, 100.f }, 2.f );
-    Behaviours::VesselSeed seed;
-    seed.segmentCounts = { 5u, 0u, 3u };
-    bp.AddAgentGroup( "Vessel" ).SetCount( 10 ).AddBehaviour( seed );
-    EXPECT_FALSE( SimulationValidator::Validate( bp ).IsValid() );
-}
-
-// VesselSeed where sum of segmentCounts exceeds group count produces an error
-TEST( SimulationValidatorTests, VesselSeed_SumExceedsGroupCount_ReturnsError )
-{
-    SimulationBlueprint bp;
-    bp.SetDomainSize( { 100.f, 100.f, 100.f }, 2.f );
-    Behaviours::VesselSeed seed;
-    seed.segmentCounts = { 6u, 6u }; // sum=12 > group count 10
-    bp.AddAgentGroup( "Vessel" ).SetCount( 10 ).AddBehaviour( seed );
-    EXPECT_FALSE( SimulationValidator::Validate( bp ).IsValid() );
-}
-
-// VesselSeed with valid segmentCounts (sum == group count) produces no error
-TEST( SimulationValidatorTests, VesselSeed_ValidConfig_NoError )
-{
-    SimulationBlueprint bp;
-    bp.SetDomainSize( { 100.f, 100.f, 100.f }, 2.f );
-    Behaviours::VesselSeed seed;
-    seed.segmentCounts = { 5u, 5u }; // sum=10, exactly matching group count
-    bp.AddAgentGroup( "Vessel" ).SetCount( 10 ).AddBehaviour( seed );
-    EXPECT_TRUE( SimulationValidator::Validate( bp ).IsValid() );
-}
-
 // ── CadherinAdhesion validator tests ────────────────────────────────────────
 
 static SimulationBlueprint MakeCadherinBlueprint()

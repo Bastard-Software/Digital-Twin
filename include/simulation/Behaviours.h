@@ -163,7 +163,6 @@ namespace DigitalTwin::Behaviours
         float necrosisO2;                  // Threshold for starvation death
         float hypoxiaO2;                   // Threshold for starvation
         float apoptosisProbPerSec;         // Base probability of death per second
-        bool  directedMitosis = false;     // Place daughter along vessel axis (StalkCell sprouting)
     };
 
     struct Chemotaxis
@@ -175,24 +174,6 @@ namespace DigitalTwin::Behaviours
         float       contactInhibitionDensity  = 0.0f;  // 0 = disabled; >0 = neighbor count for full stop
     };
 
-    struct NotchDll4
-    {
-        float       dll4ProductionRate   = 1.0f;
-        float       dll4DecayRate        = 0.1f;
-        float       notchInhibitionGain  = 1.0f;
-        float       vegfr2BaseExpression = 1.0f;
-        float       tipThreshold         = 0.8f;
-        float       stalkThreshold       = 0.3f;
-        std::string vegfFieldName;  // empty = no VEGF gating (vegfr2 unmodulated)
-        uint32_t    subSteps             = 1;   // ODE iterations per frame — more = faster convergence
-    };
-
-    struct Anastomosis
-    {
-        float contactDistance = 3.0f;
-        bool  allowTipToStalk = true; // TipCell can fuse with StalkCell from a different vessel component
-    };
-
     // VEGF-gated Phalanx ↔ Stalk transitions.
     // PhalanxCells (quiescent) activate to StalkCells when local VEGF exceeds activationThreshold.
     // StalkCells re-quiesce to PhalanxCells when local VEGF drops below deactivationThreshold.
@@ -202,27 +183,6 @@ namespace DigitalTwin::Behaviours
         std::string vegfFieldName;
         float       activationThreshold   = 20.0f; // VEGF level to wake PhalanxCell → StalkCell
         float       deactivationThreshold = 5.0f;  // VEGF level to re-quiesce StalkCell → PhalanxCell
-    };
-
-    // Hooke's Law spring forces along vessel edges, keeping the tube coherent as TipCells migrate.
-    struct VesselSpring
-    {
-        float springStiffness    = 5.0f;  // Hooke's k — force per unit stretch per second
-        float restingLength      = 2.0f;  // Equilibrium cell-cell distance
-        float dampingCoefficient = 0.0f;  // Implicit Euler velocity drag. 0 = no damping.
-        // When true (default), PhalanxCells are exempt from spring forces (quiescent vessel wall).
-        // Set false for static vessel demos where all cells are PhalanxCells and springs must hold them.
-        bool  anchorPhalanxCells = true;
-    };
-
-    // Seeds initial vessel edges at build time — no GPU shader. Two modes:
-    //   explicitEdges non-empty: upload exactly those edges (supports 2D ring topology from VesselTreeGenerator).
-    //   explicitEdges empty:     fall back to consecutive-pair chains within each segmentCounts segment.
-    struct VesselSeed
-    {
-        std::vector<uint32_t>                     segmentCounts; // one entry per branch (used for validation + fallback)
-        std::vector<std::pair<uint32_t,uint32_t>> explicitEdges; // if non-empty, overrides segmentCounts for edge upload
-        std::vector<uint32_t>                     edgeFlags;     // parallel to explicitEdges: RING=0x1, AXIAL=0x2, JUNCTION=0x4
     };
 
     // Vessel injects a substance into the field (O2, glucose). Rate > 0.
@@ -290,12 +250,8 @@ namespace DigitalTwin
         Behaviours::CellCycle,
         Behaviours::Chemotaxis,
         Behaviours::PhalanxActivation,
-        Behaviours::NotchDll4,
-        Behaviours::Anastomosis,
         Behaviours::Perfusion,
         Behaviours::Drain,
-        Behaviours::VesselSeed,
-        Behaviours::VesselSpring,
         Behaviours::BasementMembrane>;
 
     // Wrapper to attach execution parameters (like frequency) to a behaviour

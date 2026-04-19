@@ -60,8 +60,6 @@ namespace DigitalTwin
 
         void                             SetGridVisualization( const GridVisualizationSettings& settings );
         const GridVisualizationSettings& GetGridVisualization() const;
-        void                               SetVesselVisualization( const VesselVisualizationSettings& settings );
-        const VesselVisualizationSettings& GetVesselVisualization() const;
         void                             RenderUI( std::function<void()> uiCallback );
         void                             SetShowStatsOverlay( bool show );
         bool                             IsShowingStatsOverlay() const;

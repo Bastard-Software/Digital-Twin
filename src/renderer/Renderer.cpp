@@ -21,7 +21,6 @@
 #include "renderer/passes/BuildIndirectPass.h"
 #include "renderer/passes/GeometryPass.h"
 #include "renderer/passes/GridVisualizationPass.h"
-#include "renderer/passes/VesselVisualizationPass.h"
 
 // ImGui
 #include <GLFW/glfw3.h>
@@ -172,13 +171,6 @@ namespace DigitalTwin
             return Result::FAIL;
         }
 
-        m_vesselVisPass = CreateScope<VesselVisualizationPass>( m_device, m_resourceManager );
-        if( m_vesselVisPass->Initialize( VK_FORMAT_R8G8B8A8_UNORM, VK_FORMAT_D32_SFLOAT, m_sampleCount ) != Result::SUCCESS )
-        {
-            DT_ERROR( "Failed to initialize VesselVisualizationPass." );
-            return Result::FAIL;
-        }
-
         return Result::SUCCESS;
     }
 
@@ -213,12 +205,6 @@ namespace DigitalTwin
             m_gridVisPass->Shutdown();
             m_gridVisPass.reset();
         }
-        if( m_vesselVisPass )
-        {
-            m_vesselVisPass->Shutdown();
-            m_vesselVisPass.reset();
-        }
-
         // 3. Cleanup ImGui
         ImGui_ImplVulkan_Shutdown();
         ImGui_ImplGlfw_Shutdown();
@@ -409,17 +395,9 @@ namespace DigitalTwin
                     profiler->EndZone( cmd, flightIndex, "Grid Visualization Pass" );
             }
 
-            // Vessel lines pass
-            if( m_vesselVisSettings.active && state->vesselEdgeBuffer.IsValid() )
-            {
-                if( profiler )
-                    profiler->BeginZone( cmd, flightIndex, "Vessel Visualization Pass" );
-
-                m_vesselVisPass->Execute( cmd, m_cameraUBOs[ flightIndex ], state, m_vesselVisSettings, flightIndex );
-
-                if( profiler )
-                    profiler->EndZone( cmd, flightIndex, "Vessel Visualization Pass" );
-            }
+            // Vessel visualization pass removed in Item 2 demolition (2026-04-19):
+            // the pre-Item-1 vessel edge graph was deleted, so there are no edges
+            // to render. Cell-based vessels render via the normal geometry pass.
             cmd->EndRendering();
         }
         else
@@ -540,9 +518,6 @@ namespace DigitalTwin
 
         m_gridVisPass->Shutdown();
         m_gridVisPass->Initialize( VK_FORMAT_R8G8B8A8_UNORM, VK_FORMAT_D32_SFLOAT, m_sampleCount );
-
-        m_vesselVisPass->Shutdown();
-        m_vesselVisPass->Initialize( VK_FORMAT_R8G8B8A8_UNORM, VK_FORMAT_D32_SFLOAT, m_sampleCount );
     }
 
 } // namespace DigitalTwin

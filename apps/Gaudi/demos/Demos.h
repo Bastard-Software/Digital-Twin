@@ -13,10 +13,6 @@ namespace Gaudi::Demos
     void SetupConsumeDemo          ( DigitalTwin::SimulationBlueprint& blueprint );
     void SetupChemotaxisDemo       ( DigitalTwin::SimulationBlueprint& blueprint );
     void SetupCellCycleDemo        ( DigitalTwin::SimulationBlueprint& blueprint );
-    void SetupSimpleVesselDebugDemo( DigitalTwin::SimulationBlueprint& blueprint );
-    void SetupStaticVesselTreeDemo ( DigitalTwin::SimulationBlueprint& blueprint );
-    void SetupVesselSproutingDemo  ( DigitalTwin::SimulationBlueprint& blueprint );
-    void SetupAngiogenesisDemo     ( DigitalTwin::SimulationBlueprint& blueprint );
     void SetupTissueSortingDemo    ( DigitalTwin::SimulationBlueprint& blueprint );
     void SetupECBlobDemo           ( DigitalTwin::SimulationBlueprint& blueprint );
     void SetupEC2DMatrigelDemo     ( DigitalTwin::SimulationBlueprint& blueprint );

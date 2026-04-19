@@ -62,12 +62,6 @@ namespace DigitalTwin
             resourceManager->DestroyBuffer( contactHullBuffer );
         if( signalingBuffer.IsValid() )
             resourceManager->DestroyBuffer( signalingBuffer );
-        if( vesselEdgeBuffer.IsValid() )
-            resourceManager->DestroyBuffer( vesselEdgeBuffer );
-        if( vesselEdgeCountBuffer.IsValid() )
-            resourceManager->DestroyBuffer( vesselEdgeCountBuffer );
-        if( vesselComponentBuffer.IsValid() )
-            resourceManager->DestroyBuffer( vesselComponentBuffer );
         if( agentReorderBuffer.IsValid() )
             resourceManager->DestroyBuffer( agentReorderBuffer );
         if( drawMetaBuffer.IsValid() )
@@ -105,9 +99,6 @@ namespace DigitalTwin
         orientationBuffer      = {};
         contactHullBuffer      = {};
         signalingBuffer        = {};
-        vesselEdgeBuffer       = {};
-        vesselEdgeCountBuffer  = {};
-        vesselComponentBuffer  = {};
         agentReorderBuffer     = {};
         drawMetaBuffer         = {};
         visibilityBuffer       = {};
@@ -1346,11 +1337,13 @@ namespace DigitalTwin
                     ComputePipelineHandle phenoPipeHandle = m_resourceManager->CreatePipeline( phenoDesc );
                     ComputePipeline*      phenoPipe       = m_resourceManager->GetPipeline( phenoPipeHandle );
 
-                    std::string mitosisShaderPath = cellCycle.directedMitosis
-                        ? "shaders/compute/biology/mitosis_vessel_append.comp"
-                        : "shaders/compute/biology/mitosis_append.comp";
-                    ComputePipelineDesc   mitosisDesc{ m_resourceManager->CreateShader( mitosisShaderPath ),
-                                                     cellCycle.directedMitosis ? "MitosisVesselAppend" : "MitosisAppend" };
+                    // Mitosis — generic append-only (Item 2 demolition 2026-04-19): the
+                    // previous directedMitosis + mitosis_vessel_append.comp path depended on
+                    // the pre-Item-1 vessel edge graph, now removed. Item 3's sprouting
+                    // redesign will reintroduce directed mitosis on top of the cell-based
+                    // substrate without a persistent edge buffer.
+                    ComputePipelineDesc   mitosisDesc{ m_resourceManager->CreateShader( "shaders/compute/biology/mitosis_append.comp" ),
+                                                     "MitosisAppend" };
                     ComputePipelineHandle mitosisPipeHandle = m_resourceManager->CreatePipeline( mitosisDesc );
                     ComputePipeline*      mitosisPipe       = m_resourceManager->GetPipeline( mitosisPipeHandle );
 
@@ -1374,29 +1367,12 @@ namespace DigitalTwin
                     bgPheno1->Bind( 4, m_resourceManager->GetBuffer( outState.agentCountBuffer ) );
                     bgPheno1->Build();
 
-                    // Ensure vessel edge buffers exist.
-                    if( !outState.vesselEdgeBuffer.IsValid() )
-                    {
-                        struct VesselEdge { uint32_t agentA; uint32_t agentB; float dist; uint32_t flags; };
-                        outState.vesselEdgeBuffer = m_resourceManager->CreateBuffer(
-                            { paddedCount * sizeof( VesselEdge ), BufferType::STORAGE, "VesselEdgeBuffer" } );
-                        outState.vesselEdgeCountBuffer = m_resourceManager->CreateBuffer(
-                            { sizeof( uint32_t ), BufferType::STORAGE, "VesselEdgeCountBuffer" } );
-                        uint32_t zero = 0;
-                        m_streamingManager->UploadBufferImmediate(
-                            { { outState.vesselEdgeCountBuffer, &zero, sizeof( uint32_t ), 0 } } );
-                    }
-
-                    // Create Binding Groups (Mitosis)
+                    // Create Binding Groups (Mitosis) — generic append-only, no vessel graph.
                     BindingGroup* bgMitosis0 = m_resourceManager->GetBindingGroup( m_resourceManager->CreateBindingGroup( mitosisPipeHandle, 0 ) );
                     bgMitosis0->Bind( 0, m_resourceManager->GetBuffer( outState.agentBuffers[ 0 ] ) );
                     bgMitosis0->Bind( 1, m_resourceManager->GetBuffer( outState.agentBuffers[ 1 ] ) );
                     bgMitosis0->Bind( 2, m_resourceManager->GetBuffer( outState.phenotypeBuffer ) );
                     bgMitosis0->Bind( 3, m_resourceManager->GetBuffer( outState.agentCountBuffer ) );
-                    bgMitosis0->Bind( 4, m_resourceManager->GetBuffer( outState.vesselEdgeBuffer ) );
-                    bgMitosis0->Bind( 5, m_resourceManager->GetBuffer( outState.vesselEdgeCountBuffer ) );
-                    if( cellCycle.directedMitosis )
-                        bgMitosis0->Bind( 6, m_resourceManager->GetBuffer( outState.orientationBuffer ) );
                     bgMitosis0->Build();
 
                     BindingGroup* bgMitosis1 = m_resourceManager->GetBindingGroup( m_resourceManager->CreateBindingGroup( mitosisPipeHandle, 0 ) );
@@ -1404,10 +1380,6 @@ namespace DigitalTwin
                     bgMitosis1->Bind( 1, m_resourceManager->GetBuffer( outState.agentBuffers[ 0 ] ) );
                     bgMitosis1->Bind( 2, m_resourceManager->GetBuffer( outState.phenotypeBuffer ) );
                     bgMitosis1->Bind( 3, m_resourceManager->GetBuffer( outState.agentCountBuffer ) );
-                    bgMitosis1->Bind( 4, m_resourceManager->GetBuffer( outState.vesselEdgeBuffer ) );
-                    bgMitosis1->Bind( 5, m_resourceManager->GetBuffer( outState.vesselEdgeCountBuffer ) );
-                    if( cellCycle.directedMitosis )
-                        bgMitosis1->Bind( 6, m_resourceManager->GetBuffer( outState.orientationBuffer ) );
                     bgMitosis1->Build();
 
                     // 4. Configure Push Constants
@@ -1811,458 +1783,15 @@ namespace DigitalTwin
 
                     DT_INFO( "[SimulationBuilder] Compiled PhalanxActivation for '{}' at {}Hz", group.GetName(), record.targetHz );
                 }
-                if( std::holds_alternative<Behaviours::NotchDll4>( record.behaviour ) )
-                {
-                    const auto& notch = std::get<Behaviours::NotchDll4>( record.behaviour );
-
-                    // Allocate vessel edge buffers if not yet created (e.g., VesselSeed comes later
-                    // in the behaviour list, or is absent in tests with isolated agents).
-                    if( !outState.vesselEdgeBuffer.IsValid() )
-                    {
-                        struct VesselEdge { uint32_t agentA, agentB; float dist; uint32_t flags; };
-                        size_t edgeBufferSize     = paddedCount * sizeof( VesselEdge );
-                        outState.vesselEdgeBuffer = m_resourceManager->CreateBuffer(
-                            { edgeBufferSize, BufferType::STORAGE, "VesselEdgeBuffer" } );
-
-                        outState.vesselEdgeCountBuffer = m_resourceManager->CreateBuffer(
-                            { sizeof( uint32_t ), BufferType::STORAGE, "VesselEdgeCountBuffer" } );
-                        uint32_t zero = 0;
-                        m_streamingManager->UploadBufferImmediate(
-                            { { outState.vesselEdgeCountBuffer, &zero, sizeof( uint32_t ) } } );
-                    }
-
-                    // Allocate signaling buffer once (global, covers all agent slots)
-                    if( !outState.signalingBuffer.IsValid() )
-                    {
-                        uint32_t globalCapacity = 0;
-                        for( const auto& g: blueprint.GetGroups() )
-                        {
-                            if( g.GetCount() == 0 )
-                                continue;
-                            uint32_t cap = 131072;
-                            while( cap < g.GetCount() )
-                                cap <<= 1;
-                            globalCapacity += cap;
-                        }
-
-                        struct SignalingData
-                        {
-                            float dll4;
-                            float nicd;
-                            float vegfr2;
-                            float pad;
-                        };
-                        size_t signalingSize    = globalCapacity * sizeof( SignalingData );
-                        outState.signalingBuffer = m_resourceManager->CreateBuffer( { signalingSize, BufferType::STORAGE, "SignalingBuffer" } );
-
-                        // Initial state: dll4=0.2 ± noise — all cells start BELOW tipThreshold (0.55)
-                        // so all vessel cells begin as StalkCells. The Turing-unstable ODE then
-                        // amplifies the noise asymmetry and selects exactly one TipCell per vessel.
-                        std::vector<SignalingData> initSignaling( globalCapacity, { 0.2f, 0.0f, 1.0f, 0.0f } );
-                        std::mt19937                          rng( 42 );
-                        std::uniform_real_distribution<float> noise( -0.15f, 0.15f );
-                        for( auto& s : initSignaling )
-                            s.dll4 = 0.2f + noise( rng );
-                        m_streamingManager->UploadBufferImmediate( { { outState.signalingBuffer, initSignaling.data(), signalingSize, 0 } } );
-                    }
-
-                    // Allocate phenotype buffer if no CellCycle behaviour did so
-                    if( !outState.phenotypeBuffer.IsValid() )
-                    {
-                        uint32_t globalCapacity = 0;
-                        for( const auto& g: blueprint.GetGroups() )
-                        {
-                            if( g.GetCount() == 0 )
-                                continue;
-                            uint32_t cap = 131072;
-                            while( cap < g.GetCount() )
-                                cap <<= 1;
-                            globalCapacity += cap;
-                        }
-
-                        size_t phenotypeSize     = globalCapacity * sizeof( PhenotypeData );
-                        outState.phenotypeBuffer = m_resourceManager->CreateBuffer( { phenotypeSize, BufferType::STORAGE, "PhenotypeBuffer" } );
-
-                        std::vector<PhenotypeData> initPhenotypes( globalCapacity, { 0u, 0.5f, 0.0f, 0u } );
-                        m_streamingManager->UploadBufferImmediate( { { outState.phenotypeBuffer, initPhenotypes.data(), phenotypeSize, 0 } } );
-                    }
-
-                    // Pipeline
-                    ComputePipelineDesc   notchDesc{ m_resourceManager->CreateShader( "shaders/compute/biology/notch_dll4.comp" ), "NotchDll4Pipeline" };
-                    ComputePipelineHandle notchPipeHandle = m_resourceManager->CreatePipeline( notchDesc );
-                    ComputePipeline*      notchPipe       = m_resourceManager->GetPipeline( notchPipeHandle );
-
-                    // VEGF texture at binding 6 — use real field or a 1×1×1 constant-1.0 dummy
-                    GridFieldState* vegfGrid   = nullptr;
-                    TextureHandle   dummyVEGF;
-                    glm::uvec4      notchGridSize{ 1u, 1u, 1u, 0u }; // w=0 → shader skips VEGF sampling
-
-                    if( !notch.vegfFieldName.empty() )
-                    {
-                        for( auto& grid: outState.gridFields )
-                            if( grid.name == notch.vegfFieldName ) { vegfGrid = &grid; break; }
-
-                        if( vegfGrid )
-                        {
-                            notchGridSize = glm::uvec4( vegfGrid->width, vegfGrid->height, vegfGrid->depth, 1u );
-                        }
-                        else
-                        {
-                            DT_WARN( "[SimulationBuilder] NotchDll4: VEGF field '{}' not found — running without VEGF gating", notch.vegfFieldName );
-                        }
-                    }
-
-                    if( !vegfGrid )
-                    {
-                        // Bind a 1×1×1 dummy filled with 1.0 so the descriptor is always satisfied
-                        TextureDesc dummyDesc{ 1, 1, 1, TextureType::Texture3D, VK_FORMAT_R32_SFLOAT,
-                                              TextureUsage::STORAGE | TextureUsage::TRANSFER_DST, VK_SAMPLE_COUNT_1_BIT, "NotchVEGF_Dummy" };
-                        dummyVEGF  = m_resourceManager->CreateTexture( dummyDesc );
-                        float one  = 1.0f;
-                        m_streamingManager->UploadTextureImmediate( dummyVEGF, &one, sizeof( float ) );
-                    }
-
-                    auto vegfTex0 = vegfGrid ? vegfGrid->textures[ 0 ] : dummyVEGF;
-                    auto vegfTex1 = vegfGrid ? vegfGrid->textures[ 1 ] : dummyVEGF;
-
-                    // Binding groups — ping-pong on agent read buffer; signaling/phenotype are single shared buffers
-                    // Notch-Delta uses vessel edges for juxtacrine neighbor discovery (bindings 3+4).
-                    BindingGroup* bgNotch0 = m_resourceManager->GetBindingGroup( m_resourceManager->CreateBindingGroup( notchPipeHandle, 0 ) );
-                    bgNotch0->Bind( 0, m_resourceManager->GetBuffer( outState.agentBuffers[ 0 ] ) );
-                    bgNotch0->Bind( 1, m_resourceManager->GetBuffer( outState.signalingBuffer ) );
-                    bgNotch0->Bind( 2, m_resourceManager->GetBuffer( outState.phenotypeBuffer ) );
-                    bgNotch0->Bind( 3, m_resourceManager->GetBuffer( outState.vesselEdgeBuffer ) );
-                    bgNotch0->Bind( 4, m_resourceManager->GetBuffer( outState.vesselEdgeCountBuffer ) );
-                    bgNotch0->Bind( 5, m_resourceManager->GetBuffer( outState.agentCountBuffer ) );
-                    bgNotch0->Bind( 6, m_resourceManager->GetTexture( vegfTex0 ), VK_IMAGE_LAYOUT_GENERAL );
-                    bgNotch0->Build();
-
-                    BindingGroup* bgNotch1 = m_resourceManager->GetBindingGroup( m_resourceManager->CreateBindingGroup( notchPipeHandle, 0 ) );
-                    bgNotch1->Bind( 0, m_resourceManager->GetBuffer( outState.agentBuffers[ 1 ] ) );
-                    bgNotch1->Bind( 1, m_resourceManager->GetBuffer( outState.signalingBuffer ) );
-                    bgNotch1->Bind( 2, m_resourceManager->GetBuffer( outState.phenotypeBuffer ) );
-                    bgNotch1->Bind( 3, m_resourceManager->GetBuffer( outState.vesselEdgeBuffer ) );
-                    bgNotch1->Bind( 4, m_resourceManager->GetBuffer( outState.vesselEdgeCountBuffer ) );
-                    bgNotch1->Bind( 5, m_resourceManager->GetBuffer( outState.agentCountBuffer ) );
-                    bgNotch1->Bind( 6, m_resourceManager->GetTexture( vegfTex1 ), VK_IMAGE_LAYOUT_GENERAL );
-                    bgNotch1->Build();
-
-                    // Push constants (uParam0/domainSize.w unused — edge-based signaling needs no radius)
-                    ComputePushConstants notchPC{};
-                    notchPC.fParam0     = notch.dll4ProductionRate;
-                    notchPC.fParam1     = notch.dll4DecayRate;
-                    notchPC.fParam2     = notch.notchInhibitionGain;
-                    notchPC.fParam3     = notch.vegfr2BaseExpression;
-                    notchPC.fParam4     = notch.tipThreshold;
-                    notchPC.fParam5     = notch.stalkThreshold;
-                    notchPC.offset      = currentOffset;
-                    notchPC.maxCapacity = paddedCount;
-                    notchPC.uParam0     = 0u;
-                    notchPC.uParam1     = groupIndex;
-                    notchPC.domainSize  = glm::vec4( blueprint.GetDomainSize(), 0.0f );
-                    notchPC.gridSize    = notchGridSize;
-
-                    glm::uvec3 notchDispatch( ( paddedCount + 255 ) / 256, 1, 1 );
-                    for( uint32_t step = 0; step < notch.subSteps; ++step )
-                    {
-                        ComputeTask notchTask( notchPipe, bgNotch0, bgNotch1, record.targetHz, notchPC, notchDispatch );
-                        notchTask.SetDtScale( 1.0f / static_cast<float>( notch.subSteps ) );
-                        notchTask.SetTag( "notch_" + std::to_string( step ) + tagBase );
-                        notchTask.SetPhaseName( groupPhase );
-                        outState.computeGraph.AddTask( notchTask );
-                    }
-
-                    DT_INFO( "[SimulationBuilder] Compiled NotchDll4 for '{}' at {}Hz ({} sub-steps)", group.GetName(), record.targetHz, notch.subSteps );
-                }
-                if( std::holds_alternative<Behaviours::Anastomosis>( record.behaviour ) )
-                {
-                    const auto& anastomosis = std::get<Behaviours::Anastomosis>( record.behaviour );
-
-                    // Ensure phenotype buffer exists (stores cellType)
-                    if( !outState.phenotypeBuffer.IsValid() )
-                    {
-                        uint32_t globalCapacity = 0;
-                        for( const auto& g: blueprint.GetGroups() )
-                        {
-                            if( g.GetCount() == 0 )
-                                continue;
-                            uint32_t cap = 131072;
-                            while( cap < g.GetCount() )
-                                cap <<= 1;
-                            globalCapacity += cap;
-                        }
-
-                        size_t phenotypeSize     = globalCapacity * sizeof( PhenotypeData );
-                        outState.phenotypeBuffer = m_resourceManager->CreateBuffer( { phenotypeSize, BufferType::STORAGE, "PhenotypeBuffer" } );
-
-                        std::vector<PhenotypeData> initPhenotypes( globalCapacity, { 0u, 0.5f, 0.0f, 0u } );
-                        m_streamingManager->UploadBufferImmediate( { { outState.phenotypeBuffer, initPhenotypes.data(), phenotypeSize, 0 } } );
-                    }
-
-                    // Allocate vessel edge buffers (once per simulation — accumulate across frames)
-                    if( !outState.vesselEdgeBuffer.IsValid() )
-                    {
-                        struct VesselEdge
-                        {
-                            uint32_t agentA;
-                            uint32_t agentB;
-                            float    dist;
-                            uint32_t flags;
-                        };
-                        size_t edgeBufferSize    = paddedCount * sizeof( VesselEdge );
-                        outState.vesselEdgeBuffer = m_resourceManager->CreateBuffer( { edgeBufferSize, BufferType::STORAGE, "VesselEdgeBuffer" } );
-
-                        outState.vesselEdgeCountBuffer =
-                            m_resourceManager->CreateBuffer( { sizeof( uint32_t ), BufferType::STORAGE, "VesselEdgeCountBuffer" } );
-                        uint32_t zero = 0;
-                        m_streamingManager->UploadBufferImmediate( { { outState.vesselEdgeCountBuffer, &zero, sizeof( uint32_t ) } } );
-                    }
-
-                    // Allocate vessel component buffer before creating binding groups (needed at binding 7).
-                    // Labels are read by the anastomosis shader to prevent fusing already-connected cells.
-                    const bool firstAnastomosis = !outState.vesselComponentBuffer.IsValid();
-                    if( firstAnastomosis )
-                    {
-                        // Component label buffer is global — indexed by absolute agent index
-                        uint32_t globalCapacity = 0;
-                        for( const auto& g: blueprint.GetGroups() )
-                        {
-                            if( g.GetCount() == 0 )
-                                continue;
-                            uint32_t cap = 131072;
-                            while( cap < g.GetCount() )
-                                cap <<= 1;
-                            globalCapacity += cap;
-                        }
-
-                        size_t componentBufferSize    = globalCapacity * sizeof( uint32_t );
-                        outState.vesselComponentBuffer = m_resourceManager->CreateBuffer(
-                            { componentBufferSize, BufferType::STORAGE, "VesselComponentBuffer" } );
-
-                        // Initialize: labels[i] = i  (each agent is its own component)
-                        std::vector<uint32_t> initLabels( globalCapacity );
-                        std::iota( initLabels.begin(), initLabels.end(), 0u );
-                        m_streamingManager->UploadBufferImmediate(
-                            { { outState.vesselComponentBuffer, initLabels.data(), componentBufferSize } } );
-                    }
-
-                    ComputePipelineDesc   anastomosisDesc{ m_resourceManager->CreateShader( "shaders/compute/biology/anastomosis.comp" ),
-                                                          "AnastomosisPipeline" };
-                    ComputePipelineHandle anastomosisPipeHandle = m_resourceManager->CreatePipeline( anastomosisDesc );
-                    ComputePipeline*      anastomosisPipe       = m_resourceManager->GetPipeline( anastomosisPipeHandle );
-
-                    BindingGroup* bgAnastomosis0 =
-                        m_resourceManager->GetBindingGroup( m_resourceManager->CreateBindingGroup( anastomosisPipeHandle, 0 ) );
-                    bgAnastomosis0->Bind( 0, m_resourceManager->GetBuffer( outState.agentBuffers[ 0 ] ) );
-                    bgAnastomosis0->Bind( 1, m_resourceManager->GetBuffer( outState.phenotypeBuffer ) );
-                    bgAnastomosis0->Bind( 2, m_resourceManager->GetBuffer( outState.hashBuffer ) );
-                    bgAnastomosis0->Bind( 3, m_resourceManager->GetBuffer( outState.offsetBuffer ) );
-                    bgAnastomosis0->Bind( 4, m_resourceManager->GetBuffer( outState.agentCountBuffer ) );
-                    bgAnastomosis0->Bind( 5, m_resourceManager->GetBuffer( outState.vesselEdgeBuffer ) );
-                    bgAnastomosis0->Bind( 6, m_resourceManager->GetBuffer( outState.vesselEdgeCountBuffer ) );
-                    bgAnastomosis0->Bind( 7, m_resourceManager->GetBuffer( outState.vesselComponentBuffer ) );
-                    bgAnastomosis0->Build();
-
-                    BindingGroup* bgAnastomosis1 =
-                        m_resourceManager->GetBindingGroup( m_resourceManager->CreateBindingGroup( anastomosisPipeHandle, 0 ) );
-                    bgAnastomosis1->Bind( 0, m_resourceManager->GetBuffer( outState.agentBuffers[ 1 ] ) );
-                    bgAnastomosis1->Bind( 1, m_resourceManager->GetBuffer( outState.phenotypeBuffer ) );
-                    bgAnastomosis1->Bind( 2, m_resourceManager->GetBuffer( outState.hashBuffer ) );
-                    bgAnastomosis1->Bind( 3, m_resourceManager->GetBuffer( outState.offsetBuffer ) );
-                    bgAnastomosis1->Bind( 4, m_resourceManager->GetBuffer( outState.agentCountBuffer ) );
-                    bgAnastomosis1->Bind( 5, m_resourceManager->GetBuffer( outState.vesselEdgeBuffer ) );
-                    bgAnastomosis1->Bind( 6, m_resourceManager->GetBuffer( outState.vesselEdgeCountBuffer ) );
-                    bgAnastomosis1->Bind( 7, m_resourceManager->GetBuffer( outState.vesselComponentBuffer ) );
-                    bgAnastomosis1->Build();
-
-                    float hashCellSize = blueprint.GetSpatialPartitioning().cellSize;
-
-                    ComputePushConstants anastomosisPC{};
-                    anastomosisPC.fParam0     = anastomosis.contactDistance;
-                    anastomosisPC.fParam1     = anastomosis.allowTipToStalk ? 1.0f : 0.0f;
-                    anastomosisPC.fParam2     = static_cast<float>( paddedCount ); // edge buffer capacity (separate from hash scan bound)
-                    anastomosisPC.offset      = currentOffset;
-                    anastomosisPC.maxCapacity = globalHashCapacity; // hash scan bound spans all groups
-                    anastomosisPC.uParam0     = offsetArraySize;
-                    anastomosisPC.uParam1     = groupIndex;
-                    anastomosisPC.domainSize  = glm::vec4( blueprint.GetDomainSize(), hashCellSize );
-
-                    glm::uvec3  anastomosisDispatch( ( paddedCount + 255 ) / 256, 1, 1 );
-                    ComputeTask anastomosisTask( anastomosisPipe, bgAnastomosis0, bgAnastomosis1, record.targetHz, anastomosisPC,
-                                                anastomosisDispatch );
-                    anastomosisTask.SetTag( "anastomosis" + tagBase );
-                    anastomosisTask.SetPhaseName( groupPhase );
-                    // No ChainFlip — reads positions only, writes phenotype and edge buffers
-                    outState.computeGraph.AddTask( anastomosisTask );
-
-                    // Vessel Connected Components: 8-pass iterative label propagation over edges.
-                    // Each pass propagates the minimum label one hop further; 8 passes handles
-                    // chains up to 8 anastomosis events long.
-                    if( firstAnastomosis )
-                    {
-                        ComputePipelineDesc   vcDesc{ m_resourceManager->CreateShader( "shaders/compute/biology/vessel_components.comp" ),
-                                                      "VesselComponentsPipeline" };
-                        ComputePipelineHandle vcPipeHandle = m_resourceManager->CreatePipeline( vcDesc );
-                        ComputePipeline*      vcPipe       = m_resourceManager->GetPipeline( vcPipeHandle );
-
-                        // No ping-pong: vessel_components doesn't read/write agent positions
-                        BindingGroup* bgVC =
-                            m_resourceManager->GetBindingGroup( m_resourceManager->CreateBindingGroup( vcPipeHandle, 0 ) );
-                        bgVC->Bind( 0, m_resourceManager->GetBuffer( outState.vesselEdgeBuffer ) );
-                        bgVC->Bind( 1, m_resourceManager->GetBuffer( outState.vesselEdgeCountBuffer ) );
-                        bgVC->Bind( 2, m_resourceManager->GetBuffer( outState.vesselComponentBuffer ) );
-                        bgVC->Build();
-
-                        ComputePushConstants vcPC{};
-                        vcPC.maxCapacity = paddedCount; // max edges bounded by this group's paddedCount
-
-                        glm::uvec3 vcDispatch( ( paddedCount + 255 ) / 256, 1, 1 );
-                        for( int pass = 0; pass < 8; ++pass )
-                        {
-                            ComputeTask vcTask( vcPipe, bgVC, bgVC, record.targetHz, vcPC, vcDispatch );
-                            vcTask.SetTag( "vessel_components_" + std::to_string( pass ) + tagBase );
-                            vcTask.SetPhaseName( groupPhase );
-                            outState.computeGraph.AddTask( vcTask );
-                        }
-
-                        DT_INFO( "[SimulationBuilder] Compiled VesselComponents (8 passes) for '{}'", group.GetName() );
-                    }
-
-                    DT_INFO( "[SimulationBuilder] Compiled Anastomosis for '{}' at {}Hz", group.GetName(), record.targetHz );
-                }
-                if( std::holds_alternative<Behaviours::VesselSeed>( record.behaviour ) )
-                {
-                    const auto& vesselSeed = std::get<Behaviours::VesselSeed>( record.behaviour );
-
-                    struct VesselEdge
-                    {
-                        uint32_t agentA;
-                        uint32_t agentB;
-                        float    dist;
-                        uint32_t flags;
-                    };
-
-                    // Allocate vessel edge buffers if not already allocated by Anastomosis/NotchDll4.
-                    // When explicit edges are present, allocate extra capacity for runtime growth.
-                    if( !outState.vesselEdgeBuffer.IsValid() )
-                    {
-                        size_t slotCount = vesselSeed.explicitEdges.empty()
-                            ? paddedCount
-                            : std::max( static_cast<size_t>( paddedCount ) * 4,
-                                        vesselSeed.explicitEdges.size() * 2 );
-                        outState.vesselEdgeBuffer = m_resourceManager->CreateBuffer(
-                            { slotCount * sizeof( VesselEdge ), BufferType::STORAGE, "VesselEdgeBuffer" } );
-                        outState.vesselEdgeCountBuffer =
-                            m_resourceManager->CreateBuffer( { sizeof( uint32_t ), BufferType::STORAGE, "VesselEdgeCountBuffer" } );
-                    }
-
-                    // Build seed edges
-                    std::vector<VesselEdge> seedEdges;
-                    if( !vesselSeed.explicitEdges.empty() )
-                    {
-                        // 2D ring topology: upload the explicit edge list from VesselTreeGenerator.
-                        // Compute per-edge rest length from initial cell positions so the spring
-                        // shader can use the correct length for each edge independently.
-                        const auto& groupPositions = group.GetPositions();
-                        for( size_t i = 0; i < vesselSeed.explicitEdges.size(); ++i )
-                        {
-                            const auto& [a, b] = vesselSeed.explicitEdges[ i ];
-                            float edgeDist = 0.0f;
-                            if( a < groupPositions.size() && b < groupPositions.size() )
-                                edgeDist = glm::length( glm::vec3( groupPositions[ a ] ) - glm::vec3( groupPositions[ b ] ) );
-                            uint32_t flag = ( i < vesselSeed.edgeFlags.size() ) ? vesselSeed.edgeFlags[ i ] : 0u;
-                            seedEdges.push_back( { currentOffset + a, currentOffset + b, edgeDist, flag } );
-                        }
-                    }
-                    else
-                    {
-                        // Legacy 1D chain fallback: consecutive pairs within each contiguous segment
-                        uint32_t slotOffset = 0;
-                        for( uint32_t segCount : vesselSeed.segmentCounts )
-                        {
-                            for( uint32_t i = 0; i + 1 < segCount; ++i )
-                                seedEdges.push_back( { currentOffset + slotOffset + i, currentOffset + slotOffset + i + 1, 0.0f, 0u } );
-                            slotOffset += segCount;
-                        }
-                    }
-
-                    // Upload edges at byte offset 0; Anastomosis will append after these at runtime
-                    if( !seedEdges.empty() )
-                        m_streamingManager->UploadBufferImmediate(
-                            { { outState.vesselEdgeBuffer, seedEdges.data(), seedEdges.size() * sizeof( VesselEdge ), 0 } } );
-
-                    uint32_t edgeCount = static_cast<uint32_t>( seedEdges.size() );
-                    m_streamingManager->UploadBufferImmediate( { { outState.vesselEdgeCountBuffer, &edgeCount, sizeof( uint32_t ) } } );
-
-                    DT_INFO( "[SimulationBuilder] VesselSeed: {} edges seeded for '{}'", edgeCount, group.GetName() );
-                }
-                if( std::holds_alternative<Behaviours::VesselSpring>( record.behaviour ) )
-                {
-                    const auto& spring = std::get<Behaviours::VesselSpring>( record.behaviour );
-
-                    // Ensure vessel edge buffers exist (VesselSeed/Anastomosis typically create these first)
-                    if( !outState.vesselEdgeBuffer.IsValid() )
-                    {
-                        struct VesselEdge { uint32_t agentA; uint32_t agentB; float dist; uint32_t flags; };
-                        outState.vesselEdgeBuffer = m_resourceManager->CreateBuffer(
-                            { paddedCount * sizeof( VesselEdge ), BufferType::STORAGE, "VesselEdgeBuffer" } );
-                        outState.vesselEdgeCountBuffer = m_resourceManager->CreateBuffer(
-                            { sizeof( uint32_t ), BufferType::STORAGE, "VesselEdgeCountBuffer" } );
-                        uint32_t zero = 0;
-                        m_streamingManager->UploadBufferImmediate( { { outState.vesselEdgeCountBuffer, &zero, sizeof( uint32_t ), 0 } } );
-                    }
-
-                    ComputePipelineDesc   springDesc{ m_resourceManager->CreateShader( "shaders/compute/biology/vessel_mechanics.comp" ),
-                                                      "VesselSpringPipeline" };
-                    ComputePipelineHandle springPipeHandle = m_resourceManager->CreatePipeline( springDesc );
-                    ComputePipeline*      springPipe       = m_resourceManager->GetPipeline( springPipeHandle );
-
-                    // Phenotype buffer fallback: if no behaviour created it yet, bind a dummy.
-                    // The shader skips the cell-type check when reqCT == -1 (any).
-                    Buffer* phenoBuf0 = outState.phenotypeBuffer.IsValid()
-                        ? m_resourceManager->GetBuffer( outState.phenotypeBuffer )
-                        : m_resourceManager->GetBuffer( outState.agentBuffers[ 0 ] );
-                    Buffer* phenoBuf1 = outState.phenotypeBuffer.IsValid()
-                        ? m_resourceManager->GetBuffer( outState.phenotypeBuffer )
-                        : m_resourceManager->GetBuffer( outState.agentBuffers[ 1 ] );
-
-                    BindingGroup* bgSpring0 = m_resourceManager->GetBindingGroup( m_resourceManager->CreateBindingGroup( springPipeHandle, 0 ) );
-                    bgSpring0->Bind( 0, m_resourceManager->GetBuffer( outState.agentBuffers[ 0 ] ) );
-                    bgSpring0->Bind( 1, m_resourceManager->GetBuffer( outState.agentBuffers[ 1 ] ) );
-                    bgSpring0->Bind( 2, m_resourceManager->GetBuffer( outState.vesselEdgeBuffer ) );
-                    bgSpring0->Bind( 3, m_resourceManager->GetBuffer( outState.vesselEdgeCountBuffer ) );
-                    bgSpring0->Bind( 4, m_resourceManager->GetBuffer( outState.agentCountBuffer ) );
-                    bgSpring0->Bind( 5, phenoBuf0 );
-                    bgSpring0->Build();
-
-                    BindingGroup* bgSpring1 = m_resourceManager->GetBindingGroup( m_resourceManager->CreateBindingGroup( springPipeHandle, 0 ) );
-                    bgSpring1->Bind( 0, m_resourceManager->GetBuffer( outState.agentBuffers[ 1 ] ) );
-                    bgSpring1->Bind( 1, m_resourceManager->GetBuffer( outState.agentBuffers[ 0 ] ) );
-                    bgSpring1->Bind( 2, m_resourceManager->GetBuffer( outState.vesselEdgeBuffer ) );
-                    bgSpring1->Bind( 3, m_resourceManager->GetBuffer( outState.vesselEdgeCountBuffer ) );
-                    bgSpring1->Bind( 4, m_resourceManager->GetBuffer( outState.agentCountBuffer ) );
-                    bgSpring1->Bind( 5, phenoBuf1 );
-                    bgSpring1->Build();
-
-                    ComputePushConstants springPC{};
-                    springPC.offset      = currentOffset;
-                    springPC.maxCapacity = paddedCount;
-                    springPC.fParam0     = spring.springStiffness;
-                    springPC.fParam1     = spring.restingLength;
-                    springPC.fParam2     = spring.dampingCoefficient;
-                    springPC.fParam3     = static_cast<float>( static_cast<int32_t>( static_cast<uint32_t>( record.requiredCellType ) ) );
-                    springPC.fParam4     = spring.anchorPhalanxCells ? 1.0f : 0.0f;
-                    springPC.uParam0     = groupIndex; // grpNdx
-
-                    glm::uvec3  dispatch( ( paddedCount + 255 ) / 256, 1, 1 );
-                    ComputeTask springTask( springPipe, bgSpring0, bgSpring1, record.targetHz, springPC, dispatch );
-                    springTask.SetTag( "spring" + tagBase );
-                    springTask.SetPhaseName( groupPhase );
-                    springTask.SetChainFlip( true );
-                    outState.computeGraph.AddTask( springTask );
-
-                    DT_INFO( "[SimulationBuilder] Compiled VesselSpring for '{}' at {}Hz", group.GetName(), record.targetHz );
-                }
+                // NotchDll4 / Anastomosis / VesselSeed / VesselSpring branches removed
+                // in Item 2 demolition (2026-04-19). The pre-Item-1 vessel-graph
+                // infrastructure (edge buffers, spring forces, component labelling,
+                // juxtacrine-via-edges signalling) has been demolished; cell-based
+                // physics from Item 1 (JKR + VE-cadherin catch-bond + lateral adhesion
+                // + BM-gated polarity; Rakshit 2012; Halbleib & Nelson 2006; Strilic 2009)
+                // now holds vessels together without any persistent graph. Item 3's
+                // sprouting redesign will reintroduce tip/stalk differentiation on the
+                // cell-based substrate without edge buffers.
                 behaviourIndex++;
             }
             currentOffset += paddedCount;
@@ -2489,52 +2018,8 @@ namespace DigitalTwin
                         task->UpdatePushConstants( pc );
                     }
                 }
-                else if( std::holds_alternative<Behaviours::NotchDll4>( record.behaviour ) )
-                {
-                    const auto& notch = std::get<Behaviours::NotchDll4>( record.behaviour );
-                    for( uint32_t step = 0; step < notch.subSteps; ++step )
-                    {
-                        ComputeTask* task = state.computeGraph.FindTask( "notch_" + std::to_string( step ) + tagBase );
-                        if( task )
-                        {
-                            ComputePushConstants pc = task->GetPushConstants();
-                            pc.fParam0              = notch.dll4ProductionRate;
-                            pc.fParam1              = notch.dll4DecayRate;
-                            pc.fParam2              = notch.notchInhibitionGain;
-                            pc.fParam3              = notch.vegfr2BaseExpression;
-                            pc.fParam4              = notch.tipThreshold;
-                            pc.fParam5              = notch.stalkThreshold;
-                            task->UpdatePushConstants( pc );
-                        }
-                    }
-                }
-                else if( std::holds_alternative<Behaviours::Anastomosis>( record.behaviour ) )
-                {
-                    ComputeTask* task = state.computeGraph.FindTask( "anastomosis" + tagBase );
-                    if( task )
-                    {
-                        const auto&          anastomosis = std::get<Behaviours::Anastomosis>( record.behaviour );
-                        ComputePushConstants pc          = task->GetPushConstants();
-                        pc.fParam0                       = anastomosis.contactDistance;
-                        pc.fParam1                       = anastomosis.allowTipToStalk ? 1.0f : 0.0f;
-                        task->UpdatePushConstants( pc );
-                    }
-                }
-                else if( std::holds_alternative<Behaviours::VesselSpring>( record.behaviour ) )
-                {
-                    ComputeTask* task = state.computeGraph.FindTask( "spring" + tagBase );
-                    if( task )
-                    {
-                        const auto&          spring = std::get<Behaviours::VesselSpring>( record.behaviour );
-                        ComputePushConstants pc     = task->GetPushConstants();
-                        pc.fParam0                  = spring.springStiffness;
-                        pc.fParam1                  = spring.restingLength;
-                        pc.fParam2                  = spring.dampingCoefficient;
-                        pc.fParam3                  = static_cast<float>( static_cast<int32_t>( static_cast<uint32_t>( record.requiredCellType ) ) );
-                        pc.fParam4                  = spring.anchorPhalanxCells ? 1.0f : 0.0f;
-                        task->UpdatePushConstants( pc );
-                    }
-                }
+                // NotchDll4 / Anastomosis / VesselSpring hot-reload branches removed
+                // in Item 2 demolition — their behaviours no longer exist.
                 else if( std::holds_alternative<Behaviours::Perfusion>( record.behaviour ) ||
                          std::holds_alternative<Behaviours::Drain>( record.behaviour ) )
                 {

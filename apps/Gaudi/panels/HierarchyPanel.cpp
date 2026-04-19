@@ -53,18 +53,10 @@ namespace Gaudi
                     return "Cell Cycle";
                 else if constexpr( std::is_same_v<T, DigitalTwin::Behaviours::Chemotaxis> )
                     return "Chemotaxis: " + b.fieldName;
-                else if constexpr( std::is_same_v<T, DigitalTwin::Behaviours::NotchDll4> )
-                    return "Notch-Dll4";
-                else if constexpr( std::is_same_v<T, DigitalTwin::Behaviours::Anastomosis> )
-                    return "Anastomosis";
                 else if constexpr( std::is_same_v<T, DigitalTwin::Behaviours::Perfusion> )
                     return "Perfusion: " + b.fieldName;
                 else if constexpr( std::is_same_v<T, DigitalTwin::Behaviours::Drain> )
                     return "Drain: " + b.fieldName;
-                else if constexpr( std::is_same_v<T, DigitalTwin::Behaviours::VesselSeed> )
-                    return "Vessel Seed";
-                else if constexpr( std::is_same_v<T, DigitalTwin::Behaviours::VesselSpring> )
-                    return "Vessel Spring";
                 else if constexpr( std::is_same_v<T, DigitalTwin::Behaviours::PhalanxActivation> )
                     return "Phalanx Activation";
                 else if constexpr( std::is_same_v<T, DigitalTwin::Behaviours::CadherinAdhesion> )
@@ -237,18 +229,6 @@ namespace Gaudi
                                     }
                                 }
                                 ImGui::EndMenu();
-                            }
-                            if( ImGui::MenuItem( "Notch-Dll4" ) )
-                            {
-                                group.AddBehaviour( DigitalTwin::Behaviours::NotchDll4{} ).SetHz( 60 );
-                                m_engine.SetBlueprint( m_blueprint );
-                                selectAdded();
-                            }
-                            if( ImGui::MenuItem( "Anastomosis" ) )
-                            {
-                                group.AddBehaviour( DigitalTwin::Behaviours::Anastomosis{} ).SetHz( 60 );
-                                m_engine.SetBlueprint( m_blueprint );
-                                selectAdded();
                             }
                             if( ImGui::MenuItem( "Cadherin Adhesion" ) )
                             {

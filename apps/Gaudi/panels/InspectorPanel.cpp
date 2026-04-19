@@ -239,14 +239,10 @@ namespace Gaudi
             if constexpr( std::is_same_v<T, DigitalTwin::Behaviours::Biomechanics> )     return "Behaviour — Biomechanics";
             if constexpr( std::is_same_v<T, DigitalTwin::Behaviours::CellCycle> )        return "Behaviour — Cell Cycle";
             if constexpr( std::is_same_v<T, DigitalTwin::Behaviours::Chemotaxis> )       return "Behaviour — Chemotaxis";
-            if constexpr( std::is_same_v<T, DigitalTwin::Behaviours::NotchDll4> )        return "Behaviour — Notch-Dll4";
-            if constexpr( std::is_same_v<T, DigitalTwin::Behaviours::Anastomosis> )      return "Behaviour — Anastomosis";
             if constexpr( std::is_same_v<T, DigitalTwin::Behaviours::CadherinAdhesion> ) return "Behaviour — Cadherin Adhesion";
             if constexpr( std::is_same_v<T, DigitalTwin::Behaviours::CellPolarity> )     return "Behaviour — Cell Polarity";
             if constexpr( std::is_same_v<T, DigitalTwin::Behaviours::Perfusion> )        return "Behaviour — Perfusion";
             if constexpr( std::is_same_v<T, DigitalTwin::Behaviours::Drain> )            return "Behaviour — Drain";
-            if constexpr( std::is_same_v<T, DigitalTwin::Behaviours::VesselSpring> )     return "Behaviour — Vessel Spring";
-            if constexpr( std::is_same_v<T, DigitalTwin::Behaviours::VesselSeed> )       return "Behaviour — Vessel Seed";
             if constexpr( std::is_same_v<T, DigitalTwin::Behaviours::PhalanxActivation> ) return "Behaviour — Phalanx Activation";
             if constexpr( std::is_same_v<T, DigitalTwin::Behaviours::BasementMembrane> ) return "Behaviour — Basement Membrane";
             return "Behaviour";
@@ -361,9 +357,6 @@ namespace Gaudi
                     b.necrosisO2 = std::max( b.necrosisO2, 0.0f );
 
                     ImGui::TextDisabled( "necrosis < hypoxia < target O2" );
-                    changed |= ImGui::Checkbox( "Directed Mitosis", &b.directedMitosis );
-                    if( live && ImGui::IsItemHovered() )
-                        ImGui::SetTooltip( "Requires Stop + Play to take effect" );
                 }
                 else if constexpr( std::is_same_v<T, DigitalTwin::Behaviours::Chemotaxis> )
                 {
@@ -374,43 +367,12 @@ namespace Gaudi
                     changed |= ImGui::SliderFloat( "Contact Inhibition Density", &b.contactInhibitionDensity, 0.0f, 30.0f );
                     ImGui::TextDisabled( "0 = disabled" );
                 }
-                else if constexpr( std::is_same_v<T, DigitalTwin::Behaviours::NotchDll4> )
-                {
-                    changed |= ImGui::SliderFloat( "Dll4 Production Rate",   &b.dll4ProductionRate,   0.0f, 10.0f );
-                    changed |= ImGui::SliderFloat( "Dll4 Decay Rate",        &b.dll4DecayRate,        0.0f, 1.0f, "%.3f" );
-                    changed |= ImGui::SliderFloat( "Notch Inhibition Gain",  &b.notchInhibitionGain,  0.0f, 200.0f );
-                    changed |= ImGui::SliderFloat( "VEGFR2 Base Expression", &b.vegfr2BaseExpression, 0.0f, 5.0f );
-                    changed |= ImGui::SliderFloat( "Tip Threshold",          &b.tipThreshold,         0.0f, 1.0f );
-                    changed |= ImGui::SliderFloat( "Stalk Threshold",        &b.stalkThreshold,       0.0f, 1.0f );
-                    ImGui::TextDisabled( "stalkThreshold < tipThreshold required" );
-                    ImGui::BeginDisabled( live );
-                    int subSteps = static_cast<int>( b.subSteps );
-                    if( ImGui::SliderInt( "Sub-Steps", &subSteps, 1, 50 ) )
-                    {
-                        b.subSteps = static_cast<uint32_t>( subSteps );
-                        changed    = true;
-                    }
-                    ImGui::EndDisabled();
-                    if( live )
-                        ImGui::TextDisabled( "Sub-Steps requires Stop + Play to take effect" );
-                }
                 else if constexpr( std::is_same_v<T, DigitalTwin::Behaviours::PhalanxActivation> )
                 {
                     ImGui::LabelText( "VEGF Field", "%s", b.vegfFieldName.c_str() );
                     changed |= ImGui::SliderFloat( "Activation Threshold",   &b.activationThreshold,   0.1f, 200.0f );
                     changed |= ImGui::SliderFloat( "Deactivation Threshold", &b.deactivationThreshold, 0.0f, 100.0f );
                     ImGui::TextDisabled( "deactivation < activation required" );
-                }
-                else if constexpr( std::is_same_v<T, DigitalTwin::Behaviours::VesselSpring> )
-                {
-                    changed |= ImGui::SliderFloat( "Spring Stiffness", &b.springStiffness,    0.1f, 50.0f );
-                    changed |= ImGui::SliderFloat( "Resting Length",   &b.restingLength,      0.5f, 10.0f );
-                    changed |= ImGui::SliderFloat( "Damping",          &b.dampingCoefficient, 0.0f, 50.0f );
-                }
-                else if constexpr( std::is_same_v<T, DigitalTwin::Behaviours::Anastomosis> )
-                {
-                    changed |= ImGui::SliderFloat( "Contact Distance", &b.contactDistance, 0.1f, 10.0f );
-                    changed |= ImGui::Checkbox( "Allow Tip-to-Stalk", &b.allowTipToStalk );
                 }
                 else if constexpr( std::is_same_v<T, DigitalTwin::Behaviours::Perfusion> )
                 {
@@ -761,24 +723,9 @@ namespace Gaudi
             ImGui::TextDisabled( "Select an item in the Hierarchy" );
         }
 
-        // Vessel visualization — always visible (allows pre-configuring before Play)
-        {
-            ImGui::Spacing();
-            ImGui::SeparatorText( "Vessel Network" );
-
-            DigitalTwin::VesselVisualizationSettings vesselVis = m_engine.GetVesselVisualization();
-            bool vesselChanged = false;
-
-            vesselChanged |= ImGui::Checkbox( "Show Vessel Lines", &vesselVis.active );
-
-            if( vesselVis.active )
-            {
-                vesselChanged |= ImGui::ColorEdit4( "Line Color", &vesselVis.lineColor.x );
-            }
-
-            if( vesselChanged )
-                m_engine.SetVesselVisualization( vesselVis );
-        }
+        // Vessel visualization panel removed in Item 2 demolition (2026-04-19):
+        // the pre-Item-1 vessel edge graph + VesselVisualizationPass were deleted.
+        // Cell-based vessels render via the standard geometry pass.
 
         ImGui::End();
     }

@@ -464,35 +464,9 @@ namespace DigitalTwin
                                 result.AddError( "AgentGroup '" + group.GetName() + "': PhalanxActivation deactivationThreshold must be < activationThreshold" );
                         }
 
-                        if constexpr( std::is_same_v<T, Behaviours::NotchDll4> )
-                        {
-                            if( behaviour.dll4ProductionRate <= 0.0f )
-                                result.AddError( "AgentGroup '" + group.GetName() + "': NotchDll4 dll4ProductionRate must be > 0" );
-                            if( behaviour.dll4DecayRate <= 0.0f )
-                                result.AddError( "AgentGroup '" + group.GetName() + "': NotchDll4 dll4DecayRate must be > 0" );
-                            if( behaviour.notchInhibitionGain <= 0.0f )
-                                result.AddError( "AgentGroup '" + group.GetName() + "': NotchDll4 notchInhibitionGain must be > 0" );
-                            if( behaviour.vegfr2BaseExpression <= 0.0f )
-                                result.AddError( "AgentGroup '" + group.GetName() + "': NotchDll4 vegfr2BaseExpression must be > 0" );
-                            if( behaviour.tipThreshold <= behaviour.stalkThreshold )
-                                result.AddError( "AgentGroup '" + group.GetName() + "': NotchDll4 tipThreshold must be > stalkThreshold" );
-                            if( behaviour.subSteps < 1 )
-                                result.AddError( "AgentGroup '" + group.GetName() + "': NotchDll4 subSteps must be >= 1" );
-                        }
-
-                        if constexpr( std::is_same_v<T, Behaviours::Anastomosis> )
-                        {
-                            if( behaviour.contactDistance <= 0.0f )
-                                result.AddError( "AgentGroup '" + group.GetName() + "': Anastomosis contactDistance must be > 0" );
-                        }
-
-                        if constexpr( std::is_same_v<T, Behaviours::VesselSpring> )
-                        {
-                            if( behaviour.springStiffness <= 0.0f )
-                                result.AddError( "AgentGroup '" + group.GetName() + "': VesselSpring springStiffness must be > 0" );
-                            if( behaviour.restingLength <= 0.0f )
-                                result.AddError( "AgentGroup '" + group.GetName() + "': VesselSpring restingLength must be > 0" );
-                        }
+                        // NotchDll4 / Anastomosis / VesselSpring / VesselSeed behaviours
+                        // removed in Item 2 demolition (2026-04-19). Validator branches
+                        // deleted alongside the structs.
 
                         if constexpr( std::is_same_v<T, Behaviours::Perfusion> ||
                                       std::is_same_v<T, Behaviours::Drain> )
@@ -500,36 +474,6 @@ namespace DigitalTwin
                             const std::string typeName = std::is_same_v<T, Behaviours::Perfusion> ? "Perfusion" : "Drain";
                             if( behaviour.rate <= 0.0f )
                                 result.AddError( "AgentGroup '" + group.GetName() + "': " + typeName + " rate must be > 0" );
-                        }
-
-                        if constexpr( std::is_same_v<T, Behaviours::VesselSeed> )
-                        {
-                            // explicitEdges mode bypasses segmentCounts entirely
-                            if( behaviour.segmentCounts.empty() && behaviour.explicitEdges.empty() )
-                            {
-                                result.AddError( "AgentGroup '" + group.GetName() +
-                                                 "': VesselSeed requires either segmentCounts or explicitEdges" );
-                            }
-                            else if( !behaviour.segmentCounts.empty() )
-                            {
-                                uint32_t sum     = 0;
-                                bool     hasZero = false;
-                                for( uint32_t sc : behaviour.segmentCounts )
-                                {
-                                    if( sc == 0 )
-                                    {
-                                        result.AddError( "AgentGroup '" + group.GetName() +
-                                                         "': VesselSeed segmentCounts contains a zero entry" );
-                                        hasZero = true;
-                                        break;
-                                    }
-                                    sum += sc;
-                                }
-                                if( !hasZero && sum > group.GetCount() )
-                                    result.AddError( "AgentGroup '" + group.GetName() +
-                                                     "': VesselSeed segmentCounts sum (" + std::to_string( sum ) +
-                                                     ") exceeds group count (" + std::to_string( group.GetCount() ) + ")" );
-                            }
                         }
                     },
                     record.behaviour );

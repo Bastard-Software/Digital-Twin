@@ -99,12 +99,6 @@ namespace DigitalTwin
         GridFieldVisualization fieldVis;            // Per-field colormap / range settings
     };
 
-    struct VesselVisualizationSettings
-    {
-        bool      active    = false;
-        glm::vec4 lineColor = glm::vec4( 1.0f, 0.85f, 0.0f, 1.0f ); // Gold
-    };
-
     struct CameraState
     {
         glm::vec3 position;

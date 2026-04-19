@@ -93,200 +93,196 @@ namespace Gaudi
             std::optional<DigitalTwin::GridVisualizationSettings> visualization;
         };
 
-        static const Demo k_demos[] = {
-            { "Secrete",
-              "A single cell secretes into an initially empty field.\n"
-              "Watch the substance accumulate and diffuse outward.\n\n"
-              "Demonstrates: SecreteField, field diffusion.",
-              &Demos::SetupSecreteDemo,
-              []() { DigitalTwin::GridVisualizationSettings v; v.active = true; v.fieldIndex = 0; v.mode = DigitalTwin::GridVisualizationMode::SLICE_2D; return v; }() },
+        struct DemoCategory
+        {
+            const char*             name;
+            std::vector<Demo>       demos;
+            bool                    defaultOpen;
+        };
 
-            { "Consume",
-              "A single cell drains a Gaussian pre-seeded field.\n"
-              "Watch the local depletion grow around the cell.\n\n"
-              "Demonstrates: ConsumeField, field depletion.",
-              &Demos::SetupConsumeDemo,
-              []() { DigitalTwin::GridVisualizationSettings v; v.active = true; v.fieldIndex = 0; v.mode = DigitalTwin::GridVisualizationMode::SLICE_2D; return v; }() },
+        // Lambdas for visualization presets (readability)
+        auto gridSliceViz = []() {
+            DigitalTwin::GridVisualizationSettings v;
+            v.active     = true;
+            v.fieldIndex = 0;
+            v.mode       = DigitalTwin::GridVisualizationMode::SLICE_2D;
+            return v;
+        };
+        auto gridSliceGamma = []() {
+            DigitalTwin::GridVisualizationSettings v;
+            v.active             = true;
+            v.fieldIndex         = 0;
+            v.mode               = DigitalTwin::GridVisualizationMode::SLICE_2D;
+            v.fieldVis.gamma     = 0.6f;
+            v.fieldVis.alphaCutoff = 0.0f;
+            return v;
+        };
 
-            { "Chemotaxis",
-              "Source cell (green) consumes O2 and goes Hypoxic\n"
-              "after a few seconds — then starts secreting VEGF.\n"
-              "Responder cell (blue) slowly drifts toward\n"
-              "the growing VEGF cloud.\n\n"
-              "Demonstrates: CellCycle lifecycle, SecreteField\n"
-              "(Hypoxic only), Chemotaxis gradient sensing.",
-              &Demos::SetupChemotaxisDemo },
+        // Grouped demo catalogue. Order within categories reflects "simple → complex".
+        // Vessels category is placeholder for Item 2 phase deliverables (StraightTubeDemo,
+        // TaperingTubeDemo, BranchingTreeDemo, DesignedVesselDemo, ...) — empty post-demolition.
+        static const std::vector<DemoCategory> k_categories = {
+            { "Basics", {
+                { "Empty Blueprint",
+                  "A blank canvas: no agents, no fields, no behaviours.\n"
+                  "Useful to start a scene from scratch.\n\n"
+                  "Demonstrates: fresh SimulationBlueprint.",
+                  &Demos::SetupEmptyBlueprint },
+                { "Brownian Motion",
+                  "27 particles in a 3x3x3 grid perform pure thermal\n"
+                  "random-walk. No fields or forces — each drifts\n"
+                  "independently.\n\n"
+                  "Demonstrates: BrownianMotion behaviour.",
+                  &Demos::SetupBrownianMotionDemo },
+                { "Lifecycle",
+                  "A single cell consumes its local O2 supply and\n"
+                  "progresses Live (red) -> Hypoxic (purple) ->\n"
+                  "Necrotic (dark).\n\n"
+                  "Demonstrates: CellCycle lifecycle states,\n"
+                  "ConsumeField, O2 depletion.",
+                  &Demos::SetupLifecycleDemo },
+                { "Cell Cycle",
+                  "A small tumour cluster grows, divides, and arrests\n"
+                  "under pressure and hypoxia.\n\n"
+                  "Demonstrates: CellCycle, JKR biomechanics, O2 coupling.",
+                  &Demos::SetupCellCycleDemo },
+            }, true },
 
-            { "Cell Cycle",
-              "A small tumour cluster grows, divides, and arrests\n"
-              "under pressure and hypoxia.\n\n"
-              "Demonstrates: CellCycle, JKR biomechanics, O2 coupling.",
-              &Demos::SetupCellCycleDemo },
+            { "Fields & Diffusion", {
+                { "Diffusion & Decay",
+                  "A sphere of substance diffuses outward and decays\n"
+                  "to equilibrium. No cells — field physics only.\n\n"
+                  "Demonstrates: GridField diffusion, decay rate,\n"
+                  "Sphere initializer.",
+                  &Demos::SetupDiffusionDecayDemo, gridSliceGamma() },
+                { "Secrete",
+                  "A single cell secretes into an initially empty field.\n"
+                  "Watch the substance accumulate and diffuse outward.\n\n"
+                  "Demonstrates: SecreteField, field diffusion.",
+                  &Demos::SetupSecreteDemo, gridSliceViz() },
+                { "Consume",
+                  "A single cell drains a Gaussian pre-seeded field.\n"
+                  "Watch the local depletion grow around the cell.\n\n"
+                  "Demonstrates: ConsumeField, field depletion.",
+                  &Demos::SetupConsumeDemo, gridSliceViz() },
+                { "Chemotaxis",
+                  "Source cell (green) consumes O2 and goes Hypoxic\n"
+                  "after a few seconds — then starts secreting VEGF.\n"
+                  "Responder cell (blue) slowly drifts toward\n"
+                  "the growing VEGF cloud.\n\n"
+                  "Demonstrates: CellCycle lifecycle, SecreteField\n"
+                  "(Hypoxic only), Chemotaxis gradient sensing.",
+                  &Demos::SetupChemotaxisDemo },
+            }, false },
 
-            { "Diffusion & Decay",
-              "A sphere of substance diffuses outward and decays\n"
-              "to equilibrium. No cells — field physics only.\n\n"
-              "Demonstrates: GridField diffusion, decay rate,\n"
-              "Sphere initializer.",
-              &Demos::SetupDiffusionDecayDemo,
-              []() { DigitalTwin::GridVisualizationSettings v; v.active = true; v.fieldIndex = 0; v.mode = DigitalTwin::GridVisualizationMode::SLICE_2D; v.fieldVis.gamma = 0.6f; v.fieldVis.alphaCutoff = 0.0f; return v; }() },
+            { "Cell Mechanics", {
+                { "JKR Packing",
+                  "10 cells packed tightly at the origin explode apart\n"
+                  "under pure Hertz repulsion and settle into a stable\n"
+                  "packing. Zero adhesion energy.\n\n"
+                  "Demonstrates: Biomechanics repulsion, damping.",
+                  &Demos::SetupJKRPackingDemo },
+                { "EC Contact",
+                  "5 flat endothelial tiles in a 2D cross pattern.\n\n"
+                  "Outer tiles start at different Y rotations (+20, +15,\n"
+                  "-12, -8 deg). VE-cadherin ramps up; distributed hull\n"
+                  "contacts (4 corners + 4 edge midpoints) generate\n"
+                  "adhesion-only torques that drive all tiles to parallel\n"
+                  "edge-to-edge contact within ~10 s regardless of\n"
+                  "initial rotation direction or magnitude.\n\n"
+                  "Demonstrates: flat tile JKR, CadherinAdhesion,\n"
+                  "mechanistic edge alignment morphogenesis.",
+                  &Demos::SetupECContactDemo },
+                { "Tissue Sorting",
+                  "Two cell types (red=Epithelial, blue=Mesenchymal)\n"
+                  "with orthogonal cadherin profiles start randomly\n"
+                  "mixed in a sphere.\n\n"
+                  "Homophilic adhesion drives spontaneous sorting:\n"
+                  "same-type cells cluster together, cross-type\n"
+                  "adhesion is zero.\n\n"
+                  "Demonstrates: CadherinAdhesion, differential\n"
+                  "adhesion hypothesis (Steinberg 1963).",
+                  &Demos::SetupTissueSortingDemo },
+                { "Cell Mechanics Zoo",
+                  "5 cell types with distinct morphologies and cadherin\n"
+                  "profiles in a single tumour microenvironment scene.\n\n"
+                  "Zones:\n"
+                  "  Centre: Tumour (SpikySphere) - packed tight, zero\n"
+                  "    adhesion -> explosion + tumbling (hull torque)\n"
+                  "  +X: Epithelial (Cube) - E-cadherin lattice ->\n"
+                  "    stable aggregate with face-alignment torque\n"
+                  "  -X: Endothelial (Tile) - VE-cadherin, varied\n"
+                  "    angles -> edge-alignment sheet formation\n"
+                  "  +Z: Fibroblasts (Ellipsoid) - N-cadherin -> elongated\n"
+                  "    packing with axis-alignment torque\n"
+                  "  -Z: Immune (Sphere) - chemotaxis toward tumour\n"
+                  "    chemokine, bounces off all other groups\n\n"
+                  "Demonstrates: SpikySphere + Ellipsoid hull torque,\n"
+                  "differential adhesion, steric repulsion, chemotaxis.",
+                  &Demos::SetupCellMechanicsZooDemo },
+                { "Stress Test",
+                  "100,000 agents across 3 groups in a 250-unit domain.\n"
+                  "Designed to drive GPU compute into the ms range\n"
+                  "for meaningful profiler data.\n\n"
+                  "Groups:\n"
+                  "  Tumour  (50,000) - JKR + Cadherin + Brownian\n"
+                  "    + VEGF secretion + O2 consumption\n"
+                  "  Stromal (45,000) - JKR + Brownian + O2 consumption\n"
+                  "  Immune   (5,000) - JKR + slow Chemotaxis (VEGF)\n"
+                  "    + Brownian + O2 consumption\n\n"
+                  "Target: ~30 FPS. Use this scene for TraceCapture\n"
+                  "and performance profiling.",
+                  &Demos::SetupStressTestDemo },
+            }, false },
 
-            { "Brownian Motion",
-              "27 particles in a 3x3x3 grid perform pure thermal\n"
-              "random-walk. No fields or forces — each drifts\n"
-              "independently.\n\n"
-              "Demonstrates: BrownianMotion behaviour.",
-              &Demos::SetupBrownianMotionDemo },
+            { "Endothelial", {
+                { "EC Blob (suspension / hanging drop)",
+                  "~100 VE-cadherin endothelial cells in a 3D cloud with\n"
+                  "NO substrate. Biology: hanging drop / ULA culture.\n\n"
+                  "Expected: solid spheroid(s) via cadherin-belt junctions.\n"
+                  "NO apical-basal polarity (no BM seed). NO lumen.\n\n"
+                  "Paired negative control for EC 2D Matrigel.",
+                  &Demos::SetupECBlobDemo },
+                { "EC 2D Matrigel (monolayer / cord)",
+                  "Same ~100-cell drop as EC Blob, pipetted onto a 2D\n"
+                  "Matrigel-like basement-membrane plate at y=0.\n\n"
+                  "Biology: 2D Matrigel tube-formation assay (Kubota\n"
+                  "1988, Arnaoutova 2009). ECs anchor to the BM via\n"
+                  "integrin, flatten into a MONOLAYER, and form cord-\n"
+                  "like networks over 4-24 h. NO hollow tube with lumen\n"
+                  "- that phenotype requires 3D collagen gel (future\n"
+                  "ECTubeDemo with volumetric ECM, roadmap item 5).\n\n"
+                  "Positive control for EC Blob: the ONLY difference\n"
+                  "between the two demos is the plate.",
+                  &Demos::SetupEC2DMatrigelDemo },
+                { "EC Tube (3D ECM placeholder)",
+                  "Same ~100-cell drop as EC Blob, now inside a four-\n"
+                  "plate channel along +X. Floor + ceiling + two Z\n"
+                  "walls frame the cluster, providing BM contact on\n"
+                  "2-4 sides per cell.\n\n"
+                  "Biology: 3D-ECM placeholder. Approximates the\n"
+                  "collagen-gel environment where endothelial cords\n"
+                  "can undergo hollowing (Strilic 2009). The flat-plate\n"
+                  "channel is NOT a true 3D ECM - a volumetric ECM\n"
+                  "primitive lands with roadmap item 5.\n\n"
+                  "All three EC demos use IDENTICAL cell parameters;\n"
+                  "phenotypic divergence comes purely from the\n"
+                  "environment (no plate / one plate / four-plate\n"
+                  "channel). Same cells, different substrates - the\n"
+                  "classical positive/negative control experimental\n"
+                  "design.",
+                  &Demos::SetupECTubeDemo },
+            }, true },
 
-            { "JKR Packing",
-              "10 cells packed tightly at the origin explode apart\n"
-              "under pure Hertz repulsion and settle into a stable\n"
-              "packing. Zero adhesion energy.\n\n"
-              "Demonstrates: Biomechanics repulsion, damping.",
-              &Demos::SetupJKRPackingDemo },
-
-            { "Lifecycle",
-              "A single cell consumes its local O2 supply and\n"
-              "progresses Live (red) -> Hypoxic (purple) ->\n"
-              "Necrotic (dark).\n\n"
-              "Demonstrates: CellCycle lifecycle states,\n"
-              "ConsumeField, O2 depletion.",
-              &Demos::SetupLifecycleDemo },
-
-            { "Static Vessel Tree",
-              "A branching 2D tube vessel tree — rings of 6\n"
-              "plate-like endothelial cells held together by\n"
-              "spring forces. No biology, no VEGF.\n\n"
-              "Purpose: verify tree shape, ring topology, and\n"
-              "structural stability (VesselSpring + Biomechanics).\n\n"
-              "Demonstrates: VesselTreeGenerator, VesselSeed\n"
-              "(explicit edges), disc morphology, VesselSpring.",
-              &Demos::SetupStaticVesselTreeDemo },
-
-            { "Vessel Sprouting",
-              "A 2D tube vessel (6-cell rings) rests 10 units\n"
-              "above a hypoxic source cell.\n\n"
-              "Sequence:\n"
-              "  ~t=3s  Source goes Hypoxic, secretes VEGF\n"
-              "  ~t=8s  VEGF activates PhalanxCells to StalkCells\n"
-              "  ~t=10s NotchDll4 selects 1 TipCell from the ring\n"
-              "  ~t=12s TipCell migrates toward source\n"
-              "  ~t=18s Directed mitosis extends 1D sprout chain\n\n"
-              "Demonstrates: 2D tube to 1D sprout transition,\n"
-              "edge flags, PhalanxActivation, NotchDll4,\n"
-              "Chemotaxis, directedMitosis, VesselSpring.",
-              &Demos::SetupVesselSproutingDemo },
-
-            { "Vessel Angiogenesis",
-              "Two vessel tubes flank a hypoxic tumour source.\n\n"
-              "Sequence:\n"
-              "  ~t=3s  Tumour goes Hypoxic, secretes VEGF\n"
-              "  ~t=8s  VEGF activates nearest rings on both tubes\n"
-              "  ~t=10s NotchDll4 selects 1 TipCell per tube\n"
-              "  ~t=12s Both TipCells migrate toward the tumour\n"
-              "  ~t=20s Sprouts meet → Anastomosis fires\n"
-              "  ~t=20s+ Perfusion pumps O2 through the loop\n\n"
-              "Demonstrates: dual-sprout angiogenesis, anastomosis,\n"
-              "post-anastomosis PhalanxCell perfusion.",
-              &Demos::SetupAngiogenesisDemo },
-
-            { "Tissue Sorting",
-              "Two cell types (red=Epithelial, blue=Mesenchymal)\n"
-              "with orthogonal cadherin profiles start randomly\n"
-              "mixed in a sphere.\n\n"
-              "Homophilic adhesion drives spontaneous sorting:\n"
-              "same-type cells cluster together, cross-type\n"
-              "adhesion is zero.\n\n"
-              "Demonstrates: CadherinAdhesion, differential\n"
-              "adhesion hypothesis (Steinberg 1963).",
-              &Demos::SetupTissueSortingDemo },
-
-            { "EC Contact",
-              "5 flat endothelial tiles in a 2D cross pattern.\n\n"
-              "Outer tiles start at different Y rotations (+20, +15,\n"
-              "-12, -8 deg). VE-cadherin ramps up; distributed hull\n"
-              "contacts (4 corners + 4 edge midpoints) generate\n"
-              "adhesion-only torques that drive all tiles to parallel\n"
-              "edge-to-edge contact within ~10 s regardless of\n"
-              "initial rotation direction or magnitude.\n\n"
-              "Demonstrates: flat tile JKR, CadherinAdhesion,\n"
-              "mechanistic edge alignment morphogenesis.",
-              &Demos::SetupECContactDemo },
-
-            { "Cell Mechanics Zoo",
-              "5 cell types with distinct morphologies and cadherin\n"
-              "profiles in a single tumour microenvironment scene.\n\n"
-              "Zones:\n"
-              "  Centre: Tumour (SpikySphere) - packed tight, zero\n"
-              "    adhesion -> explosion + tumbling (hull torque)\n"
-              "  +X: Epithelial (Cube) - E-cadherin lattice ->\n"
-              "    stable aggregate with face-alignment torque\n"
-              "  -X: Endothelial (Tile) - VE-cadherin, varied\n"
-              "    angles -> edge-alignment sheet formation\n"
-              "  +Z: Fibroblasts (Ellipsoid) - N-cadherin -> elongated\n"
-              "    packing with axis-alignment torque\n"
-              "  -Z: Immune (Sphere) - chemotaxis toward tumour\n"
-              "    chemokine, bounces off all other groups\n\n"
-              "Demonstrates: SpikySphere + Ellipsoid hull torque,\n"
-              "differential adhesion, steric repulsion, chemotaxis.",
-              &Demos::SetupCellMechanicsZooDemo },
-
-            { "EC Blob (suspension / hanging drop)",
-              "~100 VE-cadherin endothelial cells in a 3D cloud with\n"
-              "NO substrate. Biology: hanging drop / ULA culture.\n\n"
-              "Expected: solid spheroid(s) via cadherin-belt junctions.\n"
-              "NO apical-basal polarity (no BM seed). NO lumen.\n\n"
-              "Paired negative control for EC 2D Matrigel.",
-              &Demos::SetupECBlobDemo },
-
-            { "EC 2D Matrigel (monolayer / cord)",
-              "Same ~100-cell drop as EC Blob, pipetted onto a 2D\n"
-              "Matrigel-like basement-membrane plate at y=0.\n\n"
-              "Biology: 2D Matrigel tube-formation assay (Kubota\n"
-              "1988, Arnaoutova 2009). ECs anchor to the BM via\n"
-              "integrin, flatten into a MONOLAYER, and form cord-\n"
-              "like networks over 4-24 h. NO hollow tube with lumen\n"
-              "— that phenotype requires 3D collagen gel (future\n"
-              "ECTubeDemo with volumetric ECM, roadmap item 5).\n\n"
-              "Positive control for EC Blob: the ONLY difference\n"
-              "between the two demos is the plate.",
-              &Demos::SetupEC2DMatrigelDemo },
-
-            { "EC Tube (3D ECM placeholder)",
-              "Same ~100-cell drop as EC Blob, now inside a four-\n"
-              "plate channel along +X. Floor + ceiling + two Z\n"
-              "walls frame the cluster, providing BM contact on\n"
-              "2-4 sides per cell.\n\n"
-              "Biology: 3D-ECM placeholder. Approximates the\n"
-              "collagen-gel environment where endothelial cords\n"
-              "can undergo hollowing (Strilic 2009). The flat-plate\n"
-              "channel is NOT a true 3D ECM — a volumetric ECM\n"
-              "primitive lands with roadmap item 5.\n\n"
-              "All three EC demos use IDENTICAL cell parameters;\n"
-              "phenotypic divergence comes purely from the\n"
-              "environment (no plate / one plate / four-plate\n"
-              "channel). Same cells, different substrates — the\n"
-              "classical positive/negative control experimental\n"
-              "design.",
-              &Demos::SetupECTubeDemo },
-
-            { "Stress Test",
-              "100,000 agents across 3 groups in a 250-unit domain.\n"
-              "Designed to drive GPU compute into the ms range\n"
-              "for meaningful profiler data.\n\n"
-              "Groups:\n"
-              "  Tumour  (50,000) — JKR + Cadherin + Brownian\n"
-              "    + VEGF secretion + O2 consumption\n"
-              "  Stromal (45,000) — JKR + Brownian + O2 consumption\n"
-              "  Immune   (5,000) — JKR + slow Chemotaxis (VEGF)\n"
-              "    + Brownian + O2 consumption\n\n"
-              "Target: ~30 FPS. Use this scene for TraceCapture\n"
-              "and performance profiling.",
-              &Demos::SetupStressTestDemo },
+            { "Vessels", {
+                // Populated by Phase 2.1+ as TwoShapeDemo, PuzzlePiecePaletteDemo,
+                // StraightTubeDemo, TaperingTubeDemo, BranchingTreeDemo, and finally
+                // DesignedVesselDemo land. Empty after the Phase 2.0 demolition.
+            }, false },
         };
 
         ImGuiIO& io = ImGui::GetIO();
-        ImGui::SetNextWindowSize( ImVec2( 640, 360 ), ImGuiCond_Appearing );
+        ImGui::SetNextWindowSize( ImVec2( 700, 420 ), ImGuiCond_Appearing );
         ImGui::SetNextWindowPos( ImVec2( io.DisplaySize.x * 0.5f, io.DisplaySize.y * 0.5f ),
                                  ImGuiCond_Appearing, ImVec2( 0.5f, 0.5f ) );
 
@@ -296,30 +292,66 @@ namespace Gaudi
             return;
         }
 
-        static int s_selected = 0;
+        // Selection state: (categoryIndex, demoIndex). -1 = no selection.
+        static int s_selectedCategory = 0;
+        static int s_selectedDemo     = 0;
 
-        // Left column — demo list
-        ImGui::BeginChild( "##demoList", ImVec2( 190, 0 ), true );
-        for( int i = 0; i < static_cast<int>( std::size( k_demos ) ); ++i )
+        // Left column — categorised demo tree
+        ImGui::BeginChild( "##demoList", ImVec2( 220, 0 ), true );
+        for( int c = 0; c < static_cast<int>( k_categories.size() ); ++c )
         {
-            if( ImGui::Selectable( k_demos[ i ].name, s_selected == i ) )
-                s_selected = i;
+            const auto& cat = k_categories[ c ];
+            if( cat.defaultOpen )
+                ImGui::SetNextItemOpen( true, ImGuiCond_Once );
+            if( ImGui::CollapsingHeader( cat.name ) )
+            {
+                if( cat.demos.empty() )
+                {
+                    ImGui::Indent();
+                    ImGui::TextDisabled( "(empty)" );
+                    ImGui::Unindent();
+                }
+                for( int d = 0; d < static_cast<int>( cat.demos.size() ); ++d )
+                {
+                    const bool isSelected = ( s_selectedCategory == c && s_selectedDemo == d );
+                    ImGui::Indent();
+                    if( ImGui::Selectable( cat.demos[ d ].name, isSelected ) )
+                    {
+                        s_selectedCategory = c;
+                        s_selectedDemo     = d;
+                    }
+                    ImGui::Unindent();
+                }
+            }
         }
         ImGui::EndChild();
 
         ImGui::SameLine();
 
-        // Right column — description + load button
+        // Right column — description + load button for the current selection
         ImGui::BeginChild( "##demoDetail", ImVec2( 0, 0 ), false );
 
-        ImGui::TextWrapped( "%s", k_demos[ s_selected ].description );
+        const Demo* selected = nullptr;
+        if( s_selectedCategory >= 0 && s_selectedCategory < static_cast<int>( k_categories.size() ) )
+        {
+            const auto& cat = k_categories[ s_selectedCategory ];
+            if( s_selectedDemo >= 0 && s_selectedDemo < static_cast<int>( cat.demos.size() ) )
+                selected = &cat.demos[ s_selectedDemo ];
+        }
+
+        if( selected )
+            ImGui::TextWrapped( "%s", selected->description );
+        else
+            ImGui::TextDisabled( "Select a demo from the list on the left." );
 
         ImGui::SetCursorPosY( ImGui::GetWindowHeight() - ImGui::GetFrameHeightWithSpacing() - 4 );
-        if( ImGui::Button( "Load Demo", ImVec2( -1, 0 ) ) )
+        ImGui::BeginDisabled( selected == nullptr );
+        if( ImGui::Button( "Load Demo", ImVec2( -1, 0 ) ) && selected )
         {
-            LoadDemo( k_demos[ s_selected ].setupFn, k_demos[ s_selected ].visualization );
+            LoadDemo( selected->setupFn, selected->visualization );
             m_showDemoBrowser = false;
         }
+        ImGui::EndDisabled();
 
         ImGui::EndChild();
 

@@ -15,7 +15,7 @@ layout(push_constant) uniform PushConstants {
     float interactionRadius; // fParam1 — from Biomechanics.maxRadius (determines neighbor search range)
     float reqLC;             // fParam2 — requiredLifecycleState (-1 = any), float-encoded int
     float reqCT;             // fParam3 — requiredCellType (-1 = any), float-encoded int
-    float fParam4;
+    float propagationStrength; // fParam4 — Phase 4.5 PAR/Crumbs junctional coupling weight
     float fParam5;
     uint  offset;
     uint  maxCapacity;       // globalHashCapacity — drives the inner hash scan
@@ -42,6 +42,14 @@ struct PhenotypeData {
     uint  cellType;
 };
 layout(std430, binding = 5) readonly buffer Phenotypes  { PhenotypeData data[]; } phenotypes;
+
+// Basement-membrane plates (Step B — multi-plate array). See jkr_forces.comp
+// for the layout description. Header + up to MAX_PLATES plates, each 2 vec4s.
+#define MAX_PLATES 8
+layout(std430, binding = 6) readonly buffer PlateBuf {
+    uvec4 meta;                        // .x = plate count
+    vec4  plates[2 * MAX_PLATES];      // interleaved (normalHeight, params)
+} plate;
 
 uint hashPos(ivec3 cell) {
     const uint p1 = 73856093u; const uint p2 = 19349663u; const uint p3 = 83492791u;
@@ -70,9 +78,14 @@ void main()
     float searchDist  = pc.interactionRadius * 2.0;
     ivec3 myCell      = ivec3(floor(myPos / cellSize));
 
-    // Accumulate neighbor positions for centroid calculation
-    vec3  posAccum     = vec3(0.0);
+    // Accumulate neighbor positions for centroid calculation, AND (Phase 4.5)
+    // magnitude-weighted polarity direction for junctional propagation. Single
+    // hash-scan loop serves both — the propagation read adds one vec4 fetch
+    // per qualified neighbour, negligible cost on top of the existing scan.
+    vec3  posAccum      = vec3(0.0);
     int   neighborCount = 0;
+    vec3  propAccum     = vec3(0.0);  // Σ mag_j · dir_j
+    float propMassSum   = 0.0;        // Σ mag_j  (total polar-neighbour mass)
 
     for (int z = -1; z <= 1; z++) {
         for (int y = -1; y <= 1; y++) {
@@ -94,6 +107,15 @@ void main()
                     if (dot(diff, diff) < searchDist * searchDist) {
                         posAccum += nData.xyz;
                         neighborCount++;
+
+                        // Phase 4.5 — junctional propagation.
+                        // Unpolarised neighbours (w≈0) contribute ≈0 direction
+                        // with ≈0 weight, so they don't affect either accumulator.
+                        // Polarised neighbours vote proportionally to their
+                        // magnitude (PAR-recruitment strength).
+                        vec4 nPol = polarity.data[nIdx];
+                        propAccum   += nPol.xyz * nPol.w;
+                        propMassSum += nPol.w;
                     }
                 }
             }
@@ -112,22 +134,127 @@ void main()
     float rawLen   = length(rawVec);
     float alpha    = pc.regulationRate * pc.dt;
 
-    // xyz: direction component — EMA toward outward unit vector then renormalize
+    // Neighbour-centroid target direction (outward from aggregate).
+    vec3  neighborTarget = (rawLen > 0.001) ? (rawVec / rawLen) : vec3(0.0);
+    float neighborW      = clamp(rawLen / pc.interactionRadius, 0.0, 1.0);
+
+    // ── Basement-membrane polarity bias (Step B — multi-plate) ──
+    // For each of the `plate.meta.x` plates, accumulate an additive
+    // contribution to the plate-sourced direction + magnitude. A cell within
+    // anchorageDistance of multiple plates (e.g. the 4-plate channel in
+    // ECTubeDemo) feels ALL of them — contributions add up in the weighted
+    // sum, and opposing plates (bottom + top of a slab) cancel direction
+    // while still contributing magnitude.
+    //
+    // plateWeight (returned to the main blend) = sum of individual plate
+    //   weights (polarityBias_i × linear-falloff_i). Used as the magnitude
+    //   contribution.
+    // plateTarget (returned) = plate-direction contribution, ALREADY scaled
+    //   by its weights (not unit-normalised). Added into the main dirSum.
+    vec3  plateTarget = vec3(0.0);
+    float plateWeight = 0.0;
+    uint  plateCount  = plate.meta.x;
+    for (uint pi = 0u; pi < plateCount; ++pi) {
+        vec4 normalHeight = plate.plates[2u * pi + 0u];
+        vec4 params       = plate.plates[2u * pi + 1u];
+
+        vec3  nRaw = normalHeight.xyz;
+        float nLen = length(nRaw);
+        if (nLen < 0.0001) continue;
+
+        vec3  n  = nRaw / nLen;
+        float h  = normalHeight.w;
+        float d  = dot(myPos, n) - h;
+        float aD = max(params.z, 0.0001);
+        float pb = params.w;
+
+        if (d >= 0.0 && d <= aD) {
+            // Linear falloff: full bias at plate surface, zero at anchorage boundary.
+            // Raw weight — no upper clamp, so polarityBias > 1 is legitimate
+            // and lets strong plate cues dominate competing propagation.
+            float w_i = max(pb * (1.0 - d / aD), 0.0);
+            // Step A convention: polarity xyz = BASAL direction. For an
+            // anchored cell, basal = TOWARD the plate = -plate.normal.
+            vec3  target_i = -n;
+            plateTarget += w_i * target_i;  // scaled direction contribution
+            plateWeight += w_i;             // weight contribution
+        }
+    }
+    // When a cell is near a plate the plate cue saturates magnitude at 1.0
+    // (analogous to the pre-Step-B `plateW = 1.0` override). Implemented via
+    // the weighted sum: `plateWeight > 0` already accumulates the biological
+    // magnitude contribution.
+
+    // ── Phase 4.5: Propagation target + weighted-sum blend ──
+    //
+    // Three source terms (geometric centroid, plate, propagation) combine by
+    // weighted sum — NOT by nested mix. Additive blending preserves the plate
+    // seed even when propagation is strong (anchored cells keep their plate
+    // pull so the cascade has a source to propagate FROM) and lets geometric
+    // + propagation compose cleanly near the surface. A nested mix with
+    // propW→1 would incorrectly override the plate on anchored cells.
+    //
+    // Deadband: sub-threshold neighbour polarity does NOT propagate. Junctional
+    // PAR recruitment has a cooperativity threshold below which polarity does
+    // not amplify (Bryant 2010, St Johnston & Ahringer 2010). Also prevents
+    // floating-point noise feedback in non-seeded ECBlobDemo: without the
+    // deadband, ε-scale polarity on one cell would grow through neighbour
+    // reinforcement even absent a real plate seed.
+    vec3  propTarget = (propMassSum > 0.001) ? (propAccum / propMassSum) : vec3(0.0);
+    float propMagAvg = propMassSum / float(max(neighborCount, 1));
+    if (propMagAvg < 0.05) propMagAvg = 0.0;  // deadband (biological cooperativity threshold)
+    float propW_eff  = clamp(pc.propagationStrength * propMagAvg, 0.0, 1.0);
+
+    // Weighted-sum blend. Each source contributes direction scaled by its
+    // weight; total weight renormalises direction. Magnitude is sourced ONLY
+    // from plate contact + junctional propagation — the geometric centroid
+    // cue provides DIRECTION for surface cells but does NOT seed magnitude.
+    //
+    // Step A (2026-04-18) biological correction. Previously `targetW` included
+    // `neighborW`, which gave surface cells non-zero polarity magnitude from
+    // geometry alone. Biologically incorrect: ECs in suspension (no BM
+    // contact) undergo anoikis and LOSE apical-basal polarity — being
+    // geometrically "at the cluster surface" does not establish polarity
+    // without integrin engagement. Gating magnitude by plate+propagation
+    // makes ECBlobDemo, EC2DMatrigelDemo, and ECTubeDemo able to share IDENTICAL
+    // CellPolarity parameters and have their phenotypes emerge from the
+    // environment alone (no BM → no polarity → spheroid; plate BM → bottom-
+    // layer polarisation → monolayer; 3D ECM → all-cell polarisation + cord
+    // hollowing via propagation).
+    // Step B note: `plateTarget` is ALREADY the weighted sum over plates
+    // (Σ w_i · target_i), so it enters dirSum unmultiplied. `plateWeight`
+    // remains the scalar Σ w_i and is used only for the dirTotalW
+    // normalisation and the targetW magnitude accumulator.
+    vec3  dirSum = neighborW    * neighborTarget
+                 + plateTarget
+                 + propW_eff    * propTarget;
+    float dirTotalW = neighborW + plateWeight + propW_eff;
+    vec3  targetDir;
+    if (dirTotalW > 0.001) {
+        targetDir = dirSum / dirTotalW;
+        float l = length(targetDir);
+        if (l > 0.001) targetDir /= l;
+        else           targetDir  = vec3(0.0);
+    } else {
+        targetDir = vec3(0.0);
+    }
+    float targetMag = length(targetDir);
+    // Magnitude excludes neighborW — BM-gated only.
+    float targetW   = min(plateWeight + propW_eff, 1.0);
+
+    // xyz: direction component — EMA toward blended target, then renormalise.
     vec3 newDir;
-    if (rawLen > 0.001) {
-        vec3 targetDir = rawVec / rawLen;
+    if (targetMag > 0.001) {
         newDir = mix(old.xyz, targetDir, alpha);
         float l = length(newDir);
         if (l > 0.001) newDir /= l;
     } else {
-        // Interior cell with symmetric neighbors — polarity decays toward zero
+        // Interior cell with no geometric, plate, or propagation cue — polarity decays.
         newDir = mix(old.xyz, vec3(0.0), alpha);
     }
 
-    // w: magnitude — 1 on surface (large displacement from centroid), 0 deep in interior
-    // Normalized by interactionRadius so the transition happens over ~1 cell radius
-    float targetW = clamp(rawLen / pc.interactionRadius, 0.0, 1.0);
-    float newW    = mix(old.w, targetW, alpha);
+    // w: magnitude — EMA toward the blended target magnitude.
+    float newW = mix(old.w, targetW, alpha);
 
     polarity.data[globalIdx] = vec4(newDir, newW);
 }

@@ -36,6 +36,7 @@ namespace DigitalTwin
         CheckCellCycleThresholds( blueprint, result );
         CheckCadherinAdhesion( blueprint, result );
         CheckCellPolarity( blueprint, result );
+        CheckBasementMembrane( blueprint, result );
         CheckPopulations( blueprint, result );
 
         return result;
@@ -632,6 +633,26 @@ namespace DigitalTwin
                 expr.w < 0.0f || expr.w > 1.0f )
                 result.AddError( "AgentGroup '" + group.GetName() +
                                  "': CadherinAdhesion targetExpression components must be in [0, 1]." );
+
+            // Phase 5 — catch-bond validation. catchBondStrength is stored as 8-bit
+            // fixed-point in [0, 5] on the GPU; values outside that range clamp
+            // silently. catchBondPeakLoad is a normalised load (0-1) — outside
+            // this range the smoothstep collapses to 0 or 1 and the catch-bond
+            // effect becomes unphysical. Negative strength is rejected (would
+            // model repulsive cadherin under load — not biological).
+            if( cadherin->catchBondStrength < 0.0f )
+                result.AddError( "AgentGroup '" + group.GetName() +
+                                 "': CadherinAdhesion catchBondStrength must be >= 0 (got: " +
+                                 std::to_string( cadherin->catchBondStrength ) + ")." );
+            if( cadherin->catchBondStrength > 5.0f )
+                result.AddWarning( "AgentGroup '" + group.GetName() +
+                                   "': CadherinAdhesion catchBondStrength = " +
+                                   std::to_string( cadherin->catchBondStrength ) +
+                                   " exceeds 5.0 — will clamp on GPU (8-bit fixed-point range [0, 5])." );
+            if( cadherin->catchBondPeakLoad <= 0.0f || cadherin->catchBondPeakLoad > 1.0f )
+                result.AddError( "AgentGroup '" + group.GetName() +
+                                 "': CadherinAdhesion catchBondPeakLoad must be in (0, 1] (got: " +
+                                 std::to_string( cadherin->catchBondPeakLoad ) + ")." );
         }
 
         // Warn if any off-diagonal affinity matrix element is outside [-1, 1]
@@ -679,16 +700,92 @@ namespace DigitalTwin
                                  "': CellPolarity regulationRate must be >= 0 (got: " +
                                  std::to_string( polarity->regulationRate ) + ")." );
 
-            if( polarity->apicalRepulsion < 0.0f )
-                result.AddError( "AgentGroup '" + group.GetName() +
-                                 "': CellPolarity apicalRepulsion must be >= 0 (got: " +
-                                 std::to_string( polarity->apicalRepulsion ) + ")." );
+            // apicalRepulsion may be negative: in the Phase-3+ cord-hollowing
+            // regime, apical-apical contacts become ACTIVELY repulsive (PODXL
+            // electrostatic repulsion, Strilic 2009). Only warn on extreme
+            // magnitudes that would destabilise integration.
+            if( polarity->apicalRepulsion < -5.0f || polarity->apicalRepulsion > 5.0f )
+                result.AddWarning( "AgentGroup '" + group.GetName() +
+                                   "': CellPolarity apicalRepulsion = " +
+                                   std::to_string( polarity->apicalRepulsion ) +
+                                   " is outside the typical [-5, 5] range; negative values "
+                                   "are biologically legal (apical electrostatic repulsion)." );
 
             if( polarity->basalAdhesion < 0.0f )
                 result.AddError( "AgentGroup '" + group.GetName() +
                                  "': CellPolarity basalAdhesion must be >= 0 (got: " +
                                  std::to_string( polarity->basalAdhesion ) + ")." );
+
+            // Phase 4.5: propagationStrength must be non-negative (negative propagation
+            // weights are mathematically legal but biologically meaningless — they would
+            // invert neighbour polarity contribution, which has no PAR/Crumbs analog).
+            if( polarity->propagationStrength < 0.0f )
+                result.AddError( "AgentGroup '" + group.GetName() +
+                                 "': CellPolarity propagationStrength must be >= 0 (got: " +
+                                 std::to_string( polarity->propagationStrength ) + ")." );
+
+            // Warn if propagation weight is above the plausible tight-junction coupling
+            // range. Values > 3 dominate the geometric centroid cue completely and are
+            // only meaningful for research parameter sweeps.
+            if( polarity->propagationStrength > 3.0f )
+                result.AddWarning( "AgentGroup '" + group.GetName() +
+                                   "': CellPolarity propagationStrength = " +
+                                   std::to_string( polarity->propagationStrength ) +
+                                   " is above the typical [0, 3] range for junctional coupling." );
         }
+    }
+
+    void SimulationValidator::CheckBasementMembrane( const SimulationBlueprint& blueprint, ValidationResult& result )
+    {
+        // Count groups carrying BasementMembrane. One global plate per simulation is
+        // supported in Phase 2; warn if multiple groups declare one (the builder
+        // will pick the first).
+        int plateCount = 0;
+        for( const auto& group : blueprint.GetGroups() )
+        {
+            for( const auto& record : group.GetBehaviours() )
+            {
+                if( std::holds_alternative<Behaviours::BasementMembrane>( record.behaviour ) )
+                {
+                    const auto& bm = std::get<Behaviours::BasementMembrane>( record.behaviour );
+                    ++plateCount;
+
+                    const float nLen = glm::length( bm.planeNormal );
+                    if( nLen < 0.001f )
+                        result.AddError( "AgentGroup '" + group.GetName() +
+                                         "': BasementMembrane planeNormal must be non-zero." );
+                    else if( std::abs( nLen - 1.0f ) > 0.05f )
+                        result.AddWarning( "AgentGroup '" + group.GetName() +
+                                           "': BasementMembrane planeNormal is not unit length (|n| = " +
+                                           Fmt2f( nLen ) + "); it will be normalised by the shader." );
+
+                    if( bm.contactStiffness <= 0.0f )
+                        result.AddError( "AgentGroup '" + group.GetName() +
+                                         "': BasementMembrane contactStiffness must be > 0 (got: " +
+                                         Fmt2f( bm.contactStiffness ) + ")." );
+
+                    if( bm.integrinAdhesion < 0.0f )
+                        result.AddError( "AgentGroup '" + group.GetName() +
+                                         "': BasementMembrane integrinAdhesion must be >= 0 (got: " +
+                                         Fmt2f( bm.integrinAdhesion ) + ")." );
+
+                    if( bm.anchorageDistance <= 0.0f )
+                        result.AddError( "AgentGroup '" + group.GetName() +
+                                         "': BasementMembrane anchorageDistance must be > 0 (got: " +
+                                         Fmt2f( bm.anchorageDistance ) + ")." );
+
+                    if( bm.polarityBias < 0.0f )
+                        result.AddError( "AgentGroup '" + group.GetName() +
+                                         "': BasementMembrane polarityBias must be >= 0 (got: " +
+                                         Fmt2f( bm.polarityBias ) + ")." );
+                }
+            }
+        }
+
+        if( plateCount > 1 )
+            result.AddWarning( "BasementMembrane declared on more than one AgentGroup (" +
+                               std::to_string( plateCount ) +
+                               "); only one global plate is supported — the builder will use the first." );
     }
 
     void SimulationValidator::CheckPopulations( const SimulationBlueprint& blueprint, ValidationResult& result )

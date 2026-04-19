@@ -15,9 +15,19 @@ layout(push_constant) uniform PushConstants {
     uint  arrayOffset;
     uint  grpNdx;
     vec4  domainSize;
-    uvec4 gridSize;          // x: cadherin active flag (0=off, 1=on)
-                             // y: couplingStrength encoded as uintBitsToFloat
-                             // z: polarity active flag (0=off, 1=on)
+    uvec4 gridSize;          // x: bit 0      = cadherin active flag
+                             //    bits 1..8  = catchBondStrength × 51 (8-bit
+                             //                 fixed-point mapping [0, 5] → [0, 255];
+                             //                 Phase 5 Rakshit 2012 VE-cad catch-bond)
+                             //    bits 16..31 = half-packed corticalTension
+                             //                 (biomechanics contractile term, Maître 2012)
+                             // y: packHalf2x16(catchBondPeakLoad, couplingStrength)
+                             //    — two half-floats. catchBondPeakLoad is the
+                             //    normalised tensile load at which the catch-bond
+                             //    multiplier peaks (Phase 5).
+                             // z: bit 0 = polarity active flag;
+                             //    bits 16..31 = half-packed lateralAdhesionScale
+                             //    (Phase 4.5-B cadherin-belt translational pull)
                              // w: packHalf2x16(apicalRepulsion, basalAdhesion)
 } pc;
 
@@ -57,6 +67,25 @@ layout(std430, binding = 11) readonly buffer ContactHullBuf {
     vec4 hullMeta;
     vec4 points[16];
 } hull;
+
+// Basement-membrane plates (Step B — supports up to MAX_PLATES plates per
+// simulation). Global across all groups. Always bound.
+// Header:
+//   meta.x = plate count (0 = no plates → all plate blocks skipped)
+// Per-plate data (stored interleaved: 2 vec4s per plate):
+//   plates[2*i + 0] = normalHeight:
+//     xyz = outward plane normal (unit-ish; shader re-normalises)
+//     w   = plane offset along normal (plane origin = normal * height)
+//   plates[2*i + 1] = params:
+//     x = contactStiffness (Hertz-like repulsion)
+//     y = integrinAdhesion (JKR-like attraction toward plate)
+//     z = anchorageDistance (max distance for integrin + polarity cue)
+//     w = polarityBias (consumed by polarity_update only, ignored here)
+#define MAX_PLATES 8
+layout(std430, binding = 12) readonly buffer PlateBuf {
+    uvec4 meta;
+    vec4  plates[2 * MAX_PLATES];
+} plate;
 
 // Rotate vector v by unit quaternion q.
 vec3 qrot( vec4 q, vec3 v ) {
@@ -161,15 +190,49 @@ void main() {
                     if (dist >= interactDist) continue;
 
                     // ── Cadherin + polarity modulation (cell-level, once per neighbour) ──
-                    float adhScale = 1.0;
-                    if (pc.gridSize.x != 0u) {
-                        float couplingStrength = uintBitsToFloat(pc.gridSize.y);
-                        vec4  profileI = cadherinProfiles.profiles[originalAgentIdx];
-                        vec4  profileJ = cadherinProfiles.profiles[neighborAgentIdx];
-                        float A = clamp(dot(profileI, cadherinAffinity.M * profileJ), 0.0, 1.0);
-                        adhScale *= A * couplingStrength;
+                    //
+                    // adhScale ends up as a SIGNED multiplier on the base adhesion
+                    // force. A negative value inverts adhesion into active repulsion —
+                    // the mechanism by which apical-apical contacts between polarised
+                    // cells push each other apart (PODXL electrostatic repulsion,
+                    // Strilic 2009). Downstream:
+                    //   * hull torque path:   torque += cross(myHull[a], localDir * (-adhF))
+                    //                         adhF < 0 → torque pushes hull points AWAY
+                    //                         from the contact (reorient to reduce overlap).
+                    //   * point-particle:     netForce = repForce - adhForce
+                    //                         adhForce < 0 → |netForce| increases outward.
+                    // No clamp on adhScale itself — Phase 3+ requires signed values.
+                    // ── Phase 1: cadherin affinity A (before catch-bond) ───
+                    float adhScale           = 1.0;
+                    float cadA               = 1.0;
+                    float couplingStrength   = 1.0;
+                    float catchBondStrength  = 0.0;
+                    float catchBondPeakLoad  = 0.3;
+                    if ((pc.gridSize.x & 1u) != 0u) {
+                        vec2  cadPack          = unpackHalf2x16(pc.gridSize.y);
+                        catchBondPeakLoad      = cadPack.x;
+                        couplingStrength       = cadPack.y;
+                        vec4  profileI         = cadherinProfiles.profiles[originalAgentIdx];
+                        vec4  profileJ         = cadherinProfiles.profiles[neighborAgentIdx];
+                        // Allow negative off-diagonal affinities (hetero-cadherin
+                        // repulsion); in practice the blueprint affinity matrix is
+                        // non-negative and this acts as a passthrough.
+                        cadA                   = clamp(dot(profileI, cadherinAffinity.M * profileJ), -1.0, 1.0);
+                        catchBondStrength      = float((pc.gridSize.x >> 1) & 0xFFu) * (5.0 / 255.0);
                     }
-                    if (pc.gridSize.z != 0u) {
+
+                    // ── Phase 2: polarity modifier (before catch-bond) ─────
+                    // polMod is the scalar by which polarity will scale cadherin
+                    // affinity. polMod < 1 = polarity is weakening/repelling the
+                    // contact (apical alignment when apicalRepulsion < basalAdhesion).
+                    // polMod > 1 = polarity is reinforcing (basal-basal contact with
+                    // basalAdhesion > 1). magI*magJ gates the effect by polarity
+                    // magnitude — unpolarised cells have polMod = 1.
+                    float polMod = 1.0;
+                    if ((pc.gridSize.z & 1u) != 0u) {
+                        // pp.x = apicalRepulsion, pp.y = basalAdhesion. In Phase 3+ pp.x
+                        // can be negative: apical-aligned contacts (alignment ≈ 0) then
+                        // produce scale < 0 → polMod goes negative → flips adhesion sign.
                         vec2  pp        = unpackHalf2x16(pc.gridSize.w);
                         vec3  r_ij      = diff / dist;
                         float dotI      = dot(polarityData.data[originalAgentIdx].xyz, -r_ij);
@@ -178,16 +241,90 @@ void main() {
                         float scale     = mix(pp.x, pp.y, alignment);
                         float magI      = polarityData.data[originalAgentIdx].w;
                         float magJ      = polarityData.data[neighborAgentIdx].w;
-                        adhScale       *= mix(1.0, scale, magI * magJ);
+                        polMod          = mix(1.0, scale, magI * magJ);
                     }
+
+                    // ── Phase 3: Phase 5 catch-bond (Rakshit 2012, external-load-gated, v3)
+                    //
+                    // REFORMULATION v3 (2026-04-19):  dropped the `max(0, 1-polMod)`
+                    // apical-deficit term, added a `polMod > 0` gate, switched to a
+                    // squared smoothstep for a sharper sub-threshold cutoff, and
+                    // dropped the slip-bond rupture tail.
+                    //
+                    // Why each change:
+                    //
+                    //   1. `polMod > 0` gate. Catch-bond stabilises EXISTING
+                    //      attractive cadherin bonds. On apical-apical contacts
+                    //      in the Strilic cord-hollowing regime (apicalRepulsion < 0),
+                    //      polMod goes negative — the bond is actively repelling,
+                    //      there is no cadherin to stabilise, so catch-bond should
+                    //      not fire. This keeps apical repulsion clean in the
+                    //      future 3D demo.
+                    //
+                    //   2. `cadA > 0` gate. Same argument for heterotypic cadherin
+                    //      repulsion (e.g. EC-tumour boundary when the affinity
+                    //      matrix is signed). Catch-bond on negative affinity would
+                    //      amplify repulsion, which is the opposite of its function.
+                    //
+                    //   3. Dropped the `max(0, 1-polMod)` term. That term interpreted
+                    //      polarity-induced adhesion weakening (polMod < 1) as
+                    //      "tensile load". It's not — it's an intrinsic bond
+                    //      modulation. Matrigel polarised side-pairs with polMod=0.9
+                    //      got a phantom 0.1 load signal, pushing catchMul from 1.1
+                    //      to 2.5 and over-compacting the aggregate. Now only
+                    //      genuine EXTERNAL force (cortical tension) counts.
+                    //
+                    //   4. Squared smoothstep. Rakshit 2012 data shows X-dimer
+                    //      catch-bond has a genuine activation threshold around
+                    //      15 pN — below it, the bond behaves as normal cadherin.
+                    //      A plain linear or cubic smoothstep from 0 lets low-load
+                    //      states accumulate small but non-negligible strengthening
+                    //      (26% at loadSignal/peak = 0.33 for a plain cubic). The
+                    //      squared smoothstep drops that to 7% — genuinely inert
+                    //      at demo-default tensions, preserving Phase 4.5-B walls.
+                    //
+                    //   5. Dropped slip-bond rupture tail. Our coarse-grained
+                    //      simulation doesn't track individual bond lifetimes, and
+                    //      forcing rupture at high load defeats the mechanism's
+                    //      primary purpose — preventing cord fracture under the
+                    //      aggressive cortical tension of the Strilic regime. If
+                    //      tension is genuinely catastrophic, baseline adhesion +
+                    //      polarity already determine the outcome.
+                    //
+                    // Quantitative summary at cortical=0.5, adhesion=5, peak=0.3:
+                    //   loadSignal = 0.1 → activated = 0.067 → catchMul = 1.13
+                    // At cortical=3 (Strilic demo):
+                    //   loadSignal = 0.6 → activated = 1.0 → catchMul = 3.0
+                    if (catchBondStrength > 0.0 && polMod > 0.0 && cadA > 0.0) {
+                        float corticalTension = unpackHalf2x16(pc.gridSize.x).y;
+                        float loadSignal      = corticalTension / max(adhesion, 0.001);
+                        loadSignal            = clamp(loadSignal, 0.0, 1.0);
+                        float activated       = smoothstep(0.0, catchBondPeakLoad, loadSignal);
+                        activated            *= activated; // squared for sharp sub-threshold cutoff
+                        float catchMul        = 1.0 + catchBondStrength * activated;
+                        cadA *= catchMul;
+                    }
+
+                    // ── Final composition — cadherin × coupling × polarity ──
+                    adhScale = cadA * couplingStrength * polMod;
 
                     if (hullCount > 0) {
                         // ── Rigid body path: multi-sphere contacts → TORQUE + TRANSLATION ──
                         // Each overlapping hull sub-sphere pair contributes a JKR force to
-                        // both translation and torque.  Only a few pairs overlap at surface
-                        // contact (sub-sphere radii are small), so forces self-scale without
+                        // torque (always) and, if lateralAdhesionScale > 0, to translation
+                        // (Phase 4.5-B). Only a few pairs overlap at surface contact
+                        // (sub-sphere radii are small), so forces self-scale without
                         // an explicit normalisation factor.
                         vec4 qj = orientations[neighborAgentIdx];
+
+                        // Phase 4.5-B: cadherin-belt lateral pull. Hull-pair translation
+                        // contribution scaled by lateralAdhesionScale (unpacked from
+                        // gridSize.z upper half). At edge-to-edge contact many hull
+                        // pairs overlap and the translation force accumulates, giving a
+                        // measurable lateral attraction that encourages committed face-
+                        // to-face junctions rather than corner-only contacts. At 0 the
+                        // hull pairs remain torque-only (pre-Phase-4.5-B behaviour).
+                        float lateralAdhesionScale = unpackHalf2x16(pc.gridSize.z).y;
 
                         for (int a = 0; a < hullCount; a++) {
                             vec3  Pa = myPos + myHull[a];
@@ -205,13 +342,17 @@ void main() {
                                     float overlap    = contactDist - pairDist;
                                     vec3  localDir   = d / pairDist;      // Pa→Pb direction (contact surface normal)
                                     float adhF       = adhesion * overlap * adhScale;
-                                    // Hull pairs are TORQUE-ONLY: adhesion pulls each hull point
-                                    // toward the contact surface to maximise overlap (alignment).
-                                    // Translation is handled entirely by the unconditional point-
-                                    // particle block below.  Hull sub-sphere overlap is on a
-                                    // different scale to centre-to-centre overlap and would overwhelm
-                                    // the point-particle adhesion if added to translation.
+                                    // Torque: rotates hull points toward the contact surface
+                                    // (alignment). Always active, independent of the lateral
+                                    // adhesion scale.
                                     torque += cross(myHull[a], localDir * (-adhF));
+                                    // Translation: Phase 4.5-B cadherin-belt pull. `-adhF * localDir`
+                                    // points from Pa toward Pb when adhF > 0, pulling myPos toward
+                                    // otherPos. Scaled by lateralAdhesionScale (default 0 → no
+                                    // contribution, preserves pre-Phase-4.5-B physics).
+                                    if (lateralAdhesionScale > 0.0) {
+                                        force += localDir * (-adhF) * lateralAdhesionScale;
+                                    }
                                 }
                             }
                         }
@@ -253,13 +394,60 @@ void main() {
                             vec3  dir      = diff / dist;
                             float repForce = repulsion * pow(overlap, 1.5);
                             float adhForce = adhesion * overlap * adhScale;
-                            float netForce = repForce - adhForce;
+                            // Cortical tension (Maître et al. 2012): an outward, per-pair
+                            // contractile force that linearly opposes adhesion. Unlike Hertz
+                            // repulsion (∝ overlap^1.5, diverges under compression), this
+                            // term is linear in overlap and remains finite, so it sets the
+                            // rest-spacing of the aggregate without preventing contact.
+                            // Zero when corticalTension == 0 (default Biomechanics).
+                            float corticalTension = unpackHalf2x16(pc.gridSize.x).y;
+                            float tenForce = corticalTension * overlap;
+                            float netForce = repForce - adhForce + tenForce;
                             force         += dir * netForce;
                             totalPressure += repForce;
                         }
                     }
                 }
             }
+        }
+    }
+
+    // ── Basement-membrane plates (global, per-agent once outside neighbour loop) ──
+    // For each of the `plate.meta.x` plates, supplies:
+    //   1. Contact repulsion — Hertz-like push along the outward normal when the
+    //      cell centre is below the plane (signed distance d < 0).
+    //   2. Integrin adhesion — JKR-like pull toward the plate when 0 <= d <=
+    //      anchorageDistance. Mimics focal-adhesion engagement with a BM-like
+    //      substrate; strictly one-sided (never attracts through the plane).
+    //
+    // Step B — loops over up to MAX_PLATES plates. Each plate contributes its
+    // own contact repulsion + integrin adhesion force independently. A cell
+    // within anchorageDistance of multiple plates simultaneously feels all
+    // of them (enables channel/slab geometries for the 3D-ECM placeholder demo).
+    uint plateCount = plate.meta.x;
+    for (uint pi = 0u; pi < plateCount; ++pi) {
+        vec4  normalHeight = plate.plates[2u * pi + 0u];
+        vec4  params       = plate.plates[2u * pi + 1u];
+
+        vec3  nRaw = normalHeight.xyz;
+        float nLen = length(nRaw);
+        if (nLen < 0.0001) continue;
+
+        vec3  n   = nRaw / nLen;
+        float h   = normalHeight.w;
+        float d   = dot(myPos, n) - h;
+
+        float kP  = params.x;
+        float kI  = params.y;
+        float aD  = max(params.z, 0.0001);
+
+        if (d < 0.0) {
+            float pushMag = kP * pow(-d, 1.5);
+            force         += n * pushMag;
+            totalPressure += pushMag;
+        } else if (d <= aD) {
+            float shape = 4.0 * d * (aD - d) / (aD * aD);
+            force += (-n) * (kI * shape);
         }
     }
 

@@ -738,13 +738,34 @@ TEST( SimulationValidatorTest, CellPolarity_NegativeRegulationRate_Fails )
     EXPECT_FALSE( SimulationValidator::Validate( bp ).IsValid() );
 }
 
-TEST( SimulationValidatorTest, CellPolarity_NegativeApicalRepulsion_Fails )
+// Phase 3+: negative apicalRepulsion is legal (PODXL-style active repulsion —
+// apical poles push each other apart rather than merely weakening adhesion).
+// Out-of-range magnitudes (|x| > 5) trigger a warning but the blueprint still
+// validates.
+TEST( SimulationValidatorTest, CellPolarity_NegativeApicalRepulsion_IsLegal )
 {
     SimulationBlueprint bp = MakeCellPolarityBlueprint();
     std::get<Behaviours::CellPolarity>(
-        bp.GetGroupsMutable()[ 0 ].GetBehavioursMutable()[ 1 ].behaviour ).apicalRepulsion = -0.1f;
+        bp.GetGroupsMutable()[ 0 ].GetBehavioursMutable()[ 1 ].behaviour ).apicalRepulsion = -1.0f;
 
-    EXPECT_FALSE( SimulationValidator::Validate( bp ).IsValid() );
+    EXPECT_TRUE( SimulationValidator::Validate( bp ).IsValid() );
+}
+
+TEST( SimulationValidatorTest, CellPolarity_ExtremeApicalRepulsion_WarnsButValidates )
+{
+    SimulationBlueprint bp = MakeCellPolarityBlueprint();
+    std::get<Behaviours::CellPolarity>(
+        bp.GetGroupsMutable()[ 0 ].GetBehavioursMutable()[ 1 ].behaviour ).apicalRepulsion = -10.0f;
+
+    ValidationResult r = SimulationValidator::Validate( bp );
+    EXPECT_TRUE( r.IsValid() );
+
+    bool sawWarning = false;
+    for( const auto& issue : r.issues )
+        if( issue.severity == ValidationIssue::Severity::Warning &&
+            issue.message.find( "apicalRepulsion" ) != std::string::npos )
+            sawWarning = true;
+    EXPECT_TRUE( sawWarning );
 }
 
 TEST( SimulationValidatorTest, CellPolarity_NegativeBasalAdhesion_Fails )

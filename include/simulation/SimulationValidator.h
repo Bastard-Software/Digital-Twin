@@ -61,6 +61,7 @@ namespace DigitalTwin
         static void CheckCellCycleThresholds( const SimulationBlueprint&, ValidationResult& );
         static void CheckCadherinAdhesion( const SimulationBlueprint&, ValidationResult& );
         static void CheckCellPolarity( const SimulationBlueprint&, ValidationResult& );
+        static void CheckBasementMembrane( const SimulationBlueprint&, ValidationResult& );
         static void CheckPopulations( const SimulationBlueprint&, ValidationResult& );
     };
 

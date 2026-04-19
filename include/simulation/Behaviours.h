@@ -48,8 +48,33 @@ namespace DigitalTwin::Behaviours
     struct CellPolarity
     {
         float regulationRate  = 0.1f;  // EMA rate for polarity adaptation (1/s)
-        float apicalRepulsion = 0.5f;  // adhesion multiplier when apical faces apical (< 1 = weaker)
+        // Adhesion multiplier when apical faces apical.
+        //   > 1.0  = stronger adhesion (rare biologically)
+        //   0 < x < 1 = weakened adhesion (attenuates VE-cad at apical pole)
+        //   = 0   = no apical-apical adhesion
+        //   < 0   = actively REPULSIVE at apical pole (PODXL electrostatic
+        //           repulsion, cord-hollowing mechanism; Strilic 2009)
+        // Net pair adhesion reads `adhScale = mix(apicalRepulsion, basalAdhesion, alignment)`
+        // times cadherin affinity, so a negative value here flips adhesion to
+        // repulsion for fully-apical-aligned contacts.
+        float apicalRepulsion = 0.5f;
         float basalAdhesion   = 1.5f;  // adhesion multiplier when basal faces basal (> 1 = stronger)
+        // Phase 4.5 — weight of the apical-basal cue propagated from polar
+        // neighbours via cell-cell junctional coupling (St Johnston & Ahringer
+        // 2010; Bryant et al. 2010 PAR/Crumbs cascade). Solves the interior-
+        // polarity gap: without propagation, interior cells have
+        // neighbour-centroid magnitude ≈ 0 and never feel apical-basal
+        // adhesion scaling; with propagation, an anchored seed (plate-
+        // polarised cells) transmits orientation cell-to-cell through the
+        // aggregate, enabling cord hollowing from the interior outward.
+        //   0.0  = disabled — interior cells stay unpolarised (Phase 4 behaviour)
+        //   0.5-1.0 = biologically plausible for tight-junction coupling
+        //   >1.0 = dominates geometric centroid (sweep values for research use)
+        // Sub-threshold neighbour polarity (mean magnitude < 0.05) is treated
+        // as zero — a biologically-motivated deadband (junctional PAR
+        // recruitment has a cooperativity threshold) that also prevents
+        // FP-noise feedback amplification in non-seeded clusters.
+        float propagationStrength = 0.0f;
     };
 
     /**
@@ -71,12 +96,40 @@ namespace DigitalTwin::Behaviours
         float     expressionRate   = 0.01f;              // Up-regulation speed (1/s)
         float     degradationRate  = 0.001f;             // Down-regulation speed (1/s)
         float     couplingStrength = 1.0f;               // Global force scale
-        float     _pad             = 0.0f;               // Pad to 32 bytes
+        // Phase 5 — Rakshit et al. 2012 (PNAS) catch-bond multiplier. Under
+        // tensile load a VE-cadherin X-dimer bond transiently STRENGTHENS
+        // (conformational switch to a high-affinity state) until a peak
+        // ~30 pN, then rapidly weakens and ruptures (slip-bond tail).
+        // Modelled here as a multiplier on the cadherin affinity A:
+        //   loadNorm = dist / interactDist  (0 = compressed, 1 = just breaking)
+        //   catchMul = 1 + catchBondStrength * smoothstep(0, peak, loadNorm)
+        //   if loadNorm > peak: catchMul *= (1 - smoothstep(peak, 1, loadNorm))
+        //   A *= catchMul
+        // Biological effect: vessel walls, cords, and monolayers resist tearing
+        // under active mechanical stress (cord hollowing, sprout migration,
+        // flow shear) without needing a stiffer baseline adhesion, which would
+        // instead produce overly-compact aggregates. Disabled (= 0) preserves
+        // pre-Phase-5 behaviour bit-exact.
+        float     catchBondStrength = 0.0f;              // peak multiplier under tensile load (2.0 = VE-cad X-dimer calibrated)
+        float     catchBondPeakLoad = 0.3f;              // normalised load at peak (0-1); beyond this, slip-bond rupture tail
     };
 
     /**
      * @brief Raw data structure for the GPU Compute Compiler.
      * Contains pre-calculated mathematical constants derived from biological parameters.
+     *
+     * corticalTension models the actomyosin cortex contractility that opposes
+     * cell-cell adhesion (Maître et al. 2012 "Adhesion functions in cell sorting
+     * by mechanically coupling the cortices of adhering cells"). In the
+     * interfacial-tension framework the per-pair interfacial tension is
+     *   γ_ij = (T_i + T_j) - W_ij
+     * where T is cortical tension and W is adhesion work. The effect in this
+     * model: for each overlapping neighbour pair an outward force
+     *   F_tension = corticalTension * overlap * dir_ij
+     * is added, linearly opposing the adhesive inward pull. Raising tension
+     * thus stiffens the aggregate (rounder spheroids, smoother boundaries)
+     * and shifts the adhesion/tension balance toward sorting-like compaction.
+     * Default 0.0f preserves pre-Phase-4 behaviour.
      */
     struct Biomechanics
     {
@@ -84,6 +137,18 @@ namespace DigitalTwin::Behaviours
         float adhesionStrength    = 2.0f;  // How strongly cells stick together (JKR force)
         float maxRadius           = 1.5f;  // The interaction radius for collision detection
         float dampingCoefficient  = 0.0f;  // Velocity drag (dashpot). 0 = no damping.
+        float corticalTension     = 0.0f;  // Actomyosin contractile term opposing adhesion (0 = off)
+        // Phase 4.5-B — lateral (edge-to-edge) junctional adhesion. Hull
+        // sub-sphere pairs contribute a translational force scaled by this
+        // factor, pulling cells into face-to-face contact in proportion to the
+        // number of hull-point pairs that overlap. Biological analog: cadherin
+        // belt junctions (VE-cad, E-cad adherens belts) exert a translational
+        // pull along the contact surface, not just a torque. Without this
+        // mechanism, hull pairs only ALIGN tiles rotationally; tiles can drift
+        // corner-to-corner without committing to a full edge-to-edge contact.
+        // Scale ~0.05-0.2 is biologically plausible (lateral adhesion is a
+        // fraction of the omnidirectional point-particle adhesion). 0 = off.
+        float lateralAdhesionScale = 0.0f;
     };
 
     /**
@@ -174,6 +239,42 @@ namespace DigitalTwin::Behaviours
         float       rate = 1.0f;
     };
 
+    /**
+     * @brief Basement-membrane plate — static infinite plane anchorage surface.
+     *
+     * Supplies the two biologically essential ECM cues for endothelial
+     * tubulogenesis without the cost of a full 3D ECM field:
+     *   1. Contact repulsion — cells cannot penetrate the plane (integrin-rich
+     *      basal surface is impermeable at the cell's mechanical scale).
+     *   2. Integrin adhesion — cells within `anchorageDistance` of the plane
+     *      are attracted toward it (focal-adhesion / integrin engagement).
+     *   3. Polarity bias — anchored cells' polarity target shifts toward
+     *      `planeNormal` (basal-toward-membrane polarity cue from integrin
+     *      signalling).
+     *
+     * Biological analog: in vitro Matrigel tube formation assay (Kubota 1988,
+     * Arnaoutova 2009) — a 2D basement-membrane-like gel substrate on which
+     * ECs are seeded. In vivo analog: a pre-existing basal lamina that
+     * endothelial cells aggregate upon.
+     *
+     * Does NOT model:
+     *   - ECs depositing their own BM (phalanx-cell activity, later work).
+     *   - MMP-driven BM degradation during sprouting (roadmap item 5).
+     *   - Full 3D interstitial ECM (roadmap item 5).
+     *
+     * Global per simulation: one plate supported. All groups carrying this
+     * behaviour share the same plate parameters (builder picks the first).
+     */
+    struct BasementMembrane
+    {
+        glm::vec3 planeNormal       = { 0.0f, 0.0f, 1.0f }; // unit outward normal (away from plate into bulk)
+        float     height            = 0.0f;                 // plane origin along planeNormal (dot(planeOrigin, planeNormal))
+        float     contactStiffness  = 15.0f;                // Hertz-like repulsion preventing penetration
+        float     integrinAdhesion  = 1.5f;                 // JKR-like adhesion pulling cells toward plate
+        float     anchorageDistance = 1.0f;                 // max distance at which integrin adhesion + polarity bias apply
+        float     polarityBias      = 2.0f;                 // weight of plate polarity cue (overrides neighbour-centroid when strong)
+    };
+
 } // namespace DigitalTwin::Behaviours
 
 namespace DigitalTwin
@@ -194,7 +295,8 @@ namespace DigitalTwin
         Behaviours::Perfusion,
         Behaviours::Drain,
         Behaviours::VesselSeed,
-        Behaviours::VesselSpring>;
+        Behaviours::VesselSpring,
+        Behaviours::BasementMembrane>;
 
     // Wrapper to attach execution parameters (like frequency) to a behaviour
     struct BehaviourRecord

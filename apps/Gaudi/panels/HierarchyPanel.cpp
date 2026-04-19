@@ -71,6 +71,8 @@ namespace Gaudi
                     return "Cadherin Adhesion";
                 else if constexpr( std::is_same_v<T, DigitalTwin::Behaviours::CellPolarity> )
                     return "Cell Polarity";
+                else if constexpr( std::is_same_v<T, DigitalTwin::Behaviours::BasementMembrane> )
+                    return "Basement Membrane";
                 else
                     return "Unknown";
             },

@@ -74,6 +74,8 @@ namespace DigitalTwin
             resourceManager->DestroyBuffer( drawMetaBuffer );
         if( visibilityBuffer.IsValid() )
             resourceManager->DestroyBuffer( visibilityBuffer );
+        if( basementMembraneBuffer.IsValid() )
+            resourceManager->DestroyBuffer( basementMembraneBuffer );
 
         for( auto& field: gridFields )
         {
@@ -109,6 +111,7 @@ namespace DigitalTwin
         agentReorderBuffer     = {};
         drawMetaBuffer         = {};
         visibilityBuffer       = {};
+        basementMembraneBuffer = {};
     }
 
     SimulationState SimulationBuilder::Build( const SimulationBlueprint& blueprint )
@@ -790,6 +793,66 @@ namespace DigitalTwin
                 { { outState.cadherinAffinityBuffer, &affinity, sizeof( glm::mat4 ), 0 } } );
         }
 
+        // Pre-pass: basement-membrane plate buffer (global, single plate per sim).
+        // Always allocated so both polarity_update (binding 6) and jkr_forces
+        // (binding 12) always have a valid binding. Flags.x = 0 → shader skips
+        // the plate block entirely; flags.x = 1 → plate active with params below.
+        {
+            // Step B — multi-plate buffer. Layout (matches shader PlateBuf):
+            //   meta.x = plate count (0 = no plates)
+            //   plates[2i+0] = (normal.xyz, height)
+            //   plates[2i+1] = (contactStiffness, integrinAdhesion, anchorageDistance, polarityBias)
+            // All BasementMembrane behaviours across all groups are collected
+            // into the array, up to MAX_PLATES. This lifts the "one plate per
+            // simulation" limit and enables channel / box / slab geometries
+            // for ECTubeDemo and future 3D-ECM demos.
+            constexpr uint32_t kMaxPlates = 8;
+            struct GPUPlateBuffer {
+                glm::uvec4 meta;                  // .x = count
+                glm::vec4  plates[ 2 * kMaxPlates ];
+            };
+            GPUPlateBuffer buf{};
+            buf.meta = glm::uvec4( 0u );
+
+            uint32_t plateCount = 0;
+            for( const auto& g : blueprint.GetGroups() )
+            {
+                for( const auto& r : g.GetBehaviours() )
+                {
+                    if( const auto* bm = std::get_if<Behaviours::BasementMembrane>( &r.behaviour ) )
+                    {
+                        if( plateCount >= kMaxPlates )
+                        {
+                            DT_WARN( "[SimulationBuilder] Exceeded MAX_PLATES=" + std::to_string( kMaxPlates ) +
+                                     " — dropping extra BasementMembrane behaviours." );
+                            break;
+                        }
+                        glm::vec3 n    = bm->planeNormal;
+                        float     nLen = glm::length( n );
+                        if( nLen > 0.0001f ) n /= nLen;
+
+                        buf.plates[ 2 * plateCount + 0 ] = glm::vec4( n, bm->height );
+                        buf.plates[ 2 * plateCount + 1 ] = glm::vec4( bm->contactStiffness,
+                                                                      bm->integrinAdhesion,
+                                                                      bm->anchorageDistance,
+                                                                      bm->polarityBias );
+                        ++plateCount;
+                    }
+                }
+                if( plateCount >= kMaxPlates ) break;
+            }
+            buf.meta.x = plateCount;
+
+            outState.basementMembraneBuffer = m_resourceManager->CreateBuffer(
+                { sizeof( GPUPlateBuffer ), BufferType::STORAGE, "BasementMembraneBuffer" } );
+            m_streamingManager->UploadBufferImmediate(
+                { { outState.basementMembraneBuffer, &buf, sizeof( GPUPlateBuffer ), 0 } } );
+
+            if( plateCount > 0 )
+                DT_INFO( "[SimulationBuilder] Compiled " + std::to_string( plateCount ) +
+                         " BasementMembrane plate(s)." );
+        }
+
         // Pre-pass: allocate polarity buffer. Always allocated so JKR binding 9 is always valid.
         {
             bool hasPolarity = false;
@@ -882,6 +945,7 @@ namespace DigitalTwin
                         bg0->Bind( 3, m_resourceManager->GetBuffer( outState.hashBuffer ) );
                         bg0->Bind( 4, m_resourceManager->GetBuffer( outState.offsetBuffer ) );
                         bg0->Bind( 5, m_resourceManager->GetBuffer( outState.phenotypeBuffer ) );
+                        bg0->Bind( 6, m_resourceManager->GetBuffer( outState.basementMembraneBuffer ) );
                         bg0->Build();
 
                         BindingGroup* bg1 = m_resourceManager->GetBindingGroup( m_resourceManager->CreateBindingGroup( polarityPipeHandle, 0 ) );
@@ -891,6 +955,7 @@ namespace DigitalTwin
                         bg1->Bind( 3, m_resourceManager->GetBuffer( outState.hashBuffer ) );
                         bg1->Bind( 4, m_resourceManager->GetBuffer( outState.offsetBuffer ) );
                         bg1->Bind( 5, m_resourceManager->GetBuffer( outState.phenotypeBuffer ) );
+                        bg1->Bind( 6, m_resourceManager->GetBuffer( outState.basementMembraneBuffer ) );
                         bg1->Build();
 
                         ComputePushConstants polPC{};
@@ -898,6 +963,7 @@ namespace DigitalTwin
                         polPC.fParam1      = interactionRadius;
                         polPC.fParam2      = static_cast<float>( static_cast<int32_t>( static_cast<uint32_t>( record.requiredLifecycleState ) ) );
                         polPC.fParam3      = static_cast<float>( static_cast<int32_t>( static_cast<uint32_t>( record.requiredCellType ) ) );
+                        polPC.fParam4      = pol.propagationStrength; // Phase 4.5 — junctional coupling weight
                         polPC.offset       = preOffset;
                         polPC.maxCapacity  = globalHashCapacity;
                         polPC.uParam0      = offsetArraySize;
@@ -1061,6 +1127,7 @@ namespace DigitalTwin
                     bgJkr0->Bind( 9, m_resourceManager->GetBuffer( outState.polarityBuffer ) );
                     bgJkr0->Bind( 10, m_resourceManager->GetBuffer( outState.orientationBuffer ) );
                     bgJkr0->Bind( 11, m_resourceManager->GetBuffer( outState.contactHullBuffer ) );
+                    bgJkr0->Bind( 12, m_resourceManager->GetBuffer( outState.basementMembraneBuffer ) );
                     bgJkr0->Build();
 
                     BindingGroup* bgJkr1 = m_resourceManager->GetBindingGroup( m_resourceManager->CreateBindingGroup( jkrPipeHandle, 0 ) );
@@ -1079,6 +1146,7 @@ namespace DigitalTwin
                     bgJkr1->Bind( 9, m_resourceManager->GetBuffer( outState.polarityBuffer ) );
                     bgJkr1->Bind( 10, m_resourceManager->GetBuffer( outState.orientationBuffer ) );
                     bgJkr1->Bind( 11, m_resourceManager->GetBuffer( outState.contactHullBuffer ) );
+                    bgJkr1->Bind( 12, m_resourceManager->GetBuffer( outState.basementMembraneBuffer ) );
                     bgJkr1->Build();
 
                     // 3. Configure Task specific parameters
@@ -1099,23 +1167,48 @@ namespace DigitalTwin
                     // Same convention as Anastomosis and Chemotaxis shaders.
                     jkrPC.domainSize           = glm::vec4( blueprint.GetDomainSize(), blueprint.GetSpatialPartitioning().cellSize );
 
-                    // Cadherin-scaled adhesion: check if this group also has CadherinAdhesion
+                    // Cadherin-scaled adhesion: check if this group also has CadherinAdhesion.
+                    // gridSize.x is a composite field:
+                    //   bit 0       = cadherin active flag
+                    //   bits 1..8   = catchBondStrength × 51 (Phase 5; 8-bit fixed-point
+                    //                 mapping [0, 5] → [0, 255])
+                    //   bits 16..31 = packHalf2x16 upper half = corticalTension (Biomechanics)
+                    // gridSize.y:
+                    //   packHalf2x16(catchBondPeakLoad, couplingStrength) — both half-floats.
+                    //   couplingStrength precision drops from fp32 → fp16 (~3 decimal digits),
+                    //   acceptable for a multiplier typically in [0, 10].
                     {
                         const Behaviours::CadherinAdhesion* cadherin = nullptr;
                         for( const auto& r: group.GetBehaviours() )
                             if( const auto* c = std::get_if<Behaviours::CadherinAdhesion>( &r.behaviour ) )
                                 { cadherin = c; break; }
-                        jkrPC.gridSize.x = cadherin ? 1u : 0u;
-                        jkrPC.gridSize.y = cadherin ? *reinterpret_cast<const uint32_t*>( &cadherin->couplingStrength ) : 0u;
+                        uint32_t cadFlag       = cadherin ? 1u : 0u;
+                        uint32_t tensionPacked = glm::packHalf2x16( glm::vec2( 0.0f, biomechanics.corticalTension ) );
+                        uint32_t catchStrengthBits = 0u;
+                        if( cadherin )
+                        {
+                            float   clamped = glm::clamp( cadherin->catchBondStrength / 5.0f, 0.0f, 1.0f );
+                            catchStrengthBits = static_cast<uint32_t>( clamped * 255.0f + 0.5f ) & 0xFFu;
+                        }
+                        jkrPC.gridSize.x = cadFlag | ( catchStrengthBits << 1 ) | ( tensionPacked & 0xFFFF0000u );
+                        jkrPC.gridSize.y = cadherin
+                            ? glm::packHalf2x16( glm::vec2( cadherin->catchBondPeakLoad, cadherin->couplingStrength ) )
+                            : 0u;
                     }
 
-                    // Polarity-modulated adhesion: check if this group also has CellPolarity
+                    // Polarity-modulated adhesion: check if this group also has CellPolarity.
+                    // gridSize.z layout (Phase 4.5-B):
+                    //   bit 0       = polarity active flag
+                    //   bits 16..31 = packHalf2x16 upper half = lateralAdhesionScale
+                    //                 (Biomechanics cadherin-belt translational pull)
                     {
                         const Behaviours::CellPolarity* polarity = nullptr;
                         for( const auto& r: group.GetBehaviours() )
                             if( const auto* p = std::get_if<Behaviours::CellPolarity>( &r.behaviour ) )
                                 { polarity = p; break; }
-                        jkrPC.gridSize.z = polarity ? 1u : 0u;
+                        uint32_t polFlag       = polarity ? 1u : 0u;
+                        uint32_t lateralPacked = glm::packHalf2x16( glm::vec2( 0.0f, biomechanics.lateralAdhesionScale ) );
+                        jkrPC.gridSize.z = polFlag | ( lateralPacked & 0xFFFF0000u );
                         jkrPC.gridSize.w = polarity
                             ? glm::packHalf2x16( glm::vec2( polarity->apicalRepulsion, polarity->basalAdhesion ) )
                             : 0u;
@@ -2232,22 +2325,41 @@ namespace DigitalTwin
                         pc.fParam4                = bio.dampingCoefficient;
                         pc.fParam5                = bio.maxRadius;
                         // domainSize.w holds the spatial hash cell size — do NOT overwrite with maxRadius
-                        // Update cadherin coupling flag in case couplingStrength changed via HotReload
+                        // Update cadherin coupling flag + Phase 5 catch-bond params in case
+                        // anything changed via HotReload. gridSize.x / .y layout mirrors the
+                        // initial compile path:
+                        //   x: bit 0 = cadherin flag; bits 1..8 = catchBondStrength × 51;
+                        //      bits 16..31 = corticalTension (half float).
+                        //   y: packHalf2x16(catchBondPeakLoad, couplingStrength)
                         {
                             const Behaviours::CadherinAdhesion* cadherin = nullptr;
                             for( const auto& r: group.GetBehaviours() )
                                 if( const auto* c = std::get_if<Behaviours::CadherinAdhesion>( &r.behaviour ) )
                                     { cadherin = c; break; }
-                            pc.gridSize.x = cadherin ? 1u : 0u;
-                            pc.gridSize.y = cadherin ? *reinterpret_cast<const uint32_t*>( &cadherin->couplingStrength ) : 0u;
+                            uint32_t cadFlag       = cadherin ? 1u : 0u;
+                            uint32_t tensionPacked = glm::packHalf2x16( glm::vec2( 0.0f, bio.corticalTension ) );
+                            uint32_t catchStrengthBits = 0u;
+                            if( cadherin )
+                            {
+                                float   clamped = glm::clamp( cadherin->catchBondStrength / 5.0f, 0.0f, 1.0f );
+                                catchStrengthBits = static_cast<uint32_t>( clamped * 255.0f + 0.5f ) & 0xFFu;
+                            }
+                            pc.gridSize.x = cadFlag | ( catchStrengthBits << 1 ) | ( tensionPacked & 0xFFFF0000u );
+                            pc.gridSize.y = cadherin
+                                ? glm::packHalf2x16( glm::vec2( cadherin->catchBondPeakLoad, cadherin->couplingStrength ) )
+                                : 0u;
                         }
-                        // Update polarity flag in case apicalRepulsion/basalAdhesion changed via HotReload
+                        // Update polarity flag + lateralAdhesionScale (Phase 4.5-B) in case
+                        // any parameter changed via HotReload. gridSize.z: bit 0 = polarity
+                        // active flag; bits 16..31 = half-packed lateralAdhesionScale.
                         {
                             const Behaviours::CellPolarity* polarity = nullptr;
                             for( const auto& r: group.GetBehaviours() )
                                 if( const auto* p = std::get_if<Behaviours::CellPolarity>( &r.behaviour ) )
                                     { polarity = p; break; }
-                            pc.gridSize.z = polarity ? 1u : 0u;
+                            uint32_t polFlag       = polarity ? 1u : 0u;
+                            uint32_t lateralPacked = glm::packHalf2x16( glm::vec2( 0.0f, bio.lateralAdhesionScale ) );
+                            pc.gridSize.z = polFlag | ( lateralPacked & 0xFFFF0000u );
                             pc.gridSize.w = polarity
                                 ? glm::packHalf2x16( glm::vec2( polarity->apicalRepulsion, polarity->basalAdhesion ) )
                                 : 0u;
@@ -2257,10 +2369,11 @@ namespace DigitalTwin
                 }
                 else if( std::holds_alternative<Behaviours::CadherinAdhesion>( record.behaviour ) )
                 {
+                    const auto& cad = std::get<Behaviours::CadherinAdhesion>( record.behaviour );
+
                     ComputeTask* task = state.computeGraph.FindTask( "cadherin_expr" + tagBase );
                     if( task )
                     {
-                        const auto&          cad = std::get<Behaviours::CadherinAdhesion>( record.behaviour );
                         ComputePushConstants pc   = task->GetPushConstants();
                         pc.fParam0               = cad.expressionRate;
                         pc.fParam1               = cad.degradationRate;
@@ -2270,6 +2383,27 @@ namespace DigitalTwin
                         pc.fParam5               = cad.targetExpression.w;
                         pc.uParam0               = static_cast<uint32_t>( record.requiredLifecycleState );
                         task->UpdatePushConstants( pc );
+                    }
+
+                    // Phase 5 — propagate couplingStrength / catchBondStrength /
+                    // catchBondPeakLoad into the JKR task's push constants when the
+                    // user edits CadherinAdhesion via the inspector. Mirrors the
+                    // encoding in the initial-compile + Biomechanics hot-reload paths.
+                    ComputeTask* jkrTask = state.computeGraph.FindTask( "jkr" + tagBase );
+                    if( jkrTask )
+                    {
+                        ComputePushConstants pc = jkrTask->GetPushConstants();
+                        float corticalTension = 0.0f;
+                        float lateralScale    = 0.0f;
+                        for( const auto& r: group.GetBehaviours() )
+                            if( const auto* bio = std::get_if<Behaviours::Biomechanics>( &r.behaviour ) )
+                            { corticalTension = bio->corticalTension; lateralScale = bio->lateralAdhesionScale; break; }
+                        uint32_t tensionPacked = glm::packHalf2x16( glm::vec2( 0.0f, corticalTension ) );
+                        float    clamped = glm::clamp( cad.catchBondStrength / 5.0f, 0.0f, 1.0f );
+                        uint32_t catchStrengthBits = static_cast<uint32_t>( clamped * 255.0f + 0.5f ) & 0xFFu;
+                        pc.gridSize.x = 1u | ( catchStrengthBits << 1 ) | ( tensionPacked & 0xFFFF0000u );
+                        pc.gridSize.y = glm::packHalf2x16( glm::vec2( cad.catchBondPeakLoad, cad.couplingStrength ) );
+                        jkrTask->UpdatePushConstants( pc );
                     }
                 }
                 else if( std::holds_alternative<Behaviours::CellPolarity>( record.behaviour ) )
@@ -2288,6 +2422,7 @@ namespace DigitalTwin
                                 { pc.fParam1 = bio->maxRadius; break; }
                         pc.fParam2               = static_cast<float>( static_cast<int32_t>( static_cast<uint32_t>( record.requiredLifecycleState ) ) );
                         pc.fParam3               = static_cast<float>( static_cast<int32_t>( static_cast<uint32_t>( record.requiredCellType ) ) );
+                        pc.fParam4               = pol.propagationStrength; // Phase 4.5 — hot-reload junctional coupling weight
                         task->UpdatePushConstants( pc );
                     }
                 }
@@ -2419,6 +2554,48 @@ namespace DigitalTwin
                 behaviourIndex++;
             }
             groupIndex++;
+        }
+
+        // ── Basement-membrane plates (hot reload, Step B) ─────────────────────
+        // Scan for ALL BasementMembrane behaviours across all groups. Re-upload
+        // the plate buffer with current parameters. Enables multi-plate live-
+        // editing and toggling plates off by removing behaviours between reloads.
+        if( state.basementMembraneBuffer.IsValid() )
+        {
+            constexpr uint32_t kMaxPlates = 8;
+            struct GPUPlateBuffer {
+                glm::uvec4 meta;
+                glm::vec4  plates[ 2 * kMaxPlates ];
+            };
+            GPUPlateBuffer buf{};
+            buf.meta = glm::uvec4( 0u );
+
+            uint32_t plateCount = 0;
+            for( const auto& g : blueprint.GetGroups() )
+            {
+                for( const auto& r : g.GetBehaviours() )
+                {
+                    if( const auto* bm = std::get_if<Behaviours::BasementMembrane>( &r.behaviour ) )
+                    {
+                        if( plateCount >= kMaxPlates ) break;
+                        glm::vec3 n    = bm->planeNormal;
+                        float     nLen = glm::length( n );
+                        if( nLen > 0.0001f ) n /= nLen;
+
+                        buf.plates[ 2 * plateCount + 0 ] = glm::vec4( n, bm->height );
+                        buf.plates[ 2 * plateCount + 1 ] = glm::vec4( bm->contactStiffness,
+                                                                      bm->integrinAdhesion,
+                                                                      bm->anchorageDistance,
+                                                                      bm->polarityBias );
+                        ++plateCount;
+                    }
+                }
+                if( plateCount >= kMaxPlates ) break;
+            }
+            buf.meta.x = plateCount;
+
+            m_streamingManager->UploadBufferImmediate(
+                { { state.basementMembraneBuffer, &buf, sizeof( GPUPlateBuffer ), 0 } } );
         }
     }
 

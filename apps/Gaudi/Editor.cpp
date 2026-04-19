@@ -231,17 +231,44 @@ namespace Gaudi
               "differential adhesion, steric repulsion, chemotaxis.",
               &Demos::SetupCellMechanicsZooDemo },
 
-            { "Endothelial Tube",
-              "200 VE-cadherin endothelial cells start randomly\n"
-              "scattered inside a solid cylinder.\n\n"
-              "Apical-basal polarity develops from neighbor\n"
-              "geometry: surface cells polarise outward (w->1),\n"
-              "interior cells stay symmetric (w->0).\n\n"
-              "Polarity-modulated JKR weakens interior contacts\n"
-              "-> cavity opens -> lumenised tube self-assembles.\n\n"
-              "Demonstrates: CellPolarity + CadherinAdhesion,\n"
-              "lumen morphogenesis (Nakamura 2026).",
-              &Demos::SetupEndothelialTubeDemo },
+            { "EC Blob (suspension / hanging drop)",
+              "~100 VE-cadherin endothelial cells in a 3D cloud with\n"
+              "NO substrate. Biology: hanging drop / ULA culture.\n\n"
+              "Expected: solid spheroid(s) via cadherin-belt junctions.\n"
+              "NO apical-basal polarity (no BM seed). NO lumen.\n\n"
+              "Paired negative control for EC 2D Matrigel.",
+              &Demos::SetupECBlobDemo },
+
+            { "EC 2D Matrigel (monolayer / cord)",
+              "Same ~100-cell drop as EC Blob, pipetted onto a 2D\n"
+              "Matrigel-like basement-membrane plate at y=0.\n\n"
+              "Biology: 2D Matrigel tube-formation assay (Kubota\n"
+              "1988, Arnaoutova 2009). ECs anchor to the BM via\n"
+              "integrin, flatten into a MONOLAYER, and form cord-\n"
+              "like networks over 4-24 h. NO hollow tube with lumen\n"
+              "— that phenotype requires 3D collagen gel (future\n"
+              "ECTubeDemo with volumetric ECM, roadmap item 5).\n\n"
+              "Positive control for EC Blob: the ONLY difference\n"
+              "between the two demos is the plate.",
+              &Demos::SetupEC2DMatrigelDemo },
+
+            { "EC Tube (3D ECM placeholder)",
+              "Same ~100-cell drop as EC Blob, now inside a four-\n"
+              "plate channel along +X. Floor + ceiling + two Z\n"
+              "walls frame the cluster, providing BM contact on\n"
+              "2-4 sides per cell.\n\n"
+              "Biology: 3D-ECM placeholder. Approximates the\n"
+              "collagen-gel environment where endothelial cords\n"
+              "can undergo hollowing (Strilic 2009). The flat-plate\n"
+              "channel is NOT a true 3D ECM — a volumetric ECM\n"
+              "primitive lands with roadmap item 5.\n\n"
+              "All three EC demos use IDENTICAL cell parameters;\n"
+              "phenotypic divergence comes purely from the\n"
+              "environment (no plate / one plate / four-plate\n"
+              "channel). Same cells, different substrates — the\n"
+              "classical positive/negative control experimental\n"
+              "design.",
+              &Demos::SetupECTubeDemo },
 
             { "Stress Test",
               "100,000 agents across 3 groups in a 250-unit domain.\n"

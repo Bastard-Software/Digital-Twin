@@ -248,6 +248,7 @@ namespace Gaudi
             if constexpr( std::is_same_v<T, DigitalTwin::Behaviours::VesselSpring> )     return "Behaviour — Vessel Spring";
             if constexpr( std::is_same_v<T, DigitalTwin::Behaviours::VesselSeed> )       return "Behaviour — Vessel Seed";
             if constexpr( std::is_same_v<T, DigitalTwin::Behaviours::PhalanxActivation> ) return "Behaviour — Phalanx Activation";
+            if constexpr( std::is_same_v<T, DigitalTwin::Behaviours::BasementMembrane> ) return "Behaviour — Basement Membrane";
             return "Behaviour";
         }, record.behaviour );
         ImGui::TextDisabled( "%s", behaviourTypeName );
@@ -302,9 +303,22 @@ namespace Gaudi
                 }
                 else if constexpr( std::is_same_v<T, DigitalTwin::Behaviours::CellPolarity> )
                 {
-                    changed |= ImGui::SliderFloat( "Regulation Rate",   &b.regulationRate,  0.0f, 1.0f, "%.3f" );
-                    changed |= ImGui::SliderFloat( "Apical Repulsion",  &b.apicalRepulsion, 0.0f, 1.0f );
-                    changed |= ImGui::SliderFloat( "Basal Adhesion",    &b.basalAdhesion,   1.0f, 3.0f );
+                    changed |= ImGui::SliderFloat( "Regulation Rate",     &b.regulationRate,     0.0f, 1.0f, "%.3f" );
+                    // Apical Repulsion range spans negative: Phase 3+ uses
+                    // negative values for active apical-apical repulsion (PODXL).
+                    changed |= ImGui::SliderFloat( "Apical Repulsion",    &b.apicalRepulsion,   -2.0f, 2.0f );
+                    changed |= ImGui::SliderFloat( "Basal Adhesion",      &b.basalAdhesion,      0.0f, 5.0f );
+                    // Phase 4.5: junctional propagation weight (PAR/Crumbs cascade).
+                    changed |= ImGui::SliderFloat( "Propagation Strength", &b.propagationStrength, 0.0f, 2.0f );
+                }
+                else if constexpr( std::is_same_v<T, DigitalTwin::Behaviours::BasementMembrane> )
+                {
+                    changed |= ImGui::SliderFloat3( "Plane Normal",      &b.planeNormal.x,    -1.0f, 1.0f );
+                    changed |= ImGui::SliderFloat ( "Height",            &b.height,           -10.0f, 10.0f );
+                    changed |= ImGui::SliderFloat ( "Contact Stiffness", &b.contactStiffness, 0.0f, 100.0f );
+                    changed |= ImGui::SliderFloat ( "Integrin Adhesion", &b.integrinAdhesion, 0.0f, 10.0f );
+                    changed |= ImGui::SliderFloat ( "Anchorage Distance",&b.anchorageDistance,0.05f, 5.0f );
+                    changed |= ImGui::SliderFloat ( "Polarity Bias",     &b.polarityBias,     0.0f, 5.0f );
                 }
                 else if constexpr( std::is_same_v<T, DigitalTwin::Behaviours::CadherinAdhesion> )
                 {
@@ -317,14 +331,20 @@ namespace Gaudi
                     changed |= ImGui::SliderFloat( "Expression Rate",   &b.expressionRate,   0.0f, 5.0f,  "%.4f" );
                     changed |= ImGui::SliderFloat( "Degradation Rate",  &b.degradationRate,  0.0f, 0.01f, "%.5f" );
                     changed |= ImGui::SliderFloat( "Coupling Strength", &b.couplingStrength, 0.0f, 5.0f );
+                    ImGui::Spacing();
+                    ImGui::SeparatorText( "Catch-Bond (Rakshit 2012)" );
+                    changed |= ImGui::SliderFloat( "Catch-Bond Strength",  &b.catchBondStrength, 0.0f, 5.0f );
+                    changed |= ImGui::SliderFloat( "Catch-Bond Peak Load", &b.catchBondPeakLoad, 0.05f, 1.0f );
                     ImGui::TextDisabled( "Affinity matrix set via blueprint API" );
                 }
                 else if constexpr( std::is_same_v<T, DigitalTwin::Behaviours::Biomechanics> )
                 {
-                    changed |= ImGui::SliderFloat( "Repulsion Stiffness", &b.repulsionStiffness, 0.0f, 100.0f );
-                    changed |= ImGui::SliderFloat( "Adhesion Strength", &b.adhesionStrength, 0.0f, 20.0f );
-                    changed |= ImGui::SliderFloat( "Max Radius", &b.maxRadius, 0.5f, 5.0f );
-                    changed |= ImGui::SliderFloat( "Damping", &b.dampingCoefficient, 0.0f, 300.0f );
+                    changed |= ImGui::SliderFloat( "Repulsion Stiffness",    &b.repulsionStiffness,    0.0f, 100.0f );
+                    changed |= ImGui::SliderFloat( "Adhesion Strength",      &b.adhesionStrength,      0.0f, 20.0f );
+                    changed |= ImGui::SliderFloat( "Max Radius",             &b.maxRadius,             0.5f, 5.0f );
+                    changed |= ImGui::SliderFloat( "Damping",                &b.dampingCoefficient,    0.0f, 300.0f );
+                    changed |= ImGui::SliderFloat( "Cortical Tension",       &b.corticalTension,       0.0f, 20.0f );
+                    changed |= ImGui::SliderFloat( "Lateral Adhesion Scale", &b.lateralAdhesionScale,  0.0f, 1.0f );
                 }
                 else if constexpr( std::is_same_v<T, DigitalTwin::Behaviours::CellCycle> )
                 {

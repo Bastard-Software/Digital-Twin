@@ -275,9 +275,9 @@ namespace Gaudi
             }, true },
 
             { "Vessels", {
-                // Populated phase-by-phase: Phase 2.1 adds TwoShape (this entry);
-                // Phases 2.2+ will append PuzzlePiecePalette, StraightTube,
-                // TaperingTube, BranchingTree, DesignedVessel.
+                // Populated phase-by-phase: Phase 2.1 adds TwoShape; Phase 2.2 adds
+                // PuzzlePiecePalette; Phases 2.3+ will append StraightTube, TaperingTube,
+                // BranchingTree, DesignedVessel.
                 { "Two Shape",
                   "Phase 2.1 engine-plumbing verification. A single AgentGroup\n"
                   "contains 50 cells split 50/50 across two mesh variants:\n"
@@ -289,6 +289,21 @@ namespace Gaudi
                   "variant match). No biology, no physics - just the plumbing\n"
                   "needed for Phase 2.2's real puzzle-piece primitives.",
                   &Demos::SetupTwoShapeDemo },
+
+                { "Puzzle Piece Palette",
+                  "Phase 2.2 puzzle-piece primitive palette. Four cells in a row,\n"
+                  "each rendering a distinct morphology variant inside a single\n"
+                  "AgentGroup (Phase 2.1 per-cell dispatch):\n"
+                  "  x = -4.5   CurvedTile      (Item 1 reference tile)\n"
+                  "  x = -1.5   ElongatedQuad   (Davies 2009 flow-aligned EC)\n"
+                  "  x = +1.5   PentagonDefect  (+pi/3 Gaussian curvature)\n"
+                  "  x = +4.5   HeptagonDefect  (-pi/3 Gaussian curvature)\n\n"
+                  "Static render verification only. Phases 2.3+ compose these\n"
+                  "variants onto vessel surfaces with adaptive ring counts\n"
+                  "(Aird 2007) and Stone-Wales 5/7 defect insertion at diameter\n"
+                  "transitions + bifurcation carinas (Stone & Wales 1986;\n"
+                  "Chiu & Chien 2011).",
+                  &Demos::SetupPuzzlePiecePaletteDemo },
             }, false },
         };
 

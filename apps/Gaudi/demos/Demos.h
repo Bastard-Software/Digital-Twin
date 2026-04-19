@@ -22,7 +22,8 @@ namespace Gaudi::Demos
     void SetupStressTestDemo       ( DigitalTwin::SimulationBlueprint& blueprint );
 
     // Vessels (Item 2)
-    void SetupTwoShapeDemo         ( DigitalTwin::SimulationBlueprint& blueprint );
+    void SetupTwoShapeDemo           ( DigitalTwin::SimulationBlueprint& blueprint );
+    void SetupPuzzlePiecePaletteDemo ( DigitalTwin::SimulationBlueprint& blueprint );
 
     // Shared helper — defined in ECBlobDemo.cpp, reused by EC2DMatrigelDemo.cpp.
     // Populates the given AgentGroup with an elongated random cloud of ~100

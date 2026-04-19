@@ -1,5 +1,6 @@
 #include "SetupHelpers.h"
 #include "resources/ResourceManager.h"
+#include <glm/gtc/constants.hpp>
 #include <glm/gtc/packing.hpp>
 #include "resources/StreamingManager.h"
 #include "rhi/BindingGroup.h"
@@ -10,6 +11,7 @@
 #include "rhi/RHI.h"
 #include "rhi/Texture.h"
 #include "rhi/ThreadContext.h"
+#include "simulation/MorphologyGenerator.h"
 #include "simulation/SimulationBlueprint.h"
 #include "simulation/SimulationBuilder.h"
 #include "simulation/Phenotype.h"
@@ -4427,4 +4429,171 @@ TEST_F( ComputeTest, RigidBody_LateralAdhesion_ScalesLinearly )
     EXPECT_NEAR( ratio, 2.0f, 0.3f )
         << "Lateral adhesion must scale linearly in the parameter "
         << "(dsep@0.2 / dsep@0.1 = " << ratio << ", expected ≈ 2.0)";
+}
+
+// ==================================================================================================
+// Phase 2.2 — Puzzle-piece primitive contact tests (pentagon + heptagon + elongated quad hulls).
+// Dispatches jkr_forces.comp with hulls built from MorphologyGenerator's new primitives,
+// verifying that the 10/14-point contactHull arrays cooperate correctly with the existing JKR
+// rigid-body path (torque + lateralAdhesionScale translation). Both cells share the buffer
+// (jkr_forces binds one hull buffer per AgentGroup), so the test takes one primitive's hull,
+// gives both cells the same hull, and breaks the X-axis symmetry by offsetting cell 1 laterally —
+// the configuration models a "cell with pentagon/heptagon/quad morphology edging into its
+// neighbour" without needing per-cell hull dispatch (a Phase 2.1+ architectural choice).
+// ==================================================================================================
+
+// 1. Pentagon hull + quad-like asymmetric offset: torque fires, lateral adhesion closes the gap.
+// Pentagon's 10 corner/edge-midpoint sub-spheres produce multiple overlapping pair contacts.
+// Asymmetric X-offset breaks the 5-fold symmetry so the summed hull torque is non-zero.
+TEST_F( ComputeTest, RigidBody_PentagonQuadContact_ProducesAdhesionTorque )
+{
+    if( !m_device )
+        GTEST_SKIP();
+
+    auto pent = MorphologyGenerator::CreatePentagonDefect( /*radius=*/0.5f, /*thickness=*/0.5f );
+    ASSERT_EQ( pent.contactHull.size(), 10u );
+
+    std::vector<glm::vec4> pos = { glm::vec4( 0.0f, 0.0f, 0.0f, 1.0f ),
+                                   glm::vec4( 0.1f, 0.3f, 0.0f, 1.0f ) }; // +X offset breaks symmetry
+    std::vector<glm::vec4> ori = { glm::vec4( 0.0f, 0.0f, 0.0f, 1.0f ),
+                                   glm::vec4( 0.0f, 0.0f, 0.0f, 1.0f ) };
+
+    // Baseline: lateralAdhesionScale=0 — hull path fires torque, but no translation.
+    auto rBase = RunJKRRigidBody( m_device.get(), m_rm.get(), m_stream.get(),
+                                   pos, ori,
+                                   static_cast<uint32_t>( pent.contactHull.size() ),
+                                   pent.contactHull,
+                                   /*repulsion=*/0.0f, /*adhesion=*/5.0f, /*maxRadius=*/0.35f,
+                                   /*damping=*/0.0f, /*dt=*/1.0f,
+                                   /*stericZ=*/0.0f, /*stericY=*/0.0f,
+                                   /*edgeAlign=*/0.0f, /*cadherinCoupling=*/1.0f,
+                                   /*lateralAdhesionScale=*/0.0f );
+
+    auto rLat = RunJKRRigidBody( m_device.get(), m_rm.get(), m_stream.get(),
+                                  pos, ori,
+                                  static_cast<uint32_t>( pent.contactHull.size() ),
+                                  pent.contactHull,
+                                  /*repulsion=*/0.0f, /*adhesion=*/5.0f, /*maxRadius=*/0.35f,
+                                  /*damping=*/0.0f, /*dt=*/1.0f,
+                                  /*stericZ=*/0.0f, /*stericY=*/0.0f,
+                                  /*edgeAlign=*/0.0f, /*cadherinCoupling=*/1.0f,
+                                  /*lateralAdhesionScale=*/0.15f );
+
+    // Torque: asymmetric hull contact produces a non-zero orientation change on cell 0.
+    glm::vec3 rotAxis0( rBase.orientations[0].x, rBase.orientations[0].y, rBase.orientations[0].z );
+    EXPECT_GT( glm::length( rotAxis0 ), 1e-4f )
+        << "Pentagon hull edge-contact must produce a non-zero rotation on cell 0";
+
+    // Lateral translation: with lateralAdhesionScale=0.15 the Y-gap shrinks vs baseline.
+    float sepBase = rBase.positions[1].y - rBase.positions[0].y;
+    float sepLat  = rLat .positions[1].y - rLat .positions[0].y;
+    EXPECT_LT( sepLat, sepBase )
+        << "lateralAdhesionScale=0.15 must pull pentagon-hull cells closer "
+        << "(lateral=" << sepLat << " vs baseline=" << sepBase << ")";
+}
+
+// 2. Same assertion with the heptagon hull (14 sub-spheres instead of 10).
+// Heptagon still fits within the 16-point contactHull budget, so no shader changes required.
+TEST_F( ComputeTest, RigidBody_HeptagonQuadContact_ProducesAdhesionTorque )
+{
+    if( !m_device )
+        GTEST_SKIP();
+
+    auto hept = MorphologyGenerator::CreateHeptagonDefect( /*radius=*/0.5f, /*thickness=*/0.5f );
+    ASSERT_EQ( hept.contactHull.size(), 14u );
+
+    std::vector<glm::vec4> pos = { glm::vec4( 0.0f, 0.0f, 0.0f, 1.0f ),
+                                   glm::vec4( 0.1f, 0.3f, 0.0f, 1.0f ) };
+    std::vector<glm::vec4> ori = { glm::vec4( 0.0f, 0.0f, 0.0f, 1.0f ),
+                                   glm::vec4( 0.0f, 0.0f, 0.0f, 1.0f ) };
+
+    auto rBase = RunJKRRigidBody( m_device.get(), m_rm.get(), m_stream.get(),
+                                   pos, ori,
+                                   static_cast<uint32_t>( hept.contactHull.size() ),
+                                   hept.contactHull,
+                                   /*repulsion=*/0.0f, /*adhesion=*/5.0f, /*maxRadius=*/0.35f,
+                                   /*damping=*/0.0f, /*dt=*/1.0f,
+                                   /*stericZ=*/0.0f, /*stericY=*/0.0f,
+                                   /*edgeAlign=*/0.0f, /*cadherinCoupling=*/1.0f,
+                                   /*lateralAdhesionScale=*/0.0f );
+
+    auto rLat = RunJKRRigidBody( m_device.get(), m_rm.get(), m_stream.get(),
+                                  pos, ori,
+                                  static_cast<uint32_t>( hept.contactHull.size() ),
+                                  hept.contactHull,
+                                  /*repulsion=*/0.0f, /*adhesion=*/5.0f, /*maxRadius=*/0.35f,
+                                  /*damping=*/0.0f, /*dt=*/1.0f,
+                                  /*stericZ=*/0.0f, /*stericY=*/0.0f,
+                                  /*edgeAlign=*/0.0f, /*cadherinCoupling=*/1.0f,
+                                  /*lateralAdhesionScale=*/0.15f );
+
+    glm::vec3 rotAxis0( rBase.orientations[0].x, rBase.orientations[0].y, rBase.orientations[0].z );
+    EXPECT_GT( glm::length( rotAxis0 ), 1e-4f )
+        << "Heptagon hull edge-contact must produce a non-zero rotation on cell 0";
+
+    float sepBase = rBase.positions[1].y - rBase.positions[0].y;
+    float sepLat  = rLat .positions[1].y - rLat .positions[0].y;
+    EXPECT_LT( sepLat, sepBase )
+        << "lateralAdhesionScale=0.15 must pull heptagon-hull cells closer "
+        << "(lateral=" << sepLat << " vs baseline=" << sepBase << ")";
+}
+
+// 3. Pentagon-heptagon edge-length meshing (CPU-side geometric assertion).
+// Stone-Wales 5/7 pair insertion at diameter transitions depends on the pentagon's
+// edge length matching the heptagon's edge length so their hull sub-spheres overlap
+// correctly when the two polygons tile edge-to-edge (Stone & Wales 1986; Iijima 1991
+// for carbon-nanotube chirality transitions). This test verifies that when the two
+// radii are chosen by the edge-length rule `r_p·sin(pi/5) = r_h·sin(pi/7)`, the
+// pentagon's edge-midpoint hull point and the heptagon's edge-midpoint hull point
+// can be placed within 2·subR (full overlap) by a centre-to-centre separation of
+// apothem_p + apothem_h — the configuration Phase 2.4 uses.
+TEST( MorphologyGeneratorTest, PentagonHeptagonPair_MeshesAtShortEdges )
+{
+    // Edge-length match: pick r_h relative to r_p so pentagon.edge = heptagon.edge.
+    const float r_p = 1.0f;
+    const float r_h = r_p * std::sin( glm::pi<float>() / 5.0f )
+                          / std::sin( glm::pi<float>() / 7.0f );
+
+    auto pent = MorphologyGenerator::CreatePentagonDefect( r_p, 0.4f );
+    auto hept = MorphologyGenerator::CreateHeptagonDefect( r_h, 0.4f );
+    ASSERT_EQ( pent.contactHull.size(), 10u );
+    ASSERT_EQ( hept.contactHull.size(), 14u );
+
+    // Edge-length equality (the Stone-Wales tessellation invariant).
+    const float pentEdge = 2.0f * r_p * std::sin( glm::pi<float>() / 5.0f );
+    const float heptEdge = 2.0f * r_h * std::sin( glm::pi<float>() / 7.0f );
+    EXPECT_NEAR( pentEdge, heptEdge, 1e-4f )
+        << "Stone-Wales pair requires pentagon & heptagon edge lengths to match";
+
+    // Place pentagon edge-midpoint (i=0 between corner 0 @ +X and corner 1) at +X pole
+    // of pentagon. Pentagon apothem + heptagon apothem along +X puts the heptagon's
+    // opposing edge-midpoint back at the pentagon's edge-midpoint within 2·subR.
+    const float apothem_p = r_p * std::cos( glm::pi<float>() / 5.0f );
+    const float apothem_h = r_h * std::cos( glm::pi<float>() / 7.0f );
+    const float subR      = 0.2f; // thickness/2 for both primitives
+
+    // Count hull-pair overlaps when cell 0 (pentagon at origin) meets cell 1 (heptagon at
+    // +X pole apothem_p + apothem_h away, rotated so an edge-midpoint faces cell 0).
+    // `overlap = 2·subR - d(point_pent, point_hept)`; count pairs with overlap > 0.
+    const glm::vec3 c1( apothem_p + apothem_h, 0.0f, 0.0f );
+    int overlapCount = 0;
+    for( const auto& pp : pent.contactHull )
+    {
+        glm::vec3 a( pp.x, pp.y, pp.z );
+        for( const auto& ph : hept.contactHull )
+        {
+            // Heptagon point rotated 180° around Y so it faces cell 0:
+            //   (x, y, z) → (-x, y, -z), then translated by +c1.
+            glm::vec3 b( -ph.x + c1.x, ph.y, -ph.z + c1.z );
+            float     d = glm::length( a - b );
+            if( d < 2.0f * subR ) ++overlapCount;
+        }
+    }
+
+    // Edge-matched Stone-Wales pair produces overlapping hull sub-spheres at the facing
+    // edge midpoints (and nearby corners). "≥ 2" is the deep-research 2026-04-19 threshold:
+    // gives the JKR shader enough overlapping contacts to hold the defect together under
+    // Phase-4.5-B lateral adhesion pull.
+    EXPECT_GE( overlapCount, 2 )
+        << "Pentagon-heptagon edge-matched pair must produce ≥ 2 overlapping hull pairs";
 }

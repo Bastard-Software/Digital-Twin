@@ -79,6 +79,80 @@ namespace DigitalTwin
                                                 uint32_t sectors = 4 );
 
         /**
+         * @brief Flow-aligned elongated rhomboidal tile for arterial / arteriolar ECs.
+         *
+         * Arterial ECs under laminar flow elongate along the flow axis via
+         * microtubule acetylation and VE-cadherin / PECAM-1 / VEGFR2 mechanosensing
+         * (Davies 2009 DOI 10.1038/nrcardio.2009.14; Baeyens 2016 DOI 10.7554/eLife.16533).
+         * Rhomboid geometry interlocks staggered (brick-pattern), preventing the
+         * longitudinal-seam instability that planar rectangles would exhibit under
+         * JKR + VE-cadherin catch-bond loads.
+         *
+         * Orientation at rest (no quaternion applied): outward face normal = +Y.
+         * Local coordinate convention matches CreateCurvedTile:
+         *   X = axial (flow direction, length extent)
+         *   Y = radial (thickness extent, outward face normal points +Y)
+         *   Z = circumferential (width extent, perpendicular to flow)
+         *
+         * Hull points: 8 (4 corners + 4 edge midpoints) on the Y=0 mid-plane,
+         * compatible with the 16-point jkr_forces.comp contactHull buffer.
+         *
+         * @param length          Tile length along the axial (flow) X direction.
+         * @param width           Tile width along the circumferential Z direction.
+         * @param thickness       Tile thickness along the radial Y direction.
+         * @param curvatureRadius Vessel inner radius (reserved for Phase 2.5 surface-conforming
+         *                        placement; Phase 2.2 ships flat tiles).
+         */
+        static MorphologyData CreateElongatedQuad( float length = 8.0f, float width = 1.0f,
+                                                   float thickness = 0.2f, float curvatureRadius = 0.0f );
+
+        /**
+         * @brief Pentagon Stone-Wales defect primitive (5-sided tile).
+         *
+         * Carries +pi/3 Gaussian curvature (Stone & Wales 1986 DOI 10.1016/0009-2614(86)80661-3).
+         * Sits on the NARROWER side of a diameter transition or at daughter-branch
+         * root rings where Murray's-law circumference expansion needs absorbing
+         * (Murray 1926 DOI 10.1073/pnas.12.3.207). Biologically justified at
+         * bifurcations by the cobblestone EC morphology observed at flow dividers
+         * (Chiu & Chien 2011 DOI 10.1152/physrev.00047.2009; van der Heiden 2013).
+         *
+         * Orientation at rest: outward face normal = +Y. Polygon lies in the X-Z
+         * plane with corner 0 pointing +X (axial/flow direction).
+         *
+         * Hull points: 10 (5 corners + 5 edge midpoints).
+         *
+         * @param radius          Circumscribed-circle radius of the pentagon.
+         * @param thickness       Tile thickness along the radial Y direction.
+         * @param curvatureRadius Vessel inner radius (reserved for Phase 2.5 surface-conforming
+         *                        placement; Phase 2.2 ships flat tiles).
+         */
+        static MorphologyData CreatePentagonDefect( float radius = 1.0f, float thickness = 0.2f,
+                                                    float curvatureRadius = 0.0f );
+
+        /**
+         * @brief Heptagon Stone-Wales defect primitive (7-sided tile).
+         *
+         * Carries -pi/3 Gaussian curvature. Sits on the WIDER side of a diameter
+         * transition or at the carina of a Y-bifurcation where the Gauss-Bonnet
+         * theorem mandates negative defects. Biologically: carina ECs are
+         * cobblestone polygonal cells under multi-directional WSS
+         * (Chiu & Chien 2011 DOI 10.1152/physrev.00047.2009; van der Heiden 2013).
+         *
+         * Orientation at rest: outward face normal = +Y. Polygon lies in the X-Z
+         * plane with corner 0 pointing +X (axial/flow direction).
+         *
+         * Hull points: 14 (7 corners + 7 edge midpoints), fits the 16-point
+         * contactHull buffer with no shader changes.
+         *
+         * @param radius          Circumscribed-circle radius of the heptagon.
+         * @param thickness       Tile thickness along the radial Y direction.
+         * @param curvatureRadius Vessel inner radius (reserved for Phase 2.5 surface-conforming
+         *                        placement; Phase 2.2 ships flat tiles).
+         */
+        static MorphologyData CreateHeptagonDefect( float radius = 1.0f, float thickness = 0.2f,
+                                                    float curvatureRadius = 0.0f );
+
+        /**
          * @brief Creates a spheroid morphology (ellipsoid of revolution).
          *        Prolate (radiusXZ < radiusY): elongated along Y — suitable for fibroblasts,
          *        neurons, and spindle-shaped mesenchymal cells.

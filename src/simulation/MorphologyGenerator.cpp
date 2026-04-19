@@ -562,6 +562,196 @@ namespace DigitalTwin
         return data;
     }
 
+    MorphologyData MorphologyGenerator::CreateElongatedQuad(
+        float length, float width, float thickness, float curvatureRadius )
+    {
+        (void)curvatureRadius; // Phase 2.2 ships flat tiles; Phase 2.5 will bend them on vessel surfaces.
+
+        MorphologyData data;
+        const float hl = length    * 0.5f; // axial  (X) half-extent — flow direction
+        const float hw = width     * 0.5f; // circumferential (Z) half-extent
+        const float ht = thickness * 0.5f; // radial (Y) half-extent — outward face normal at rest
+
+        // 24 vertices (4 per face). Convention matches CreateCurvedTile:
+        //   X = axial (length, flow direction)
+        //   Y = radial (thickness, outward face normal +Y at rest)
+        //   Z = circumferential (width)
+        data.vertices = {
+            // Top face — normal +Y (outward from vessel surface)
+            { { -hl, +ht, -hw, 1.0f }, { 0.0f,  1.0f, 0.0f, 0.0f } },
+            { { +hl, +ht, -hw, 1.0f }, { 0.0f,  1.0f, 0.0f, 0.0f } },
+            { { +hl, +ht, +hw, 1.0f }, { 0.0f,  1.0f, 0.0f, 0.0f } },
+            { { -hl, +ht, +hw, 1.0f }, { 0.0f,  1.0f, 0.0f, 0.0f } },
+            // Bottom face — normal -Y (toward vessel lumen)
+            { { -hl, -ht, +hw, 1.0f }, { 0.0f, -1.0f, 0.0f, 0.0f } },
+            { { +hl, -ht, +hw, 1.0f }, { 0.0f, -1.0f, 0.0f, 0.0f } },
+            { { +hl, -ht, -hw, 1.0f }, { 0.0f, -1.0f, 0.0f, 0.0f } },
+            { { -hl, -ht, -hw, 1.0f }, { 0.0f, -1.0f, 0.0f, 0.0f } },
+            // Front face — normal +Z (one circumferential side)
+            { { -hl, -ht, +hw, 1.0f }, { 0.0f, 0.0f,  1.0f, 0.0f } },
+            { { +hl, -ht, +hw, 1.0f }, { 0.0f, 0.0f,  1.0f, 0.0f } },
+            { { +hl, +ht, +hw, 1.0f }, { 0.0f, 0.0f,  1.0f, 0.0f } },
+            { { -hl, +ht, +hw, 1.0f }, { 0.0f, 0.0f,  1.0f, 0.0f } },
+            // Back face — normal -Z (other circumferential side)
+            { { +hl, -ht, -hw, 1.0f }, { 0.0f, 0.0f, -1.0f, 0.0f } },
+            { { -hl, -ht, -hw, 1.0f }, { 0.0f, 0.0f, -1.0f, 0.0f } },
+            { { -hl, +ht, -hw, 1.0f }, { 0.0f, 0.0f, -1.0f, 0.0f } },
+            { { +hl, +ht, -hw, 1.0f }, { 0.0f, 0.0f, -1.0f, 0.0f } },
+            // Right face — normal +X (axial cap, +flow end)
+            { { +hl, -ht, +hw, 1.0f }, { 1.0f, 0.0f, 0.0f, 0.0f } },
+            { { +hl, -ht, -hw, 1.0f }, { 1.0f, 0.0f, 0.0f, 0.0f } },
+            { { +hl, +ht, -hw, 1.0f }, { 1.0f, 0.0f, 0.0f, 0.0f } },
+            { { +hl, +ht, +hw, 1.0f }, { 1.0f, 0.0f, 0.0f, 0.0f } },
+            // Left face — normal -X (axial cap, -flow end)
+            { { -hl, -ht, -hw, 1.0f }, { -1.0f, 0.0f, 0.0f, 0.0f } },
+            { { -hl, -ht, +hw, 1.0f }, { -1.0f, 0.0f, 0.0f, 0.0f } },
+            { { -hl, +ht, +hw, 1.0f }, { -1.0f, 0.0f, 0.0f, 0.0f } },
+            { { -hl, +ht, -hw, 1.0f }, { -1.0f, 0.0f, 0.0f, 0.0f } },
+        };
+
+        data.indices = {
+             2,  1,  0,  0,  3,  2,  // Top
+             6,  5,  4,  4,  7,  6,  // Bottom
+             8,  9, 10, 10, 11,  8,  // Front
+            12, 13, 14, 14, 15, 12,  // Back
+            16, 17, 18, 18, 19, 16,  // Right (axial cap)
+            20, 21, 22, 22, 23, 20,  // Left  (axial cap)
+        };
+
+        // Hull: 8 points — 4 corners + 4 edge midpoints on the Y=0 mid-plane.
+        // Follows the "contact point at every corner AND every edge midpoint" rule
+        // (deep-research 2026-04-19; Phase 2.2 puzzle-piece tessellation).
+        const float subR = ht; // sub-sphere radius = thickness / 2
+        data.contactHull = {
+            // 4 corners
+            { -hl, 0.0f, -hw, subR },
+            { +hl, 0.0f, -hw, subR },
+            { +hl, 0.0f, +hw, subR },
+            { -hl, 0.0f, +hw, subR },
+            // 4 edge midpoints (2 axial ends, 2 circumferential sides)
+            { 0.0f, 0.0f, -hw, subR },
+            { 0.0f, 0.0f, +hw, subR },
+            { -hl, 0.0f, 0.0f, subR },
+            { +hl, 0.0f, 0.0f, subR },
+        };
+        data.hullExtentY = ht; // radial (thickness/2)
+        data.hullExtentZ = hw; // circumferential (width/2)
+
+        return data;
+    }
+
+    // Regular N-gon tile (flat) extruded along Y by `thickness`.  Outer face (+Y)
+    // corresponds to the abluminal side; bottom face (-Y) faces the vessel lumen.
+    // Corner 0 points +X (axial/flow), subsequent corners rotate counter-clockwise
+    // around Y. Hull: N corners + N edge midpoints on the Y=0 mid-plane.
+    static MorphologyData CreateRegularPolygonTile(
+        uint32_t N, float radius, float thickness, float curvatureRadius )
+    {
+        (void)curvatureRadius; // Phase 2.2 ships flat; Phase 2.5 will bend on vessel surfaces.
+
+        MorphologyData data;
+        const float hh = thickness * 0.5f;
+
+        auto cornerAngle = [&]( uint32_t i ) {
+            return static_cast<float>( i ) * 2.0f * glm::pi<float>() / static_cast<float>( N );
+        };
+        auto cornerPt = [&]( uint32_t i ) -> glm::vec3 {
+            float t = cornerAngle( i );
+            return glm::vec3( radius * cosf( t ), 0.0f, radius * sinf( t ) );
+        };
+
+        // ---- 1. Top face (fan from centre, normal +Y) ----
+        uint32_t topCenter = static_cast<uint32_t>( data.vertices.size() );
+        data.vertices.push_back( { glm::vec4( 0.0f, +hh, 0.0f, 1.0f ),
+                                   glm::vec4( 0.0f,  1.0f, 0.0f, 0.0f ) } );
+        uint32_t topRim = static_cast<uint32_t>( data.vertices.size() );
+        for( uint32_t i = 0; i < N; ++i )
+        {
+            glm::vec3 c = cornerPt( i );
+            data.vertices.push_back( { glm::vec4( c.x, +hh, c.z, 1.0f ),
+                                       glm::vec4( 0.0f, 1.0f, 0.0f, 0.0f ) } );
+        }
+        for( uint32_t i = 0; i < N; ++i )
+        {
+            uint32_t i0 = topRim + i;
+            uint32_t i1 = topRim + ( ( i + 1 ) % N );
+            data.indices.push_back( topCenter );
+            data.indices.push_back( i1 );
+            data.indices.push_back( i0 );
+        }
+
+        // ---- 2. Bottom face (fan, normal -Y, reversed winding) ----
+        uint32_t botCenter = static_cast<uint32_t>( data.vertices.size() );
+        data.vertices.push_back( { glm::vec4( 0.0f, -hh, 0.0f, 1.0f ),
+                                   glm::vec4( 0.0f, -1.0f, 0.0f, 0.0f ) } );
+        uint32_t botRim = static_cast<uint32_t>( data.vertices.size() );
+        for( uint32_t i = 0; i < N; ++i )
+        {
+            glm::vec3 c = cornerPt( i );
+            data.vertices.push_back( { glm::vec4( c.x, -hh, c.z, 1.0f ),
+                                       glm::vec4( 0.0f, -1.0f, 0.0f, 0.0f ) } );
+        }
+        for( uint32_t i = 0; i < N; ++i )
+        {
+            uint32_t i0 = botRim + i;
+            uint32_t i1 = botRim + ( ( i + 1 ) % N );
+            data.indices.push_back( botCenter );
+            data.indices.push_back( i0 );
+            data.indices.push_back( i1 );
+        }
+
+        // ---- 3. Edge band (one side quad per polygon edge, outward radial normals) ----
+        // Vertex layout per edge (base..base+3): t0 top-near, b0 bot-near, b1 bot-far, t1 top-far.
+        // Triangles (t0, t1, b0) + (t1, b1, b0) match CreateDisc's winding so the outward-
+        // radial normal faces the viewer from outside (Vulkan CCW front-face).
+        for( uint32_t i = 0; i < N; ++i )
+        {
+            glm::vec3 c0  = cornerPt( i );
+            glm::vec3 c1  = cornerPt( ( i + 1 ) % N );
+            glm::vec3 mid = 0.5f * ( c0 + c1 );
+            glm::vec3 nrm = glm::normalize( glm::vec3( mid.x, 0.0f, mid.z ) );
+            glm::vec4 n4( nrm, 0.0f );
+            uint32_t  base = static_cast<uint32_t>( data.vertices.size() );
+            data.vertices.push_back( { glm::vec4( c0.x, +hh, c0.z, 1.0f ), n4 } ); // base+0: t0 (top-near)
+            data.vertices.push_back( { glm::vec4( c0.x, -hh, c0.z, 1.0f ), n4 } ); // base+1: b0 (bot-near)
+            data.vertices.push_back( { glm::vec4( c1.x, -hh, c1.z, 1.0f ), n4 } ); // base+2: b1 (bot-far)
+            data.vertices.push_back( { glm::vec4( c1.x, +hh, c1.z, 1.0f ), n4 } ); // base+3: t1 (top-far)
+            data.indices.push_back( base );     data.indices.push_back( base + 3 ); data.indices.push_back( base + 1 );
+            data.indices.push_back( base + 3 ); data.indices.push_back( base + 2 ); data.indices.push_back( base + 1 );
+        }
+
+        // ---- 4. Contact hull: N corners + N edge midpoints on Y=0 mid-plane ----
+        const float subR = hh;
+        for( uint32_t i = 0; i < N; ++i )
+        {
+            glm::vec3 c = cornerPt( i );
+            data.contactHull.push_back( { c.x, 0.0f, c.z, subR } );
+        }
+        for( uint32_t i = 0; i < N; ++i )
+        {
+            glm::vec3 c0  = cornerPt( i );
+            glm::vec3 c1  = cornerPt( ( i + 1 ) % N );
+            glm::vec3 mid = 0.5f * ( c0 + c1 );
+            data.contactHull.push_back( { mid.x, 0.0f, mid.z, subR } );
+        }
+        data.hullExtentY = hh;     // radial (thickness/2)
+        data.hullExtentZ = radius; // bounding-Z half-extent = circumscribed radius
+
+        return data;
+    }
+
+    MorphologyData MorphologyGenerator::CreatePentagonDefect(
+        float radius, float thickness, float curvatureRadius )
+    {
+        return CreateRegularPolygonTile( 5u, radius, thickness, curvatureRadius );
+    }
+
+    MorphologyData MorphologyGenerator::CreateHeptagonDefect(
+        float radius, float thickness, float curvatureRadius )
+    {
+        return CreateRegularPolygonTile( 7u, radius, thickness, curvatureRadius );
+    }
+
     MorphologyData MorphologyGenerator::CreateEllipsoid( float radiusXZ, float radiusY,
                                                           uint32_t sectors, uint32_t stacks )
     {

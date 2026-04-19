@@ -4,7 +4,9 @@
 #include "simulation/VesselTreeGenerator.h"
 #include <gtest/gtest.h>
 #include <glm/glm.hpp>
+#include <glm/gtc/constants.hpp>
 #include <algorithm>
+#include <cmath>
 #include <numeric>
 
 using namespace DigitalTwin;
@@ -877,6 +879,140 @@ TEST( MorphologyGeneratorTest, CreateCurvedTile_OuterRadiusCorrect )
         // Arc is in the YZ plane; radial distance = sqrt((y+R_mid)^2 + z^2)
         float radial = sqrtf( ( pos.y + R_mid ) * ( pos.y + R_mid ) + pos.z * pos.z );
         EXPECT_NEAR( radial, R_out, 1e-4f ) << "Outer vertex " << i << " radius mismatch";
+    }
+}
+
+// =================================================================================================
+// MorphologyGenerator::CreateElongatedQuad / CreatePentagonDefect / CreateHeptagonDefect
+// (Phase 2.2 puzzle-piece tessellation primitives — flow-aligned arterial rhomboid + Stone-Wales
+// pentagon / heptagon defects for diameter transitions and bifurcation carinas; Davies 2009,
+// Stone & Wales 1986, Chiu & Chien 2011.)
+// =================================================================================================
+
+// length=20, width=1, thickness=0.2 → corners at X=±10, Z=±0.5; hull extents reflect the
+// radial (Y) and circumferential (Z) footprint per the CurvedTile coordinate convention
+// (X=axial, Y=radial, Z=circumferential).
+TEST( MorphologyGeneratorTest, CreateElongatedQuad_AspectRatio )
+{
+    const float length = 20.0f, width = 1.0f, thickness = 0.2f;
+    auto m = MorphologyGenerator::CreateElongatedQuad( length, width, thickness );
+
+    ASSERT_FALSE( m.vertices.empty() );
+    EXPECT_EQ( m.indices.size() % 3, 0u );
+
+    EXPECT_NEAR( m.hullExtentY, thickness * 0.5f, 1e-6f ) << "hullExtentY should be thickness/2";
+    EXPECT_NEAR( m.hullExtentZ, width     * 0.5f, 1e-6f ) << "hullExtentZ should be width/2 (circumferential half-extent)";
+
+    // Exactly 8 hull points: 4 corners + 4 edge midpoints on the Y=0 mid-plane.
+    ASSERT_EQ( m.contactHull.size(), 8u );
+
+    const float hl = length * 0.5f, hw = width * 0.5f;
+    auto cornerSeen = [&]( float x, float z ) {
+        for( const auto& p : m.contactHull )
+            if( std::fabs( p.x - x ) < 1e-5f && std::fabs( p.y ) < 1e-5f && std::fabs( p.z - z ) < 1e-5f )
+                return true;
+        return false;
+    };
+    EXPECT_TRUE( cornerSeen( -hl, -hw ) );
+    EXPECT_TRUE( cornerSeen( +hl, -hw ) );
+    EXPECT_TRUE( cornerSeen( +hl, +hw ) );
+    EXPECT_TRUE( cornerSeen( -hl, +hw ) );
+    EXPECT_TRUE( cornerSeen( 0.0f, -hw ) );
+    EXPECT_TRUE( cornerSeen( 0.0f, +hw ) );
+    EXPECT_TRUE( cornerSeen( -hl, 0.0f ) );
+    EXPECT_TRUE( cornerSeen( +hl, 0.0f ) );
+}
+
+// Pentagon fits within the 16-point contactHull budget and emits exactly
+// 5 corners + 5 edge midpoints = 10 sub-sphere points.
+TEST( MorphologyGeneratorTest, CreatePentagonDefect_HullPointCount )
+{
+    auto m = MorphologyGenerator::CreatePentagonDefect( 1.0f, 0.2f );
+    EXPECT_EQ( m.contactHull.size(), 10u ) << "Pentagon: 5 corners + 5 edge midpoints";
+    EXPECT_LE( m.contactHull.size(), 16u ) << "Must fit jkr_forces.comp contactHull buffer";
+
+    // Sub-sphere radius uniform at thickness/2
+    const float subR = 0.1f;
+    for( const auto& p : m.contactHull )
+        EXPECT_NEAR( p.w, subR, 1e-6f );
+}
+
+// Heptagon also fits within the 16-point budget (7 corners + 7 edge midpoints = 14).
+TEST( MorphologyGeneratorTest, CreateHeptagonDefect_HullPointCount )
+{
+    auto m = MorphologyGenerator::CreateHeptagonDefect( 1.0f, 0.2f );
+    EXPECT_EQ( m.contactHull.size(), 14u ) << "Heptagon: 7 corners + 7 edge midpoints";
+    EXPECT_LE( m.contactHull.size(), 16u ) << "Must fit jkr_forces.comp contactHull buffer";
+
+    const float subR = 0.1f;
+    for( const auto& p : m.contactHull )
+        EXPECT_NEAR( p.w, subR, 1e-6f );
+}
+
+// Pentagon hull points match corner (radius from center) + edge-midpoint (apothem from center)
+// geometry. Corner 0 at angle 0 → points +X. Vertices rotate counter-clockwise around Y.
+TEST( MorphologyGeneratorTest, CreatePentagonDefect_HullPointsMatchCornersAndMidpoints )
+{
+    const float radius = 1.5f;
+    auto m = MorphologyGenerator::CreatePentagonDefect( radius, 0.2f );
+    ASSERT_EQ( m.contactHull.size(), 10u );
+
+    const uint32_t N   = 5;
+    const float    two = 2.0f * glm::pi<float>();
+
+    // First N entries are corners at full radius.
+    for( uint32_t i = 0; i < N; ++i )
+    {
+        const auto& p = m.contactHull[ i ];
+        float       d = std::sqrt( p.x * p.x + p.z * p.z );
+        EXPECT_NEAR( d, radius, 1e-4f ) << "Corner " << i << " must lie on the circumscribed circle";
+        EXPECT_NEAR( p.y, 0.0f, 1e-6f ) << "Corner " << i << " must lie on the Y=0 mid-plane";
+
+        float expectedTheta = static_cast<float>( i ) * two / static_cast<float>( N );
+        EXPECT_NEAR( p.x, radius * std::cos( expectedTheta ), 1e-4f );
+        EXPECT_NEAR( p.z, radius * std::sin( expectedTheta ), 1e-4f );
+    }
+
+    // Next N entries are edge midpoints at apothem = radius * cos(pi/N).
+    const float apothem = radius * std::cos( glm::pi<float>() / static_cast<float>( N ) );
+    for( uint32_t i = 0; i < N; ++i )
+    {
+        const auto& p = m.contactHull[ N + i ];
+        float       d = std::sqrt( p.x * p.x + p.z * p.z );
+        EXPECT_NEAR( d, apothem, 1e-4f ) << "Edge midpoint " << i << " must lie on the apothem circle";
+        EXPECT_NEAR( p.y, 0.0f, 1e-6f );
+    }
+}
+
+// Same assertion for heptagon: corners on circumscribed circle, edge midpoints on apothem.
+TEST( MorphologyGeneratorTest, CreateHeptagonDefect_HullPointsMatchCornersAndMidpoints )
+{
+    const float radius = 1.5f;
+    auto m = MorphologyGenerator::CreateHeptagonDefect( radius, 0.2f );
+    ASSERT_EQ( m.contactHull.size(), 14u );
+
+    const uint32_t N   = 7;
+    const float    two = 2.0f * glm::pi<float>();
+
+    for( uint32_t i = 0; i < N; ++i )
+    {
+        const auto& p = m.contactHull[ i ];
+        float       d = std::sqrt( p.x * p.x + p.z * p.z );
+        EXPECT_NEAR( d, radius, 1e-4f );
+        EXPECT_NEAR( p.y, 0.0f, 1e-6f );
+
+        float expectedTheta = static_cast<float>( i ) * two / static_cast<float>( N );
+        EXPECT_NEAR( p.x, radius * std::cos( expectedTheta ), 1e-4f );
+        EXPECT_NEAR( p.z, radius * std::sin( expectedTheta ), 1e-4f );
+    }
+
+    const float apothem = radius * std::cos( glm::pi<float>() / static_cast<float>( N ) );
+    for( uint32_t i = 0; i < N; ++i )
+    {
+        const auto& p = m.contactHull[ N + i ];
+        float       d = std::sqrt( p.x * p.x + p.z * p.z );
+        EXPECT_NEAR( d, apothem, 1e-4f );
+        EXPECT_NEAR( p.y, 0.0f, 1e-6f );
     }
 }
 

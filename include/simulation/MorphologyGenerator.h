@@ -107,6 +107,32 @@ namespace DigitalTwin
                                                    float thickness = 0.2f, float curvatureRadius = 0.0f );
 
         /**
+         * @brief True rhombus / diamond tile. Four corners in the X-Z plane:
+         *        (+longDiag/2, 0), (0, +shortDiag/2), (-longDiag/2, 0), (0, -shortDiag/2).
+         *
+         * The biological tile: arterial ECs under laminar flow are actual
+         * rhomboidal diamonds (Davies 2009 DOI 10.1038/nrcardio.2009.14; in-vivo
+         * endothelium SEM shows fish-scale diamond tessellation, not rectangles).
+         * The long diagonal aligns with flow; the short diagonal is circumferential.
+         * When placed in staggered rings (odd rings offset circumferentially by half
+         * a short-diagonal), diamonds tile like fish-scales — corners meet corners
+         * at ring boundaries, producing the interlocked pattern seen in microscopy.
+         *
+         * Orientation at rest: outward face normal = +Y (same convention as all
+         * other vessel tile primitives).
+         *
+         * Hull points: 8 (4 corners + 4 edge midpoints on the Y=0 mid-plane).
+         *
+         * @param longDiagonal   Length of the diagonal along the axial (X / flow) direction.
+         * @param shortDiagonal  Length of the diagonal along the circumferential (Z) direction.
+         * @param thickness      Tile thickness along radial Y.
+         * @param curvatureRadius Reserved for Phase 2.5 surface-conforming placement;
+         *                        Phase 2.4.5 ships flat tiles.
+         */
+        static MorphologyData CreateRhombus( float longDiagonal = 1.5f, float shortDiagonal = 1.0f,
+                                             float thickness = 0.2f, float curvatureRadius = 0.0f );
+
+        /**
          * @brief Pentagon Stone-Wales defect primitive (5-sided tile).
          *
          * Carries +pi/3 Gaussian curvature (Stone & Wales 1986 DOI 10.1016/0009-2614(86)80661-3).

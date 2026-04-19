@@ -960,7 +960,254 @@ TEST( MorphologyGeneratorTest, CreateHeptagonDefect_HullPointsMatchCornersAndMid
     }
 }
 
-// Reproducibility: same seed must produce identical results
+// =================================================================================================
+// Phase 2.4.5 — MorphologyGenerator::CreateRhombus (true diamond EC tile, Davies 2009).
+// Replaces the rectangular ElongatedQuad for vessel surface tiling. The primitive's 4 corners
+// are diamond-positioned at (±longDiag/2, 0) and (0, ±shortDiag/2); edge midpoints are on the
+// diagonals' midpoints; all 8 hull points lie on the Y=0 mid-plane (deep-research placement
+// rule preserved).
+// =================================================================================================
+
+TEST( MorphologyGeneratorTest, CreateRhombus_AspectRatio )
+{
+    auto m = MorphologyGenerator::CreateRhombus( /*longDiag=*/2.0f, /*shortDiag=*/1.0f, /*thickness=*/0.2f );
+    ASSERT_FALSE( m.vertices.empty() );
+    EXPECT_EQ( m.indices.size() % 3, 0u );
+    EXPECT_NEAR( m.hullExtentY, 0.1f, 1e-6f ) << "hullExtentY = thickness/2";
+    EXPECT_NEAR( m.hullExtentZ, 0.5f, 1e-6f ) << "hullExtentZ = shortDiag/2 (circumferential half-extent)";
+}
+
+TEST( MorphologyGeneratorTest, CreateRhombus_HullPointCount )
+{
+    auto m = MorphologyGenerator::CreateRhombus( 1.5f, 1.0f, 0.2f );
+    EXPECT_EQ( m.contactHull.size(), 8u ) << "Rhombus: 4 corners + 4 edge midpoints";
+    EXPECT_LE( m.contactHull.size(), 16u ) << "Must fit jkr_forces.comp contactHull buffer";
+    const float subR = 0.1f; // thickness/2
+    for( const auto& p : m.contactHull ) EXPECT_NEAR( p.w, subR, 1e-6f );
+}
+
+TEST( MorphologyGeneratorTest, CreateRhombus_CornersOnDiagonals )
+{
+    const float longDiag = 2.4f, shortDiag = 1.6f;
+    auto m = MorphologyGenerator::CreateRhombus( longDiag, shortDiag, 0.2f );
+    ASSERT_EQ( m.contactHull.size(), 8u );
+
+    // The first 4 hull entries are corners at (+L/2,0), (0,+S/2), (-L/2,0), (0,-S/2).
+    EXPECT_NEAR( m.contactHull[ 0 ].x, +longDiag * 0.5f, 1e-5f );
+    EXPECT_NEAR( m.contactHull[ 0 ].z, 0.0f, 1e-5f );
+    EXPECT_NEAR( m.contactHull[ 1 ].x, 0.0f, 1e-5f );
+    EXPECT_NEAR( m.contactHull[ 1 ].z, +shortDiag * 0.5f, 1e-5f );
+    EXPECT_NEAR( m.contactHull[ 2 ].x, -longDiag * 0.5f, 1e-5f );
+    EXPECT_NEAR( m.contactHull[ 2 ].z, 0.0f, 1e-5f );
+    EXPECT_NEAR( m.contactHull[ 3 ].x, 0.0f, 1e-5f );
+    EXPECT_NEAR( m.contactHull[ 3 ].z, -shortDiag * 0.5f, 1e-5f );
+
+    // All hull points on Y=0 mid-plane (deep-research placement rule).
+    for( const auto& p : m.contactHull ) EXPECT_NEAR( p.y, 0.0f, 1e-6f );
+}
+
+// Normals on top and bottom faces point ±Y respectively — guards the Vulkan CCW front-face
+// winding (same class-of-bug that bit the pentagon/heptagon primitives in Phase 2.2).
+TEST( MorphologyGeneratorTest, CreateRhombus_NormalsUnitLength )
+{
+    auto m = MorphologyGenerator::CreateRhombus( 1.5f, 1.0f, 0.2f );
+    for( const auto& v : m.vertices )
+    {
+        float len = glm::length( glm::vec3( v.normal ) );
+        EXPECT_NEAR( len, 1.0f, 1e-5f ) << "Rhombus vertex normal must be unit length";
+    }
+}
+
+// =================================================================================================
+// Phase 2.4 — Stone-Wales 5/7 defect insertion at diameter transitions.
+// When `SetTubeRadiusEnd` is set, the trunk tapers linearly; ring count changes per ring as the
+// local radius interpolates. Transitions between consecutive rings of differing cell count
+// get defect pairs inserted: ΔN heptagons on the wider (parent) side, ΔN pentagons on the
+// narrower (child) side, symmetrically distributed around each ring.  Stone & Wales 1986:
+// pentagon + heptagon = net zero Gaussian curvature, keeping the manifold locally flat outside
+// the defect zone.
+// =================================================================================================
+
+namespace // Phase 2.4 test helpers
+{
+    // Group generated cells into rings by exact axial position (X coordinate), preserving
+    // per-ring order. Every ring gets its own vector of morphology indices in placement order.
+    std::vector<std::vector<uint32_t>>
+    RingsByAxialPosition( const VesselTreeResult& r )
+    {
+        std::vector<float> xs;
+        for( const auto& c : r.cells )
+        {
+            bool seen = false;
+            for( float x : xs )
+                if( std::fabs( x - c.position.x ) < 1e-3f ) { seen = true; break; }
+            if( !seen ) xs.push_back( c.position.x );
+        }
+        std::sort( xs.begin(), xs.end() );
+        std::vector<std::vector<uint32_t>> rings( xs.size() );
+        for( const auto& c : r.cells )
+        {
+            for( size_t i = 0; i < xs.size(); ++i )
+            {
+                if( std::fabs( c.position.x - xs[ i ] ) < 1e-3f )
+                {
+                    rings[ i ].push_back( c.morphologyIndex );
+                    break;
+                }
+            }
+        }
+        return rings;
+    }
+}
+
+// Classic Stone-Wales signal: 12 → 8 transition should produce ΔN = 4 pentagons +
+// 4 heptagons when defect insertion is explicitly enabled. Default is OFF (Phase 2.4.5
+// — continuous-taper defects are disabled by default; the mechanism is reserved for
+// Phase 2.5 bifurcation carinas). These tests flip the flag explicitly to exercise
+// the infrastructure.
+TEST( VesselTreeGeneratorTest, StoneWales_Transition_12to8_EmitsFourPairs )
+{
+    // Tune: radius 12 → 8 at ECWidth=2π gives ring 12 → 8 via the adaptive formula
+    // (round(2π·12 / 2π) = 12, round(2π·8 / 2π) = 8). Length 8 with aspect 1 gives
+    // axialStep = 2π ≈ 6.28, numRings = (8 / 6.28) + 1 = 2 → exactly one transition.
+    auto result = VesselTreeGenerator::BranchingTree()
+        .SetOrigin( { 0, 0, 0 } ).SetDirection( { 1, 0, 0 } )
+        .SetLength( 8.0f )
+        .SetTubeRadius( 12.0f )
+        .SetTubeRadiusEnd( 8.0f )
+        .SetECCircumferentialWidth( 2.0f * glm::pi<float>() )
+        .SetCellAspectRatio( 1.0f )
+        .SetBranchingDepth( 0 )
+        .SetStoneWalesAtTaperTransitions( true )
+        .SetSeed( 1 )
+        .Build();
+
+    uint32_t pentagons = 0, heptagons = 0;
+    for( const auto& c : result.cells )
+    {
+        if( c.morphologyIndex == 1u ) ++pentagons;
+        if( c.morphologyIndex == 2u ) ++heptagons;
+    }
+    EXPECT_EQ( pentagons, 4u ) << "12 → 8 transition should produce 4 pentagon defects (child side)";
+    EXPECT_EQ( heptagons, 4u ) << "12 → 8 transition should produce 4 heptagon defects (parent side)";
+}
+
+// Gauss-Bonnet analog: over any transition, pentagon count must equal heptagon count
+// (each pair contributes +π/3 and −π/3 Gaussian curvature → net zero). Sweeps across
+// a 3-ring taper where two transitions fire back-to-back.
+TEST( VesselTreeGeneratorTest, StoneWales_Pairs_PreserveLocalEulerCharacteristic )
+{
+    // Gentle 10 → 3 taper over ~6 rings so each transition's ΔN stays small enough to fit
+    // within min(nP, nC). ecWidth = 3, aspect = 1 → axialStep = 3, numRings = 15/3 + 1 = 6.
+    // Ring radii: 10.0, 8.6, 7.2, 5.8, 4.4, 3.0 → ring sizes 21, 18, 15, 12, 9, 6. Each
+    // transition drops by ~3 cells, every pair fits symmetrically on both rings.
+    auto result = VesselTreeGenerator::BranchingTree()
+        .SetOrigin( { 0, 0, 0 } ).SetDirection( { 1, 0, 0 } )
+        .SetLength( 15.0f ).SetTubeRadius( 10.0f ).SetTubeRadiusEnd( 3.0f )
+        .SetECCircumferentialWidth( 3.0f ).SetCellAspectRatio( 1.0f )
+        .SetBranchingDepth( 0 ).SetStoneWalesAtTaperTransitions( true ).SetSeed( 1 )
+        .Build();
+
+    uint32_t pentagons = 0, heptagons = 0;
+    for( const auto& c : result.cells )
+    {
+        if( c.morphologyIndex == 1u ) ++pentagons;
+        if( c.morphologyIndex == 2u ) ++heptagons;
+    }
+    EXPECT_EQ( pentagons, heptagons )
+        << "Stone-Wales 5/7 pairs are topologically neutral; counts must match across the tree";
+    EXPECT_GT( pentagons, 0u ) << "A 10→3 tapering tube with flag enabled must produce at least one defect pair";
+}
+
+// Symmetric distribution invariant: defect cell positions within each ring should be
+// spread evenly around the circumference, not clustered. Guards against bifurcation kinks
+// that asymmetric cadherin-torque imbalances would otherwise produce (deep-research report
+// 2026-04-19 flagged this as the primary "vertex popping" risk for Phase 2.5).
+TEST( VesselTreeGeneratorTest, StoneWales_Pairs_SymmetricallyDistributed )
+{
+    // Same params as the 12→8 transition test (length 8 forces numRings = 2).
+    auto result = VesselTreeGenerator::BranchingTree()
+        .SetOrigin( { 0, 0, 0 } ).SetDirection( { 1, 0, 0 } )
+        .SetLength( 8.0f ).SetTubeRadius( 12.0f ).SetTubeRadiusEnd( 8.0f )
+        .SetECCircumferentialWidth( 2.0f * glm::pi<float>() ).SetCellAspectRatio( 1.0f )
+        .SetBranchingDepth( 0 ).SetStoneWalesAtTaperTransitions( true ).SetSeed( 1 )
+        .Build();
+
+    auto rings = RingsByAxialPosition( result );
+    ASSERT_GE( rings.size(), 2u );
+
+    // For each ring that carries defect cells, assert the defect indices are spaced
+    // with angular gaps within 25 % of uniform. Uniform spacing for 4 defects on
+    // a 12-cell ring is 3 positions; allow drift of 1 position (25 % tolerance).
+    for( const auto& ring : rings )
+    {
+        std::vector<uint32_t> defectIndices;
+        for( uint32_t i = 0; i < ring.size(); ++i )
+            if( ring[ i ] != 0u ) defectIndices.push_back( i );
+        if( defectIndices.size() < 2 ) continue;
+
+        const float ringSize  = static_cast<float>( ring.size() );
+        const float dN        = static_cast<float>( defectIndices.size() );
+        const float expected  = ringSize / dN;
+        for( size_t k = 0; k + 1 < defectIndices.size(); ++k )
+        {
+            float gap = static_cast<float>( defectIndices[ k + 1 ] - defectIndices[ k ] );
+            EXPECT_NEAR( gap, expected, expected * 0.25f )
+                << "Defect positions must be symmetric around the ring";
+        }
+    }
+}
+
+// Tapering tube with no defects would leave the ring-count change unresolved; Phase 2.4
+// must generate defect cells whenever consecutive rings differ in size. Guards against
+// silent regression of the defect-insertion pass (e.g. a morphologyIndex write removed).
+TEST( VesselTreeGeneratorTest, StoneWales_TaperingTube_EmitsDefects )
+{
+    auto result = VesselTreeGenerator::BranchingTree()
+        .SetOrigin( { 0, 0, 0 } ).SetDirection( { 1, 0, 0 } )
+        .SetLength( 10.0f ).SetTubeRadius( 3.0f ).SetTubeRadiusEnd( 1.0f )
+        .SetECCircumferentialWidth( 1.0f ).SetCellAspectRatio( 1.0f )
+        .SetBranchingDepth( 0 ).SetStoneWalesAtTaperTransitions( true ).SetSeed( 1 )
+        .Build();
+
+    bool anyDefect = false;
+    for( const auto& c : result.cells )
+        if( c.morphologyIndex != 0u ) { anyDefect = true; break; }
+    EXPECT_TRUE( anyDefect ) << "A tapering tube from r=3 to r=1 with flag enabled must produce at least one defect cell";
+}
+
+// Phase 2.4.5 — default behaviour: defect insertion off even for tapering.
+TEST( VesselTreeGeneratorTest, StoneWales_DefaultOff_NoDefectsOnTaper )
+{
+    auto result = VesselTreeGenerator::BranchingTree()
+        .SetOrigin( { 0, 0, 0 } ).SetDirection( { 1, 0, 0 } )
+        .SetLength( 10.0f ).SetTubeRadius( 3.0f ).SetTubeRadiusEnd( 1.0f )
+        .SetECCircumferentialWidth( 1.0f ).SetCellAspectRatio( 1.0f )
+        .SetBranchingDepth( 0 ).SetSeed( 1 )
+        // SetStoneWalesAtTaperTransitions NOT called → default false
+        .Build();
+
+    for( const auto& c : result.cells )
+        EXPECT_EQ( c.morphologyIndex, 0u )
+            << "Default off: even a steep taper must produce only rhombus cells (index 0)";
+}
+
+// Constant-radius tube (no taper) must produce no defect cells — the Phase 2.3 behaviour
+// is preserved when `SetTubeRadiusEnd` is left at its default (-1).
+TEST( VesselTreeGeneratorTest, StoneWales_ConstantRadius_NoDefects )
+{
+    auto result = VesselTreeGenerator::BranchingTree()
+        .SetOrigin( { 0, 0, 0 } ).SetDirection( { 1, 0, 0 } )
+        .SetLength( 10.0f ).SetTubeRadius( 3.0f )
+        // SetTubeRadiusEnd NOT called → default -1 → no taper
+        .SetECCircumferentialWidth( 1.0f ).SetCellAspectRatio( 1.0f )
+        .SetBranchingDepth( 0 ).SetSeed( 1 )
+        .Build();
+
+    for( const auto& c : result.cells )
+        EXPECT_EQ( c.morphologyIndex, 0u ) << "Constant-radius tube must produce only rhomboid (index 0) cells";
+}
+
 TEST( VesselTreeGeneratorTest, Reproducible_SameSeed )
 {
     auto build = [&]()

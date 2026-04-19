@@ -36,6 +36,8 @@ namespace DigitalTwin
     VesselTreeGenerator& VesselTreeGenerator::SetBranchTwist( float v )            { m_branchTwist = v; return *this; }
     VesselTreeGenerator& VesselTreeGenerator::SetECCircumferentialWidth( float v ) { m_ecCircWidth = std::max( 1e-4f, v ); return *this; }
     VesselTreeGenerator& VesselTreeGenerator::SetCellAspectRatio( float v )        { m_cellAspect = std::max( 1e-4f, v ); return *this; }
+    VesselTreeGenerator& VesselTreeGenerator::SetTubeRadiusEnd( float v )          { m_tubeRadiusEnd = v; return *this; }
+    VesselTreeGenerator& VesselTreeGenerator::SetStoneWalesAtTaperTransitions( bool v ) { m_stoneWalesAtTaperTransitions = v; return *this; }
 
     // -------------------------------------------------------------------------
     // Build
@@ -53,6 +55,7 @@ namespace DigitalTwin
         trunk.perp1           = perp1From( trunk.direction );
         trunk.length          = m_length;
         trunk.tubeRadius      = m_tubeRadius;
+        trunk.endTubeRadius   = m_tubeRadiusEnd; // Phase 2.4: trunk may taper
         trunk.depth           = m_branchingDepth;
         trunk.ringAnglePhase  = 0.0f;
 
@@ -72,16 +75,106 @@ namespace DigitalTwin
         const glm::vec3 p1  = job.perp1;
         const glm::vec3 p2  = glm::normalize( glm::cross( dir, p1 ) );
 
-        // Adaptive ring count: cells per ring = max(2, round(2π·r / ECWidth)).
-        // Dual-seam minimum (Bär 1984); 1-cell autocellular capillary not modelled at point-agent scale.
-        const uint32_t ringSize    = std::max( 2u,
-            static_cast<uint32_t>( std::round( 2.0f * glm::pi<float>() * job.tubeRadius / m_ecCircWidth ) ) );
-        const float    axialStep   = m_ecCircWidth * m_cellAspect; // rhomboid length along flow
+        // Phase 2.4: radius interpolates linearly along the branch when endTubeRadius > 0.
+        // Per-ring radius drives per-ring cell count: `ring_r = max(2, round(2π·r_r / ECWidth))`.
+        // Dual-seam minimum (Bär 1984).
+        const float    startRadius = job.tubeRadius;
+        const float    endRadius   = ( job.endTubeRadius > 0.0f ) ? job.endTubeRadius : job.tubeRadius;
+        const float    axialStep   = m_ecCircWidth * m_cellAspect;
         const uint32_t numRings    = std::max( 1u, static_cast<uint32_t>( job.length / axialStep ) + 1u );
-        const float    dAngle      = 2.0f * glm::pi<float>() / static_cast<float>( ringSize );
+
+        auto ringRadiusAt = [&]( uint32_t r ) {
+            if( numRings <= 1 ) return startRadius;
+            float t = static_cast<float>( r ) / static_cast<float>( numRings - 1 );
+            return startRadius * ( 1.0f - t ) + endRadius * t;
+        };
+        auto ringSizeFor = [&]( float radius ) {
+            return std::max( 2u,
+                static_cast<uint32_t>( std::round( 2.0f * glm::pi<float>() * radius / m_ecCircWidth ) ) );
+        };
+
+        // Precompute per-ring cell counts so transitions are visible before placing anything.
+        std::vector<uint32_t> ringSizes( numRings );
+        for( uint32_t r = 0; r < numRings; ++r )
+            ringSizes[ r ] = ringSizeFor( ringRadiusAt( r ) );
+
+        // Assign morphology indices per (ring, cellInRing) position.  Default 0 = elongated
+        // rhomboid (Phase 2.3); at each ring-count transition, Stone-Wales 5/7 defect pairs
+        // replace a symmetric subset of cells (Stone & Wales 1986; Iijima 1991).
+        //   Tapering  (ringSizes[r] > ringSizes[r+1]):  ΔN heptagons on ring r (wider / parent
+        //                                               side), ΔN pentagons on ring r+1
+        //                                               (narrower / child side).
+        //   Widening  (reversed):                       pentagons on parent, heptagons on child.
+        // Morphology indices: 0 = rhomboid, 1 = pentagon, 2 = heptagon — matches the order
+        // PuzzlePiecePaletteDemo registers and the morphologyIndex convention in Phenotype.h.
+        std::vector<std::vector<uint32_t>> cellMorph( numRings );
+        for( uint32_t r = 0; r < numRings; ++r )
+            cellMorph[ r ].assign( ringSizes[ r ], 0u );
+
+        // Symmetric distribution of `count` defects around a ring of `ringSize` cells,
+        // skipping positions already occupied by prior transitions. A middle ring may be
+        // both the child of one transition (pentagons already placed) and the parent of
+        // the next (heptagons to place); skipping preserves the pentagon-count ==
+        // heptagon-count invariant across a tapered chain.
+        auto distributeDefectIndices = [&]( uint32_t ringSize, uint32_t count,
+                                            const std::vector<uint32_t>& existing,
+                                            std::vector<uint32_t>& out ) {
+            out.clear();
+            if( count == 0 || ringSize == 0 ) return;
+            count = std::min( count, ringSize );
+            for( uint32_t k = 0; k < count; ++k )
+            {
+                uint32_t idx = static_cast<uint32_t>( std::round(
+                    static_cast<float>( k ) * static_cast<float>( ringSize ) / static_cast<float>( count ) ) );
+                if( idx >= ringSize ) idx = ringSize - 1u;
+                uint32_t tries = 0;
+                while( tries < ringSize &&
+                       ( existing[ idx ] != 0u ||
+                         std::find( out.begin(), out.end(), idx ) != out.end() ) )
+                {
+                    idx = ( idx + 1u ) % ringSize;
+                    ++tries;
+                }
+                out.push_back( idx );
+            }
+        };
+        std::vector<uint32_t> defectIdxParent, defectIdxChild;
+
+        // Phase 2.4.5: continuous-taper defect insertion is opt-in. Default off — the rhombus
+        // tiles produced by the demos look more biological when no oversized 5/7 polygons
+        // intrude on smooth tapering. Phase 2.5 will flip this path to fire at bifurcation
+        // carinas instead, where defects are genuinely topological.
+        for( uint32_t r = 0; r + 1 < numRings && m_stoneWalesAtTaperTransitions; ++r )
+        {
+            if( ringSizes[ r ] == ringSizes[ r + 1 ] ) continue;
+
+            const uint32_t nP = ringSizes[ r ];
+            const uint32_t nC = ringSizes[ r + 1 ];
+            const uint32_t dNRaw   = ( nP > nC ) ? ( nP - nC ) : ( nC - nP );
+            const bool     tapering = nP > nC;
+            // Cap defect count at the narrower ring's size so pentagon count == heptagon
+            // count is preserved (each 5/7 pair is topologically neutral; the invariant
+            // requires symmetric counts on both sides of the transition). When ΔN exceeds
+            // `min(nP, nC)` the excess ring-count delta cannot be resolved as 5/7 pairs at
+            // a single transition — finer-grained tapers or higher-order defects would be
+            // required. Phase 2.4 accepts the cap as a documented topological limit.
+            const uint32_t dN = std::min( { dNRaw, nP, nC } );
+
+            distributeDefectIndices( nP, dN, cellMorph[ r ],     defectIdxParent );
+            distributeDefectIndices( nC, dN, cellMorph[ r + 1 ], defectIdxChild );
+
+            for( uint32_t i : defectIdxParent )
+                cellMorph[ r ][ i ] = tapering ? 2u : 1u;     // wider side: heptagon (tapering) / pentagon (widening)
+            for( uint32_t i : defectIdxChild )
+                cellMorph[ r + 1 ][ i ] = tapering ? 1u : 2u; // narrower side opposite
+        }
+
         // Staggered brick pattern: alternate rings circumferentially offset by half a cell-width
         // (Davies 2009 — brick-pattern interlocks avoid longitudinal-seam mechanical instability).
-        const float    staggerStep = dAngle * 0.5f;
+        // dAngle varies per ring with taper; stagger uses the LOCAL ring's dAngle.
+        auto ringDAngle = [&]( uint32_t r ) {
+            return 2.0f * glm::pi<float>() / static_cast<float>( ringSizes[ r ] );
+        };
 
         // ---- Quadratic Bezier centreline: P0 → P1 → P2 ----
         const glm::vec3 P0 = job.origin;
@@ -125,8 +218,11 @@ namespace DigitalTwin
             glm::vec3 curP2 = glm::normalize( glm::cross( tangent, currentPerp1 ) );
             currentPerp1    = glm::normalize( glm::cross( curP2, tangent ) );
 
-            const float twistOffset   = static_cast<float>( r ) * twistPerRing;
-            const float staggerOffset = job.ringAnglePhase + ( ( r & 1u ) ? staggerStep : 0.0f );
+            const uint32_t ringSize      = ringSizes[ r ];
+            const float    localRadius   = ringRadiusAt( r );
+            const float    dAngle        = ringDAngle( r );
+            const float    twistOffset   = static_cast<float>( r ) * twistPerRing;
+            const float    staggerOffset = job.ringAnglePhase + ( ( r & 1u ) ? dAngle * 0.5f : 0.0f );
 
             for( uint32_t j = 0; j < ringSize; ++j )
             {
@@ -139,15 +235,16 @@ namespace DigitalTwin
                 // Axial jitter omitted — the coherent breathing mode is radial/circumferential
                 // and axial jitter would disperse the rings, breaking tests that group cells
                 // by exact axial position.
-                float jitterR = placeJitter( m_rng ) * job.tubeRadius;
+                float jitterR = placeJitter( m_rng ) * localRadius;
                 float jitterC = placeJitter( m_rng ) * m_ecCircWidth;
                 glm::vec3 pos = ringCenter
-                              + ( job.tubeRadius + jitterR ) * radial
+                              + ( localRadius + jitterR ) * radial
                               + jitterC * circum;
 
                 // Orientation quaternion: maps local (X,Y,Z) → world (axial, radial, circum).
-                // Local +Y is the outward face normal for both CurvedTile and ElongatedQuad;
-                // local +X is the axial flow direction of the elongated rhomboid.
+                // Local +Y is the outward face normal for rhomboid / pentagon / heptagon tiles;
+                // local +X is the axial flow direction. Shared across all morphology variants
+                // so the orientation pipeline stays morphology-agnostic (Phase 2.1).
                 glm::mat3 basis( tangent, radial, circum );
                 glm::quat q = glm::quat_cast( basis );
 
@@ -155,7 +252,7 @@ namespace DigitalTwin
                 cell.position        = glm::vec4( pos, 1.0f );
                 cell.orientation     = glm::vec4( q.x, q.y, q.z, q.w );
                 cell.polaritySeed    = glm::vec4( radial, 1.0f );       // basal-outward, full magnitude
-                cell.morphologyIndex = 0u;                              // Phase 2.3: all elongated rhomboid
+                cell.morphologyIndex = cellMorph[ r ][ j ];             // Phase 2.4: 0/1/2 = rhomboid/pentagon/heptagon
                 result.cells.push_back( cell );
             }
 
@@ -196,7 +293,9 @@ namespace DigitalTwin
 
         // Carry staggered-ring phase across the junction so children keep the brick pattern
         // on the first ring (Phase 2.5 will retro-fit carina heptagons here).
-        const float childPhase = job.ringAnglePhase + ( ( numRings & 1u ) ? staggerStep : 0.0f );
+        // Propagate stagger phase using the LAST ring's dAngle (may differ from first under taper).
+        const float lastRingDAngle = ringDAngle( numRings - 1u );
+        const float childPhase     = job.ringAnglePhase + ( ( numRings & 1u ) ? lastRingDAngle * 0.5f : 0.0f );
 
         BranchJob child1{};
         child1.origin          = childOrigin + axialStep * dir1;

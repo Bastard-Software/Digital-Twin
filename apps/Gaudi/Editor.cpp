@@ -332,6 +332,23 @@ namespace Gaudi
                   "removed once DesignedVesselDemo ships, or evolved into a\n"
                   "branching-tree demo during Phase 2.5.",
                   &Demos::SetupCurvedTubeDemo },
+
+                { "Tapering Tube",
+                  "Phase 2.4 tapering tube with Stone-Wales 5/7 defects.\n"
+                  "Radius tapers linearly from 3.0 (ring ~19) at origin to 1.0\n"
+                  "(ring ~6) at the far end. Every ring-count transition inserts\n"
+                  "pentagon + heptagon defect pairs (Stone & Wales 1986;\n"
+                  "Iijima 1991) symmetrically around the ring:\n"
+                  "   heptagons (wider / parent side)   - morph index 2\n"
+                  "   pentagons (narrower / child side) - morph index 1\n"
+                  "   rhomboids (constant-radius stretches) - morph index 0\n\n"
+                  "Pair count is net-zero in Gaussian curvature, so the manifold\n"
+                  "stays locally flat outside the defect zone.  Physics stack is\n"
+                  "Phase 2.3 Item-1 quiescent regime (damping 500, Brownian 0.02).\n\n"
+                  "Look for: visible pentagon and heptagon tiles clustered at\n"
+                  "the axial positions where ring count changes; smooth taper;\n"
+                  "tube holding shape without cracks at the transitions.",
+                  &Demos::SetupTaperingTubeDemo },
             }, false },
         };
 

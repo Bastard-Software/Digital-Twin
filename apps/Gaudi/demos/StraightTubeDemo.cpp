@@ -63,15 +63,23 @@ namespace Gaudi::Demos
         ecs.SetVesselTree( tree )
            .SetColor( glm::vec4( 0.88f, 0.42f, 0.46f, 1.0f ) ); // endothelium rose (Item 1 palette)
 
-        // Register the elongated rhomboid as the variant-0 mesh for CellType::Default.
-        // Every cell carries morphologyIndex=0 for Phase 2.3, so variant 0 is the
-        // only draw that fires. Thickness matched to ECBlobDemo (0.2) for visual
-        // consistency; length = ecWidth * aspect so tile footprint matches axial spacing.
+        // Phase 2.4.5: true rhombus/diamond tile (Davies 2009 — real arterial ECs are
+        // rhomboidal, not rectangular; the previous ElongatedQuad approximation has been
+        // replaced). Long diagonal = axialStep so cell-cell corner contacts happen between
+        // rings; short diagonal = ecWidth so corner contacts happen between same-ring
+        // neighbours. With the generator's odd-ring circumferential stagger, diamonds
+        // tile like fish scales (the classic in-vivo microscopy pattern).
+        // For the staggered-ring diamond tiling to close with no gaps, the long diagonal
+        // must equal 2 * axialStep (so each diamond spans two ring positions axially and
+        // its 4 corners meet the NE/NW/SE/SW staggered neighbours). Short diagonal stays
+        // at ecWidth (= in-ring circumferential spacing).
         ecs.SetMorphologyVariants(
             DigitalTwin::CellType::Default,
             {
-                DigitalTwin::MorphologyGenerator::CreateElongatedQuad(
-                    /*length=*/ecWidth * aspect, /*width=*/ecWidth, /*thickness=*/0.2f ),
+                DigitalTwin::MorphologyGenerator::CreateRhombus(
+                    /*longDiagonal=*/ecWidth * aspect * 2.0f,
+                    /*shortDiagonal=*/ecWidth,
+                    /*thickness=*/0.2f ),
             } );
 
         // ── Item 1 behaviour stack (byte-identical to ECBlob / EC2DMatrigel / ECTube) ──

@@ -740,6 +740,93 @@ namespace DigitalTwin
         return data;
     }
 
+    MorphologyData MorphologyGenerator::CreateRhombus(
+        float longDiagonal, float shortDiagonal, float thickness, float curvatureRadius )
+    {
+        (void)curvatureRadius; // Phase 2.4.5 ships flat; Phase 2.5 dynamic topology replaces this entirely.
+
+        MorphologyData data;
+        const float hL = longDiagonal  * 0.5f; // axial (X) half-diagonal — flow direction
+        const float hS = shortDiagonal * 0.5f; // circumferential (Z) half-diagonal
+        const float ht = thickness     * 0.5f; // radial (Y) half-extent
+
+        // Four diamond corners in the X-Z plane (Y = ±ht for top/bottom faces):
+        //   c0: (+hL, y, 0)   c1: (0, y, +hS)   c2: (-hL, y, 0)   c3: (0, y, -hS)
+        // Top face normal +Y, bottom face normal -Y. Four side faces connect
+        // consecutive corners around the diamond; each side face has its own
+        // outward radial normal (perpendicular to the edge, in the X-Z plane).
+
+        // Top face (4 verts, fan from centre via 2 triangles)
+        data.vertices.push_back( { glm::vec4( 0.0f, +ht, 0.0f, 1.0f ), glm::vec4( 0.0f, 1.0f, 0.0f, 0.0f ) } ); // 0 centre
+        data.vertices.push_back( { glm::vec4( +hL, +ht, 0.0f, 1.0f ), glm::vec4( 0.0f, 1.0f, 0.0f, 0.0f ) } ); // 1 +X
+        data.vertices.push_back( { glm::vec4( 0.0f, +ht, +hS, 1.0f ), glm::vec4( 0.0f, 1.0f, 0.0f, 0.0f ) } ); // 2 +Z
+        data.vertices.push_back( { glm::vec4( -hL, +ht, 0.0f, 1.0f ), glm::vec4( 0.0f, 1.0f, 0.0f, 0.0f ) } ); // 3 -X
+        data.vertices.push_back( { glm::vec4( 0.0f, +ht, -hS, 1.0f ), glm::vec4( 0.0f, 1.0f, 0.0f, 0.0f ) } ); // 4 -Z
+        data.indices.push_back( 0 ); data.indices.push_back( 2 ); data.indices.push_back( 1 );
+        data.indices.push_back( 0 ); data.indices.push_back( 3 ); data.indices.push_back( 2 );
+        data.indices.push_back( 0 ); data.indices.push_back( 4 ); data.indices.push_back( 3 );
+        data.indices.push_back( 0 ); data.indices.push_back( 1 ); data.indices.push_back( 4 );
+
+        // Bottom face (normal -Y, reversed winding)
+        const uint32_t bBase = static_cast<uint32_t>( data.vertices.size() );
+        data.vertices.push_back( { glm::vec4( 0.0f, -ht, 0.0f, 1.0f ), glm::vec4( 0.0f, -1.0f, 0.0f, 0.0f ) } ); // bBase+0 centre
+        data.vertices.push_back( { glm::vec4( +hL, -ht, 0.0f, 1.0f ), glm::vec4( 0.0f, -1.0f, 0.0f, 0.0f ) } ); // bBase+1 +X
+        data.vertices.push_back( { glm::vec4( 0.0f, -ht, +hS, 1.0f ), glm::vec4( 0.0f, -1.0f, 0.0f, 0.0f ) } ); // bBase+2 +Z
+        data.vertices.push_back( { glm::vec4( -hL, -ht, 0.0f, 1.0f ), glm::vec4( 0.0f, -1.0f, 0.0f, 0.0f ) } ); // bBase+3 -X
+        data.vertices.push_back( { glm::vec4( 0.0f, -ht, -hS, 1.0f ), glm::vec4( 0.0f, -1.0f, 0.0f, 0.0f ) } ); // bBase+4 -Z
+        data.indices.push_back( bBase ); data.indices.push_back( bBase + 1 ); data.indices.push_back( bBase + 2 );
+        data.indices.push_back( bBase ); data.indices.push_back( bBase + 2 ); data.indices.push_back( bBase + 3 );
+        data.indices.push_back( bBase ); data.indices.push_back( bBase + 3 ); data.indices.push_back( bBase + 4 );
+        data.indices.push_back( bBase ); data.indices.push_back( bBase + 4 ); data.indices.push_back( bBase + 1 );
+
+        // Four side faces — one per diamond edge. Each side is a quad (top-pair + bottom-pair)
+        // with an outward-radial normal perpendicular to the edge in the X-Z plane.
+        // Edge corners (X-Z plane): c0(+hL,0), c1(0,+hS), c2(-hL,0), c3(0,-hS).
+        // Winding matches CreateDisc: (t0, t1, b0) + (t1, b1, b0) so outward normal faces viewer.
+        auto addSide = [&]( glm::vec3 cA, glm::vec3 cB ) {
+            glm::vec3 edge = cB - cA;
+            glm::vec3 nrm  = glm::normalize( glm::vec3( edge.z, 0.0f, -edge.x ) ); // outward (right of edge direction)
+            // Ensure outward (points away from origin)
+            glm::vec3 mid = 0.5f * ( cA + cB );
+            if( glm::dot( nrm, mid ) < 0.0f ) nrm = -nrm;
+            glm::vec4 n4( nrm, 0.0f );
+
+            uint32_t base = static_cast<uint32_t>( data.vertices.size() );
+            data.vertices.push_back( { glm::vec4( cA.x, +ht, cA.z, 1.0f ), n4 } ); // base+0: t0
+            data.vertices.push_back( { glm::vec4( cA.x, -ht, cA.z, 1.0f ), n4 } ); // base+1: b0
+            data.vertices.push_back( { glm::vec4( cB.x, -ht, cB.z, 1.0f ), n4 } ); // base+2: b1
+            data.vertices.push_back( { glm::vec4( cB.x, +ht, cB.z, 1.0f ), n4 } ); // base+3: t1
+            data.indices.push_back( base );     data.indices.push_back( base + 3 ); data.indices.push_back( base + 1 );
+            data.indices.push_back( base + 3 ); data.indices.push_back( base + 2 ); data.indices.push_back( base + 1 );
+        };
+        glm::vec3 c0( +hL, 0.0f, 0.0f ), c1( 0.0f, 0.0f, +hS );
+        glm::vec3 c2( -hL, 0.0f, 0.0f ), c3( 0.0f, 0.0f, -hS );
+        addSide( c0, c1 ); // +X → +Z  (top-right edge, outward +X+Z)
+        addSide( c1, c2 ); // +Z → -X  (top-left edge, outward -X+Z)
+        addSide( c2, c3 ); // -X → -Z  (bottom-left edge, outward -X-Z)
+        addSide( c3, c0 ); // -Z → +X  (bottom-right edge, outward +X-Z)
+
+        // Contact hull: 4 corners + 4 edge midpoints on the Y=0 mid-plane (deep-research
+        // placement rule). Sub-sphere radius = thickness / 2, matching the other 2.2 primitives.
+        const float subR = ht;
+        data.contactHull = {
+            // 4 corners
+            { +hL, 0.0f, 0.0f, subR },
+            { 0.0f, 0.0f, +hS, subR },
+            { -hL, 0.0f, 0.0f, subR },
+            { 0.0f, 0.0f, -hS, subR },
+            // 4 edge midpoints
+            { +hL * 0.5f, 0.0f, +hS * 0.5f, subR }, // edge c0→c1
+            { -hL * 0.5f, 0.0f, +hS * 0.5f, subR }, // edge c1→c2
+            { -hL * 0.5f, 0.0f, -hS * 0.5f, subR }, // edge c2→c3
+            { +hL * 0.5f, 0.0f, -hS * 0.5f, subR }, // edge c3→c0
+        };
+        data.hullExtentY = ht; // radial thickness/2
+        data.hullExtentZ = hS; // circumferential half-extent
+
+        return data;
+    }
+
     MorphologyData MorphologyGenerator::CreatePentagonDefect(
         float radius, float thickness, float curvatureRadius )
     {

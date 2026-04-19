@@ -53,8 +53,10 @@ namespace Gaudi::Demos
         ecs.SetMorphologyVariants(
             DigitalTwin::CellType::Default,
             {
-                DigitalTwin::MorphologyGenerator::CreateElongatedQuad(
-                    /*length=*/ecWidth * aspect, /*width=*/ecWidth, /*thickness=*/0.2f ),
+                DigitalTwin::MorphologyGenerator::CreateRhombus(
+                    /*longDiagonal=*/ecWidth * aspect * 2.0f,
+                    /*shortDiagonal=*/ecWidth,
+                    /*thickness=*/0.2f ),
             } );
 
         auto jkr = DigitalTwin::BiomechanicsGenerator::JKR()

@@ -83,6 +83,24 @@ namespace DigitalTwin
         // laminar flow per Davies 2009). Drives axial ring spacing = ecCircWidth × aspect.
         VesselTreeGenerator& SetCellAspectRatio( float aspect );
 
+        // Phase 2.4: end-of-trunk tube radius for linear taper. When > 0 the trunk radius
+        // is linearly interpolated from `tubeRadius` at the origin to `tubeRadiusEnd` at
+        // the far end, producing axial ring-count transitions (e.g. arteriole → capillary).
+        // Default -1 = no taper (Phase 2.3 behaviour preserved). Only applies to the trunk;
+        // child branches remain constant-radius internally.
+        VesselTreeGenerator& SetTubeRadiusEnd( float radius );
+
+        // Phase 2.4.5: opt-in Stone-Wales 5/7 defect insertion at ring-count transitions.
+        // Default FALSE — continuous tapering renders as pure rhombus tiles with no
+        // defect polygons, because 5/7 defects at continuous transitions place
+        // visually-misplaced oversized meshes at lattice positions that don't reflect
+        // genuine topological features (user visual verification 2026-04-19). The
+        // defect-placement infrastructure is preserved here for Phase 2.5 carina
+        // re-use, where bifurcations ARE genuinely topological (Y-junction apex =
+        // pair-of-pants, Gauss-Bonnet mandates heptagons). Unit tests that exercise
+        // the infrastructure flip this flag true explicitly.
+        VesselTreeGenerator& SetStoneWalesAtTaperTransitions( bool enabled );
+
         VesselTreeResult Build();
 
     private:
@@ -95,6 +113,7 @@ namespace DigitalTwin
             glm::vec3 perp1;        // parallel-transported frame for junction continuity
             float     length;
             float     tubeRadius;
+            float     endTubeRadius = -1.0f; // Phase 2.4: < 0 → constant radius (no taper)
             uint32_t  depth;
             float     ringAnglePhase = 0.0f; // staggered brick offset carried into child
         };
@@ -120,6 +139,8 @@ namespace DigitalTwin
         uint32_t  m_seed             = 42;
         float     m_ecCircWidth      = 1.0f; // simulation-unit scale; arteriole-analogous default
         float     m_cellAspect       = 5.0f; // Davies 2009 arterial-EC flow alignment
+        float     m_tubeRadiusEnd    = -1.0f; // Phase 2.4: trunk taper end radius; < 0 = no taper
+        bool      m_stoneWalesAtTaperTransitions = false; // Phase 2.4.5: opt-in defect insertion for continuous taper
 
         std::mt19937 m_rng;
     };

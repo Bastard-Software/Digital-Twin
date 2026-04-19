@@ -884,8 +884,33 @@ namespace DigitalTwin
                 size_t polaritySize     = globalCapacity * sizeof( glm::vec4 );
                 outState.polarityBuffer = m_resourceManager->CreateBuffer(
                     { polaritySize, BufferType::STORAGE, "PolarityBuffer" } );
-                std::vector<glm::vec4> zeroes( globalCapacity, glm::vec4( 0.0f ) );
-                m_streamingManager->UploadBufferImmediate( { { outState.polarityBuffer, zeroes.data(), polaritySize, 0 } } );
+
+                // Layout: per-group contiguous slabs at offsets matching agent buffer
+                // (cap = next_pow2 ≥ count, with a 131072 floor). Default-zero so
+                // unpolarised groups start unpolarised; overlay per-cell seeds where
+                // a group populated `GetInitialPolarities()` (Item 2 Phase 2.3 —
+                // VesselTreeGenerator seeds radial-outward polarity for mature vessels).
+                std::vector<glm::vec4> initial( globalCapacity, glm::vec4( 0.0f ) );
+                uint32_t               slabOffset = 0;
+                for( const auto& g: blueprint.GetGroups() )
+                {
+                    if( g.GetCount() == 0 ) continue;
+                    uint32_t cap = 131072;
+                    while( cap < g.GetCount() ) cap <<= 1;
+
+                    const auto& seeds = g.GetInitialPolarities();
+                    if( !seeds.empty() )
+                    {
+                        uint32_t copyN = std::min<uint32_t>( g.GetCount(),
+                                                             static_cast<uint32_t>( seeds.size() ) );
+                        std::copy( seeds.begin(), seeds.begin() + copyN,
+                                   initial.begin() + slabOffset );
+                    }
+                    slabOffset += cap;
+                }
+
+                m_streamingManager->UploadBufferImmediate(
+                    { { outState.polarityBuffer, initial.data(), polaritySize, 0 } } );
             }
             else
             {

@@ -4,6 +4,7 @@
 #include "core/Core.h"
 #include "simulation/Behaviours.h"
 #include "simulation/Phenotype.h"
+#include "simulation/VesselTreeGenerator.h"
 #include <glm/glm.hpp>
 #include <string>
 #include <vector>
@@ -134,6 +135,48 @@ namespace DigitalTwin
             m_initialCellTypes = cellTypes;
             return *this;
         }
+
+        /**
+         * @brief Per-cell initial polarity vector (xyz=basal direction, w=magnitude).
+         *
+         * When non-empty, `SimulationBuilder` uploads these at build time instead of
+         * zero-initialising the polarity buffer. Item 2 Phase 2.3: the vessel generator
+         * seeds each cell with `(radial_outward, 1.0)` so the designed tree is born
+         * fully polarised — Phase 4.5 junctional propagation (Bryant 2010;
+         * St Johnston & Ahringer 2010) then self-sustains the polarity without a BM
+         * plate. Biologically defensible for mature vessels which inherit polarity
+         * from development (Mellman & Nelson 2008).
+         */
+        AgentGroup& SetInitialPolarities( const std::vector<glm::vec4>& polarities )
+        {
+            m_initialPolarities = polarities;
+            return *this;
+        }
+
+        /**
+         * @brief Populate positions, orientations, polarity seeds, and per-cell
+         *        morphology indices from a `VesselTreeResult`. Convenience wrapper
+         *        that expands the generator output into the matching AgentGroup
+         *        fields in one call.
+         */
+        AgentGroup& SetVesselTree( const VesselTreeResult& tree )
+        {
+            const uint32_t n = tree.totalCells;
+            m_count = n;
+            m_positions.clear();        m_positions.reserve( n );
+            m_orientations.clear();     m_orientations.reserve( n );
+            m_initialPolarities.clear(); m_initialPolarities.reserve( n );
+            m_initialCellTypes.clear(); m_initialCellTypes.reserve( n );
+            for( const auto& c : tree.cells )
+            {
+                m_positions.push_back( c.position );
+                m_orientations.push_back( c.orientation );
+                m_initialPolarities.push_back( c.polaritySeed );
+                m_initialCellTypes.push_back( PackCellType( CellType::Default, c.morphologyIndex ) );
+            }
+            return *this;
+        }
+
         AgentGroup& SetVisible( bool visible )
         {
             m_visible = visible;
@@ -201,6 +244,7 @@ namespace DigitalTwin
         std::vector<BehaviourRecord>&        GetBehavioursMutable() { return m_behaviours; }
         const std::vector<MorphologyEntry>&  GetCellTypeMorphologies() const { return m_cellTypeMorphologies; }
         const std::vector<uint32_t>&         GetInitialCellTypes() const { return m_initialCellTypes; }
+        const std::vector<glm::vec4>&        GetInitialPolarities() const { return m_initialPolarities; }
         const DistributionSpec&              GetDistributionSpec() const { return m_distSpec; }
         const MorphologyPresetSpec&          GetMorphologyPresetSpec() const { return m_morphSpec; }
 
@@ -213,6 +257,7 @@ namespace DigitalTwin
         glm::vec4                     m_color = glm::vec4( 1.0f );
         int                           m_initialCellType = 0;
         std::vector<uint32_t>         m_initialCellTypes; // per-cell override (empty = use m_initialCellType for all)
+        std::vector<glm::vec4>        m_initialPolarities; // per-cell polarity seed (empty = zero-init)
         bool                          m_visible         = true;
         std::vector<BehaviourRecord>  m_behaviours;
         std::vector<MorphologyEntry>  m_cellTypeMorphologies;

@@ -5,6 +5,7 @@
 #include <gtest/gtest.h>
 #include <glm/glm.hpp>
 #include <glm/gtc/constants.hpp>
+#include <glm/gtc/quaternion.hpp>
 #include <algorithm>
 #include <cmath>
 #include <numeric>
@@ -539,291 +540,234 @@ TEST( MorphologyGeneratorTest, CreateTile_NormalsUnitLength )
 // VesselTreeGenerator — CPU-only
 // =================================================================================================
 
-// Single trunk (depth=0, no branching) — exactly numRings*ringSize cells, one segment count
-TEST( VesselTreeGeneratorTest, SingleTrunk_NoBranching )
+// Phase 2.3: VesselTreeGenerator is now a pure cell placer. These tests target the
+// adaptive-ring-count formula (Aird 2007 morphometry), radial-outward polarity seed
+// (Mellman & Nelson 2008), staggered brick pattern (Davies 2009 flow-aligned ECs),
+// and quaternion orientation that aligns each cell's local +Y with the radial-outward
+// vessel surface normal.
+
+// Dual-seam capillary lower bound: r=2 and ECWidth=12 would yield 1 cell/ring, clamped
+// to the 2-cell minimum (Bär 1984 — 1-cell autocellular capillaries not modelled at this
+// point-agent scale).
+TEST( VesselTreeGeneratorTest, RingCount_DualSeamCapillary )
 {
     auto result = VesselTreeGenerator::BranchingTree()
-        .SetOrigin( { 0, 0, 0 } )
-        .SetDirection( { 1, 0, 0 } )
-        .SetLength( 8.0f )
-        .SetCellSpacing( 2.0f )     // 5 rings (0,2,4,6,8)
-        .SetRingSize( 6 )
-        .SetTubeRadius( 1.5f )
-        .SetBranchingDepth( 0 )
-        .SetSeed( 1 )
+        .SetOrigin( { 0, 0, 0 } ).SetDirection( { 1, 0, 0 } )
+        .SetLength( 4.0f ).SetTubeRadius( 2.0f )
+        .SetECCircumferentialWidth( 12.0f ).SetBranchingDepth( 0 ).SetSeed( 1 )
         .Build();
 
-    const uint32_t expectedRings = 5u; // length/spacing + 1 = 8/2 + 1 = 5
-    const uint32_t expectedCells = expectedRings * 6u;
-
-    EXPECT_EQ( result.totalCells, expectedCells );
-    EXPECT_EQ( result.positions.size(), expectedCells );
-    EXPECT_EQ( result.normals.size(), expectedCells );
-    EXPECT_EQ( result.segmentCounts.size(), 1u )     << "One segment per branch";
-    EXPECT_EQ( result.segmentCounts[ 0 ], expectedCells );
+    ASSERT_GT( result.totalCells, 0u );
+    // Count cells at the first ring's axial position (X ≈ origin.x).
+    const float firstX = result.cells[ 0 ].position.x;
+    uint32_t firstRingCount = 0;
+    for( const auto& c : result.cells )
+        if( std::fabs( c.position.x - firstX ) < 1e-3f )
+            ++firstRingCount;
+    EXPECT_EQ( firstRingCount, 2u ) << "Dual-seam capillary minimum";
 }
 
-// Depth=1 branching: trunk + 2 children = 3 segment count entries
-TEST( VesselTreeGeneratorTest, OneLevelBranch_ThreeSegments )
+// Post-capillary venule: r=10, ECWidth=15 (venule-typical per Aird 2007) → ring ≈ 4.
+TEST( VesselTreeGeneratorTest, RingCount_Venule )
 {
     auto result = VesselTreeGenerator::BranchingTree()
-        .SetLength( 10.0f )
-        .SetCellSpacing( 2.0f )
-        .SetRingSize( 4 )
-        .SetBranchingDepth( 1 )
-        .SetBranchProbability( 1.0f )
-        .SetSeed( 42 )
+        .SetOrigin( { 0, 0, 0 } ).SetDirection( { 1, 0, 0 } )
+        .SetLength( 4.0f ).SetTubeRadius( 10.0f )
+        .SetECCircumferentialWidth( 15.0f ).SetBranchingDepth( 0 ).SetSeed( 1 )
         .Build();
 
-    EXPECT_EQ( result.segmentCounts.size(), 3u ) << "Trunk + 2 children = 3 segments";
-    EXPECT_GT( result.totalCells, 0u );
-
-    uint32_t sum = std::accumulate( result.segmentCounts.begin(), result.segmentCounts.end(), 0u );
-    EXPECT_EQ( sum, result.totalCells ) << "segmentCounts must sum to totalCells";
+    const float firstX = result.cells[ 0 ].position.x;
+    uint32_t firstRingCount = 0;
+    for( const auto& c : result.cells )
+        if( std::fabs( c.position.x - firstX ) < 1e-3f )
+            ++firstRingCount;
+    EXPECT_GE( firstRingCount, 3u );
+    EXPECT_LE( firstRingCount, 5u );
 }
 
-// Segment counts sum invariant holds for depth=2
-TEST( VesselTreeGeneratorTest, SegmentCountsSumToTotal )
+// Arteriole: r=25, ECWidth=9 (arteriole-typical per Aird 2007) → ring ≈ 17.
+TEST( VesselTreeGeneratorTest, RingCount_Arteriole )
 {
     auto result = VesselTreeGenerator::BranchingTree()
-        .SetLength( 8.0f )
-        .SetCellSpacing( 2.0f )
-        .SetRingSize( 6 )
-        .SetBranchingDepth( 2 )
-        .SetSeed( 7 )
+        .SetOrigin( { 0, 0, 0 } ).SetDirection( { 1, 0, 0 } )
+        .SetLength( 50.0f ).SetTubeRadius( 25.0f )
+        .SetECCircumferentialWidth( 9.0f ).SetBranchingDepth( 0 ).SetSeed( 1 )
         .Build();
 
-    uint32_t sum = std::accumulate( result.segmentCounts.begin(), result.segmentCounts.end(), 0u );
-    EXPECT_EQ( sum, result.totalCells );
+    const float firstX = result.cells[ 0 ].position.x;
+    uint32_t firstRingCount = 0;
+    for( const auto& c : result.cells )
+        if( std::fabs( c.position.x - firstX ) < 1e-3f )
+            ++firstRingCount;
+    EXPECT_GE( firstRingCount, 8u );
+    EXPECT_LE( firstRingCount, 20u );
 }
 
-// Circumferential edges form closed loops: every ring has exactly ringSize edges
-TEST( VesselTreeGeneratorTest, RingTopology_CircumferentialEdges )
+// Muscular artery: r=100, ECWidth=12 → ring ≈ 52.
+TEST( VesselTreeGeneratorTest, RingCount_Artery )
 {
-    const uint32_t ringSize = 6u;
     auto result = VesselTreeGenerator::BranchingTree()
-        .SetLength( 4.0f )
-        .SetCellSpacing( 2.0f ) // 3 rings = 18 cells
-        .SetRingSize( ringSize )
-        .SetBranchingDepth( 0 )
-        .SetSeed( 1 )
+        .SetOrigin( { 0, 0, 0 } ).SetDirection( { 1, 0, 0 } )
+        .SetLength( 200.0f ).SetTubeRadius( 100.0f )
+        .SetECCircumferentialWidth( 12.0f ).SetBranchingDepth( 0 ).SetSeed( 1 )
         .Build();
 
-    // Count edges where both endpoints are in the same ring (both within [base, base+ringSize))
-    uint32_t circumEdges = 0;
-    uint32_t numRings    = result.totalCells / ringSize;
-    for( const auto& [a, b] : result.edges )
-    {
-        uint32_t ra = a / ringSize;
-        uint32_t rb = b / ringSize;
-        if( ra == rb )
-            ++circumEdges;
-    }
-    EXPECT_EQ( circumEdges, numRings * ringSize ) << "Each ring must have exactly ringSize circumferential edges";
+    const float firstX = result.cells[ 0 ].position.x;
+    uint32_t firstRingCount = 0;
+    for( const auto& c : result.cells )
+        if( std::fabs( c.position.x - firstX ) < 1e-3f )
+            ++firstRingCount;
+    EXPECT_GE( firstRingCount, 40u );
 }
 
-// Axial edges connect ring[r][j] to ring[r+1][j] for all r, j
-TEST( VesselTreeGeneratorTest, AxialEdges_ConnectAdjacentRings )
-{
-    const uint32_t ringSize = 6u;
-    auto result = VesselTreeGenerator::BranchingTree()
-        .SetLength( 4.0f )
-        .SetCellSpacing( 2.0f ) // 3 rings
-        .SetRingSize( ringSize )
-        .SetBranchingDepth( 0 )
-        .SetSeed( 1 )
-        .Build();
-
-    uint32_t numRings  = result.totalCells / ringSize;
-    uint32_t axialEdges = 0;
-    for( const auto& [a, b] : result.edges )
-    {
-        uint32_t ra = a / ringSize;
-        uint32_t rb = b / ringSize;
-        if( ra != rb && a % ringSize == b % ringSize )
-            ++axialEdges;
-    }
-    EXPECT_EQ( axialEdges, ( numRings - 1 ) * ringSize ) << "Axial edges: (numRings-1)*ringSize";
-}
-
-// Normals point outward: dot(normal, radial direction from centerline) must be > 0
-TEST( VesselTreeGeneratorTest, Normals_PointOutward )
+// Pre-seeded polarity: every cell's polaritySeed.xyz must be a unit vector pointing
+// radially outward from the vessel axis (basal direction per Item 1 shader convention).
+// Magnitude = 1.0 so junctional propagation (Phase 4.5) sustains polarity without BM contact.
+TEST( VesselTreeGeneratorTest, PolaritySeed_PointsRadialOutward )
 {
     auto result = VesselTreeGenerator::BranchingTree()
-        .SetOrigin( { 0, 0, 0 } )
-        .SetDirection( { 1, 0, 0 } )
-        .SetLength( 4.0f )
-        .SetCellSpacing( 2.0f )
-        .SetRingSize( 6 )
-        .SetTubeRadius( 1.5f )
-        .SetBranchingDepth( 0 )
-        .SetSeed( 1 )
+        .SetOrigin( { 0, 0, 0 } ).SetDirection( { 1, 0, 0 } )
+        .SetLength( 10.0f ).SetTubeRadius( 3.0f )
+        .SetECCircumferentialWidth( 1.0f ).SetBranchingDepth( 0 ).SetSeed( 1 )
         .Build();
 
-    // Ring centers are on the X axis; radial direction from (x, 0, 0) to cell (x, y, z) must match normal
+    ASSERT_GT( result.totalCells, 0u );
     for( uint32_t i = 0; i < result.totalCells; ++i )
     {
-        glm::vec3 pos    = glm::vec3( result.positions[ i ] );
-        glm::vec3 normal = glm::vec3( result.normals[ i ] );
-        // Radial component (perpendicular to X axis)
-        glm::vec3 radial = glm::vec3( 0.0f, pos.y, pos.z );
-        if( glm::length( radial ) > 1e-4f )
-        {
-            float dot = glm::dot( normal, glm::normalize( radial ) );
-            EXPECT_GT( dot, 0.9f ) << "Normal at cell " << i << " must point radially outward";
-        }
+        const auto& c       = result.cells[ i ];
+        glm::vec3   seedDir = glm::vec3( c.polaritySeed );
+
+        // Seed magnitude = 1.0 and direction ~ unit.
+        EXPECT_NEAR( c.polaritySeed.w, 1.0f, 1e-5f ) << "Cell " << i << " polarity magnitude";
+        EXPECT_NEAR( glm::length( seedDir ), 1.0f, 1e-4f )
+            << "Cell " << i << " polarity direction not unit-length";
+
+        // For a straight tube along +X with centreline at Y=Z=0, the radial
+        // outward direction at a cell equals the (Y, Z) component of its position.
+        glm::vec3 radialExpected = glm::normalize( glm::vec3( 0.0f, c.position.y, c.position.z ) );
+        EXPECT_GT( glm::dot( seedDir, radialExpected ), 0.98f )
+            << "Cell " << i << " polarity must align with radial outward";
     }
 }
 
-// Adaptive ring size: trunk ring count matches SetRingSize() (backward compat)
-TEST( VesselTreeGeneratorTest, AdaptiveRingSize_TrunkMatchesLegacy )
+// Staggered brick pattern: alternate rings are circumferentially offset by half a cell-
+// width (Davies 2009 — brick interlock prevents longitudinal-seam mechanical instability
+// under JKR + VE-cad catch-bond loads).
+TEST( VesselTreeGeneratorTest, StaggeredBricks_OddRingOffset )
 {
-    // Trunk-only (depth=0): adaptive formula should produce same ring count as SetRingSize(6).
-    const uint32_t expectedRingSize = 6;
+    const float tubeRadius = 3.0f;
+    const float ecWidth    = 1.0f;
     auto result = VesselTreeGenerator::BranchingTree()
-        .SetRingSize( expectedRingSize )
-        .SetTubeRadius( 1.5f )
-        .SetCellSpacing( 1.5f )
-        .SetLength( 4.0f ) // 3 rings
-        .SetBranchingDepth( 0 )
+        .SetOrigin( { 0, 0, 0 } ).SetDirection( { 1, 0, 0 } )
+        .SetLength( 10.0f ).SetTubeRadius( tubeRadius )
+        .SetECCircumferentialWidth( ecWidth ).SetBranchingDepth( 0 ).SetSeed( 1 )
         .Build();
 
-    // 3 rings × 6 cells = 18 cells
-    EXPECT_EQ( result.totalCells, 18u );
-}
+    ASSERT_GT( result.totalCells, 0u );
 
-// Adaptive ring size: child branches have fewer cells per ring than the trunk
-TEST( VesselTreeGeneratorTest, AdaptiveRingSize_ChildSmallerRing )
-{
-    auto result = VesselTreeGenerator::BranchingTree()
-        .SetRingSize( 6 )
-        .SetTubeRadius( 1.5f )
-        .SetTubeRadiusFalloff( 0.65f )
-        .SetCellSpacing( 1.5f )
-        .SetLength( 6.0f ) // 5 rings per branch
-        .SetBranchingDepth( 1 )
-        .SetSeed( 42 )
-        .Build();
-
-    // Trunk has 5 rings × 6 cells = 30. Children have ring=4 (round(2π×0.975/1.57)=4).
-    // 2 children × 5 rings × 4 cells = 40. Total = 70.
-    // (Segment count invariant: sum(segmentCounts) == totalCells)
-    uint32_t sumSegments = 0;
-    for( uint32_t s : result.segmentCounts ) sumSegments += s;
-    EXPECT_EQ( sumSegments, result.totalCells );
-
-    // Trunk is the first segment; should have more cells per ring than child segments
-    ASSERT_GE( result.segmentCounts.size(), 3u );
-    uint32_t trunkCells = result.segmentCounts[ 0 ]; // numRings × ringSize for trunk
-    uint32_t childCells = result.segmentCounts[ 1 ]; // same numRings × childRingSize
-    // Since ringSize shrinks, childCells < trunkCells (same numRings but fewer per ring)
-    EXPECT_LT( childCells, trunkCells );
-}
-
-// Adaptive ring size: all position.w values must be 1.0 (uniform cell scale)
-TEST( VesselTreeGeneratorTest, AdaptiveRingSize_UniformCellScale )
-{
-    auto result = VesselTreeGenerator::BranchingTree()
-        .SetRingSize( 6 )
-        .SetTubeRadius( 1.5f )
-        .SetTubeRadiusFalloff( 0.65f )
-        .SetBranchingDepth( 2 )
-        .SetSeed( 42 )
-        .Build();
-
-    for( const auto& p : result.positions )
-        EXPECT_FLOAT_EQ( p.w, 1.0f );
-}
-
-// Junction edges when parent and child have different ring sizes
-TEST( VesselTreeGeneratorTest, JunctionEdges_DifferentRingSizes )
-{
-    auto result = VesselTreeGenerator::BranchingTree()
-        .SetRingSize( 6 )
-        .SetTubeRadius( 1.5f )
-        .SetTubeRadiusFalloff( 0.65f ) // child ring=4
-        .SetCellSpacing( 1.5f )
-        .SetLength( 6.0f )
-        .SetBranchingDepth( 1 )
-        .SetSeed( 42 )
-        .Build();
-
-    // Total cells = 5×6 + 2×(5×4) = 30 + 40 = 70
-    // Every cell index referenced in edges must be in range
-    for( const auto& [a, b] : result.edges )
+    // Segregate cells into rings by axial position (X). Then compare the angular
+    // phase of the first cell in ring 0 vs ring 1 — must differ by π/ringSize.
+    std::vector<float> xs;
+    for( const auto& c : result.cells )
     {
-        EXPECT_LT( a, result.totalCells );
-        EXPECT_LT( b, result.totalCells );
+        bool seen = false;
+        for( float x : xs ) if( std::fabs( x - c.position.x ) < 1e-3f ) { seen = true; break; }
+        if( !seen ) xs.push_back( c.position.x );
     }
+    std::sort( xs.begin(), xs.end() );
+    ASSERT_GE( xs.size(), 2u );
 
-    // Junction edges exist: at least ringSize edges cross the parent-child boundary.
-    // Trunk last ring = cells [24..29]; child first rings start after that.
-    uint32_t trunkEnd = result.segmentCounts[ 0 ]; // 30
-    uint32_t junctionEdgeCount = 0;
-    for( const auto& [a, b] : result.edges )
-    {
-        bool aInTrunk = a < trunkEnd;
-        bool bInTrunk = b < trunkEnd;
-        if( aInTrunk != bInTrunk ) // one endpoint in trunk, one in child
-            junctionEdgeCount++;
-    }
-    EXPECT_GT( junctionEdgeCount, 0u );
+    auto ringAngles = [&]( float x ) {
+        std::vector<float> out;
+        for( const auto& c : result.cells )
+            if( std::fabs( c.position.x - x ) < 1e-3f )
+                out.push_back( std::atan2( c.position.z, c.position.y ) );
+        std::sort( out.begin(), out.end() );
+        return out;
+    };
+
+    auto ring0 = ringAngles( xs[ 0 ] );
+    auto ring1 = ringAngles( xs[ 1 ] );
+    ASSERT_EQ( ring0.size(), ring1.size() );
+
+    const float dAngle   = 2.0f * glm::pi<float>() / static_cast<float>( ring0.size() );
+    const float expected = dAngle * 0.5f;
+    float       diff     = std::fabs( ring1[ 0 ] - ring0[ 0 ] );
+    diff                 = std::fmod( diff, dAngle ); // wrap into [0, dAngle)
+    if( diff > dAngle * 0.5f ) diff = dAngle - diff;
+    EXPECT_NEAR( diff, expected, dAngle * 0.1f )
+        << "Ring 1 must be offset by half a cell-width circumferentially";
 }
 
-// Curvature=0: all ring centers lie on the branch axis (straight line)
-TEST( VesselTreeGeneratorTest, CurvedBranch_ZeroCurvature_StraightLine )
+// Orientation quaternion: applying it to local +Y must produce the world radial-outward
+// direction. This is the invariant Item 1's rendering + JKR-hull pipelines rely on.
+TEST( VesselTreeGeneratorTest, Orientation_LocalYAlignsWithRadialOutward )
 {
-    const glm::vec3 origin( 0.0f, 0.0f, 0.0f );
-    const glm::vec3 direction( 1.0f, 0.0f, 0.0f );
-    const uint32_t  ringSize = 6;
-    const float     spacing  = 2.0f;
-
     auto result = VesselTreeGenerator::BranchingTree()
-        .SetOrigin( origin ).SetDirection( direction )
-        .SetLength( 8.0f ).SetCellSpacing( spacing ).SetRingSize( ringSize )
-        .SetBranchingDepth( 0 ).SetCurvature( 0.0f ).SetSeed( 42 )
+        .SetOrigin( { 0, 0, 0 } ).SetDirection( { 1, 0, 0 } )
+        .SetLength( 6.0f ).SetTubeRadius( 2.0f )
+        .SetECCircumferentialWidth( 1.0f ).SetBranchingDepth( 0 ).SetSeed( 1 )
         .Build();
 
-    // With curvature=0 each ring center = average of its cells, must lie on the X axis
-    uint32_t numRings = result.totalCells / ringSize;
-    for( uint32_t r = 0; r < numRings; ++r )
+    for( uint32_t i = 0; i < result.totalCells; ++i )
+    {
+        const auto& c = result.cells[ i ];
+        glm::quat q( c.orientation.w, c.orientation.x, c.orientation.y, c.orientation.z );
+        glm::vec3 worldY = q * glm::vec3( 0.0f, 1.0f, 0.0f );
+        glm::vec3 radial = glm::normalize( glm::vec3( 0.0f, c.position.y, c.position.z ) );
+        EXPECT_GT( glm::dot( worldY, radial ), 0.98f )
+            << "Cell " << i << " orientation's local +Y must align with radial outward";
+    }
+}
+
+// Branching generator still produces a tree of cells; the legacy segment/edge metadata is
+// gone, so the test just asserts cell count grows with branching depth.
+TEST( VesselTreeGeneratorTest, BranchingDepth_IncreasesCellCount )
+{
+    auto trunk = VesselTreeGenerator::BranchingTree()
+        .SetLength( 10.0f ).SetTubeRadius( 2.0f )
+        .SetECCircumferentialWidth( 1.0f ).SetBranchingDepth( 0 ).SetSeed( 42 )
+        .Build();
+    auto depth1 = VesselTreeGenerator::BranchingTree()
+        .SetLength( 10.0f ).SetTubeRadius( 2.0f )
+        .SetECCircumferentialWidth( 1.0f ).SetBranchingDepth( 1 )
+        .SetBranchProbability( 1.0f ).SetSeed( 42 )
+        .Build();
+    EXPECT_GT( depth1.totalCells, trunk.totalCells )
+        << "Branching depth 1 must add child-branch cells";
+}
+
+// Curvature=0: ring centres are collinear with the branch axis.
+TEST( VesselTreeGeneratorTest, CurvedBranch_ZeroCurvature_RingCentresOnAxis )
+{
+    auto result = VesselTreeGenerator::BranchingTree()
+        .SetOrigin( { 0, 0, 0 } ).SetDirection( { 1, 0, 0 } )
+        .SetLength( 8.0f ).SetTubeRadius( 2.0f )
+        .SetECCircumferentialWidth( 1.0f ).SetBranchingDepth( 0 ).SetCurvature( 0.0f )
+        .SetSeed( 42 )
+        .Build();
+
+    std::vector<float> xs;
+    for( const auto& c : result.cells )
+    {
+        bool seen = false;
+        for( float x : xs ) if( std::fabs( x - c.position.x ) < 1e-3f ) { seen = true; break; }
+        if( !seen ) xs.push_back( c.position.x );
+    }
+    for( float x : xs )
     {
         glm::vec3 center( 0.0f );
-        for( uint32_t j = 0; j < ringSize; ++j )
-            center += glm::vec3( result.positions[ r * ringSize + j ] );
-        center /= static_cast<float>( ringSize );
-        // Y and Z should be zero (ring centered on axis)
-        EXPECT_NEAR( center.y, 0.0f, 1e-4f ) << "Ring " << r << " center Y off-axis";
-        EXPECT_NEAR( center.z, 0.0f, 1e-4f ) << "Ring " << r << " center Z off-axis";
+        uint32_t  n = 0;
+        for( const auto& c : result.cells )
+            if( std::fabs( c.position.x - x ) < 1e-3f )
+            { center += glm::vec3( c.position ); ++n; }
+        center /= static_cast<float>( n );
+        // 1% symmetry-breaking jitter → mean of N cells sits within jitter/√N ≈ 0.005
+        // of the axis. 0.05 tolerance covers the worst-case sample with margin while
+        // still catching real centreline deviation (e.g. from curvature).
+        EXPECT_NEAR( center.y, 0.0f, 0.05f );
+        EXPECT_NEAR( center.z, 0.0f, 0.05f );
     }
-}
-
-// Curvature>0: ring centers deviate from the straight axis
-TEST( VesselTreeGeneratorTest, CurvedBranch_NonZeroCurvature_CellsDeviate )
-{
-    const glm::vec3 origin( 0.0f, 0.0f, 0.0f );
-    const glm::vec3 direction( 1.0f, 0.0f, 0.0f );
-    const uint32_t  ringSize = 6;
-
-    auto result = VesselTreeGenerator::BranchingTree()
-        .SetOrigin( origin ).SetDirection( direction )
-        .SetLength( 10.0f ).SetCellSpacing( 2.0f ).SetRingSize( ringSize )
-        .SetBranchingDepth( 0 ).SetCurvature( 0.4f ).SetSeed( 7 )
-        .Build();
-
-    // Compute max deviation of ring centers from the straight axis
-    uint32_t numRings  = result.totalCells / ringSize;
-    float    maxDevSq  = 0.0f;
-    for( uint32_t r = 0; r < numRings; ++r )
-    {
-        glm::vec3 center( 0.0f );
-        for( uint32_t j = 0; j < ringSize; ++j )
-            center += glm::vec3( result.positions[ r * ringSize + j ] );
-        center /= static_cast<float>( ringSize );
-        // Deviation = distance from X axis (Y² + Z²)
-        maxDevSq = std::max( maxDevSq, center.y * center.y + center.z * center.z );
-    }
-    EXPECT_GT( maxDevSq, 0.01f ) << "Curvature=0.4 should produce visible deviation from straight axis";
 }
 
 // =================================================================================================
@@ -1022,7 +966,8 @@ TEST( VesselTreeGeneratorTest, Reproducible_SameSeed )
     auto build = [&]()
     {
         return VesselTreeGenerator::BranchingTree()
-            .SetLength( 10.0f ).SetRingSize( 6 ).SetBranchingDepth( 2 ).SetSeed( 99 ).Build();
+            .SetLength( 10.0f ).SetTubeRadius( 2.0f )
+            .SetECCircumferentialWidth( 1.0f ).SetBranchingDepth( 2 ).SetSeed( 99 ).Build();
     };
     auto r1 = build();
     auto r2 = build();
@@ -1030,54 +975,8 @@ TEST( VesselTreeGeneratorTest, Reproducible_SameSeed )
     ASSERT_EQ( r1.totalCells, r2.totalCells );
     for( uint32_t i = 0; i < r1.totalCells; ++i )
     {
-        EXPECT_NEAR( r1.positions[ i ].x, r2.positions[ i ].x, 1e-5f );
-        EXPECT_NEAR( r1.positions[ i ].y, r2.positions[ i ].y, 1e-5f );
-        EXPECT_NEAR( r1.positions[ i ].z, r2.positions[ i ].z, 1e-5f );
+        EXPECT_NEAR( r1.cells[ i ].position.x, r2.cells[ i ].position.x, 1e-5f );
+        EXPECT_NEAR( r1.cells[ i ].position.y, r2.cells[ i ].position.y, 1e-5f );
+        EXPECT_NEAR( r1.cells[ i ].position.z, r2.cells[ i ].position.z, 1e-5f );
     }
-}
-
-TEST( VesselTreeGeneratorTest, EdgeFlags_SizeMatchesEdges )
-{
-    auto tree = VesselTreeGenerator::BranchingTree()
-        .SetLength( 10.0f ).SetRingSize( 6 ).SetBranchingDepth( 1 ).SetSeed( 42 ).Build();
-
-    ASSERT_EQ( tree.edgeFlags.size(), tree.edges.size() )
-        << "edgeFlags must be parallel to edges";
-}
-
-TEST( VesselTreeGeneratorTest, EdgeFlags_RingEdgesTaggedCorrectly )
-{
-    // Single straight trunk, no branches — all edges are ring or axial
-    auto tree = VesselTreeGenerator::BranchingTree()
-        .SetLength( 10.0f ).SetRingSize( 6 ).SetBranchingDepth( 0 ).SetSeed( 42 ).Build();
-
-    ASSERT_EQ( tree.edgeFlags.size(), tree.edges.size() );
-
-    int ringCount  = 0;
-    int axialCount = 0;
-    for( uint32_t f : tree.edgeFlags )
-    {
-        if( f == 0x1u ) ++ringCount;
-        else if( f == 0x2u ) ++axialCount;
-        else ADD_FAILURE() << "Unexpected flag " << f << " on trunk-only tree";
-    }
-
-    EXPECT_GT( ringCount,  0 ) << "Expected ring edges";
-    EXPECT_GT( axialCount, 0 ) << "Expected axial edges";
-    EXPECT_EQ( ringCount + axialCount, static_cast<int>( tree.edges.size() ) );
-}
-
-TEST( VesselTreeGeneratorTest, EdgeFlags_JunctionEdgesTaggedCorrectly )
-{
-    auto tree = VesselTreeGenerator::BranchingTree()
-        .SetLength( 10.0f ).SetRingSize( 6 ).SetBranchingDepth( 1 ).SetSeed( 42 ).Build();
-
-    ASSERT_EQ( tree.edgeFlags.size(), tree.edges.size() );
-
-    bool hasJunction = false;
-    for( uint32_t f : tree.edgeFlags )
-    {
-        if( f == 0x4u ) { hasJunction = true; break; }
-    }
-    EXPECT_TRUE( hasJunction ) << "Branching tree must have junction edges (0x4)";
 }

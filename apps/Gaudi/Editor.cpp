@@ -304,6 +304,34 @@ namespace Gaudi
                   "transitions + bifurcation carinas (Stone & Wales 1986;\n"
                   "Chiu & Chien 2011).",
                   &Demos::SetupPuzzlePiecePaletteDemo },
+
+                { "Straight Tube",
+                  "Phase 2.3 refactored VesselTreeGenerator — pure cell placer.\n"
+                  "A single straight tube (radius 2.5, length 15) with adaptive\n"
+                  "ring count (2*pi*r / ECWidth; Aird 2007) in a staggered brick\n"
+                  "pattern (Davies 2009). Each cell is emitted with position +\n"
+                  "quaternion orientation (local +Y -> radial outward) + polarity\n"
+                  "seed (radial outward, magnitude 1.0).\n\n"
+                  "No BM plate: pre-seeded polarity self-sustains via Phase-4.5\n"
+                  "junctional propagation (Bryant 2010; St Johnston & Ahringer\n"
+                  "2010). Same Item-1 behaviour stack as ECBlob / EC2DMatrigel /\n"
+                  "ECTube - proving the cell-based physics can hold a designed\n"
+                  "tube without the legacy vessel-edge graph (Phase 2.0 demolition).\n\n"
+                  "Expected: a tube of elongated rhomboids aligned along +X,\n"
+                  "alternating rings offset by half a cell-width. Should hold\n"
+                  "shape throughout the sim with polarity sustained everywhere.",
+                  &Demos::SetupStraightTubeDemo },
+
+                { "Curved Tube",
+                  "Phase 2.3 addendum — same tube as Straight Tube, but with\n"
+                  "a non-zero SetCurvature(0.2) that deflects the centreline\n"
+                  "via a quadratic Bezier. Exercises the parallel-transported\n"
+                  "orientation frames on a curved centreline — the geometry\n"
+                  "Phase 2.6 DesignedVesselDemo will need on every branch.\n\n"
+                  "Radius 2.5, length 25, seed 7. Provisional demo: will be\n"
+                  "removed once DesignedVesselDemo ships, or evolved into a\n"
+                  "branching-tree demo during Phase 2.5.",
+                  &Demos::SetupCurvedTubeDemo },
             }, false },
         };
 

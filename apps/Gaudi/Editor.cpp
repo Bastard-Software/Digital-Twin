@@ -349,6 +349,28 @@ namespace Gaudi
                   "the axial positions where ring count changes; smooth taper;\n"
                   "tube holding shape without cracks at the transitions.",
                   &Demos::SetupTaperingTubeDemo },
+
+                { "Branching Tree",
+                  "Phase 2.5 three-level Y-branching tree. Trunk (r=3.0 -> 2.5)\n"
+                  "splits into two L1 branches (r~1.98 -> 1.65), each of which\n"
+                  "splits into two L2 capillary-scale branches (r~1.3 -> 1.08).\n"
+                  "Murray's law (r_parent^3 = sum of r_child^3; factor 0.79 per\n"
+                  "Murray 1926) applies at each bifurcation; within each branch\n"
+                  "the parent's proportional taper shape is preserved.\n\n"
+                  "All cells are rhombus tiles (fish-scale tessellation, Davies\n"
+                  "2009) in a single AgentGroup. Phase 2.5 identifies carina\n"
+                  "cells at each Y-junction but does not render them differently:\n"
+                  "   - Parent-last-ring: 2 cells on the bisection plane\n"
+                  "   - Child-first-ring: 2 cells facing the sibling branch\n"
+                  "These are the cobblestone endothelium at real flow dividers\n"
+                  "(Chiu & Chien 2011; van der Heiden 2013). Phase 2.6.5 dynamic\n"
+                  "topology will render them as 6-to-8-sided Voronoi polygons.\n\n"
+                  "Look for: artery-to-capillary radius progression across three\n"
+                  "levels; clean rhombus tiling on each branch between junctions;\n"
+                  "visible gap / bumpiness at each Y-junction apex (the known\n"
+                  "static-primitive limit; Phase 2.6.5 closes it). Tree holds\n"
+                  "shape under Item-1 physics alone - no vessel-edge springs.",
+                  &Demos::SetupBranchingTreeDemo },
             }, false },
         };
 

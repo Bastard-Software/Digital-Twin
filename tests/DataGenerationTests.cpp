@@ -1227,3 +1227,163 @@ TEST( VesselTreeGeneratorTest, Reproducible_SameSeed )
         EXPECT_NEAR( r1.cells[ i ].position.z, r2.cells[ i ].position.z, 1e-5f );
     }
 }
+
+// =================================================================================================
+// Phase 2.5 — Bifurcation placement geometry (rhombus-only, no carina defect cells)
+// =================================================================================================
+//
+// Tests cover the three Phase 2.5 additions to VesselTreeGenerator::buildBranch:
+//   1. Per-child tapering propagation — child inherits parent's relative taper ratio
+//      (Murray 1926 DOI 10.1073/pnas.12.3.207 applies AT the split as the discrete drop,
+//      within-branch taper shape is preserved so trees can go artery → capillary
+//      continuously across multiple bifurcations).
+//   2. isCarina flagging on parent-last-ring cells (the 2 cells closest to the
+//      bifurcation bisection plane).
+//   3. isCarina flagging on child-first-ring cells (the 2 cells facing the sibling
+//      branch). Biologically these are the cobblestone ECs at the flow-divider apex
+//      (Chiu & Chien 2011 DOI 10.1152/physrev.00047.2009; van der Heiden 2013).
+//
+// Phase 2.5 does NOT render carina cells differently — they remain rhombus tiles like
+// the rest of the tree. The flag is CPU-only metadata that Phase 2.6.5 dynamic topology
+// will consume to produce 6-to-8-sided Voronoi polygons naturally from each cell's
+// JKR-neighbour count.
+
+// Murray's law: r_parent³ = r_child1³ + r_child2³. For a symmetric 2-way split with
+// falloff 0.794 ≈ 2^(-1/3), the derived child ring size drops from 10 to 8 when the
+// parent ring size is 10 at ecWidth=2π (parent r=10 → child r≈7.94 → round(2π·7.94/2π)=8).
+TEST( VesselTreeGeneratorTest, Bifurcation_MurrayLawRadius )
+{
+    auto make = []( uint32_t depth ) {
+        return VesselTreeGenerator::BranchingTree()
+            .SetOrigin( { 0, 0, 0 } ).SetDirection( { 1, 0, 0 } )
+            .SetLength( 12.0f ).SetTubeRadius( 10.0f )
+            .SetECCircumferentialWidth( 2.0f * glm::pi<float>() )
+            .SetCellAspectRatio( 1.0f )
+            .SetBranchingAngle( 90.0f ).SetAngleJitter( 0.0f )
+            .SetLengthFalloff( 0.6f ).SetTubeRadiusFalloff( 0.794f )
+            .SetBranchingDepth( depth ).SetBranchProbability( 1.0f )
+            .SetSeed( 1 ).Build();
+    };
+    auto trunk = make( 0 );
+    auto tree  = make( 1 );
+
+    // Trunk: axialStep = ecWidth × aspect = 2π. Length 12 → numRings = floor(12/2π)+1 = 2.
+    // RingSize = round(2π·10/2π) = 10. Trunk cells = 2 × 10 = 20.
+    EXPECT_EQ( trunk.totalCells, 20u );
+
+    // Depth 1 adds 2 children. Each child's radius = 10 × 0.794 = 7.94 → ringSize = 8.
+    // Length per child = 12 × 0.6 × lenVar (lenVar ∈ [0.9, 1.1]) = 6.48 to 7.92, all yield
+    // numRings = 2. Child cells = 2 × 2 × 8 = 32.
+    const uint32_t perChild = ( tree.totalCells - trunk.totalCells ) / 2u;
+    EXPECT_EQ( perChild, 16u ) << "Murray 0.794: child ring ≈ 8 × 2 rings = 16 cells each";
+    EXPECT_EQ( tree.totalCells, 52u );
+}
+
+// Depth 2 tree with branchProb=1.0 produces 1+2+4 = 7 branches. Cell count must grow
+// strictly with depth (each added level contributes non-zero cells).
+TEST( VesselTreeGeneratorTest, Bifurcation_ChildrenCount_Depth2 )
+{
+    auto make = []( uint32_t depth ) {
+        return VesselTreeGenerator::BranchingTree()
+            .SetOrigin( { 0, 0, 0 } ).SetDirection( { 1, 0, 0 } )
+            .SetLength( 10.0f ).SetTubeRadius( 3.0f )
+            .SetECCircumferentialWidth( 1.0f ).SetCellAspectRatio( 1.0f )
+            .SetBranchingDepth( depth ).SetBranchProbability( 1.0f )
+            .SetAngleJitter( 0.0f ).SetSeed( 1 ).Build();
+    };
+    auto d0 = make( 0 );
+    auto d1 = make( 1 );
+    auto d2 = make( 2 );
+
+    EXPECT_GT( d1.totalCells, d0.totalCells ) << "L1 branches must contribute cells";
+    EXPECT_GT( d2.totalCells, d1.totalCells ) << "L2 branches must contribute cells";
+}
+
+// Primary Phase 2.5 invariant: one bifurcation produces exactly 6 carina cells
+// (2 parent-last-ring + 2 per child-first-ring).
+TEST( VesselTreeGeneratorTest, Bifurcation_CarinaCellsFlagged )
+{
+    auto result = VesselTreeGenerator::BranchingTree()
+        .SetOrigin( { 0, 0, 0 } ).SetDirection( { 1, 0, 0 } )
+        .SetLength( 8.0f ).SetTubeRadius( 3.0f )
+        .SetECCircumferentialWidth( 1.0f ).SetCellAspectRatio( 1.0f )
+        .SetBranchingDepth( 1 ).SetBranchProbability( 1.0f )
+        .SetBranchingAngle( 45.0f ).SetAngleJitter( 0.0f )
+        .SetSeed( 1 ).Build();
+
+    uint32_t carinaCount = 0;
+    for( const auto& c : result.cells )
+        if( c.isCarina ) ++carinaCount;
+    EXPECT_EQ( carinaCount, 6u )
+        << "Depth-1 bifurcation: 2 parent-last-ring + 2 per child-first-ring = 6 carina cells";
+}
+
+// Depth 2 → 3 bifurcations (trunk + 2 L1s each split) → 18 carina cells.
+TEST( VesselTreeGeneratorTest, Bifurcation_CarinaCellsFlagged_Depth2 )
+{
+    auto result = VesselTreeGenerator::BranchingTree()
+        .SetOrigin( { 0, 0, 0 } ).SetDirection( { 1, 0, 0 } )
+        .SetLength( 10.0f ).SetTubeRadius( 3.0f )
+        .SetECCircumferentialWidth( 1.0f ).SetCellAspectRatio( 1.0f )
+        .SetBranchingDepth( 2 ).SetBranchProbability( 1.0f )
+        .SetBranchingAngle( 45.0f ).SetAngleJitter( 0.0f )
+        .SetSeed( 1 ).Build();
+
+    uint32_t carinaCount = 0;
+    for( const auto& c : result.cells )
+        if( c.isCarina ) ++carinaCount;
+    EXPECT_EQ( carinaCount, 18u ) << "3 bifurcations × 6 carinas each";
+}
+
+// Trunk-only build (depth 0) must produce zero carina cells — no bifurcations exist.
+TEST( VesselTreeGeneratorTest, Bifurcation_NoCarinasOnTrunkOnly )
+{
+    auto result = VesselTreeGenerator::BranchingTree()
+        .SetOrigin( { 0, 0, 0 } ).SetDirection( { 1, 0, 0 } )
+        .SetLength( 10.0f ).SetTubeRadius( 3.0f )
+        .SetECCircumferentialWidth( 1.0f ).SetBranchingDepth( 0 ).SetSeed( 1 )
+        .Build();
+    for( const auto& c : result.cells )
+        EXPECT_EQ( c.isCarina, 0u ) << "Trunk-only tree: no carina flags";
+}
+
+// Per-child tapering: a tapered trunk (r_start > r_end) must produce children that
+// also taper proportionally. With Murray=1.0 to isolate the within-branch taper
+// effect, a tapered trunk's children see varying ring sizes along their length,
+// whereas a constant-radius trunk's children stay constant. The cell counts differ.
+TEST( VesselTreeGeneratorTest, Bifurcation_ChildTaper_Propagates )
+{
+    auto build = []( float endR ) {
+        return VesselTreeGenerator::BranchingTree()
+            .SetOrigin( { 0, 0, 0 } ).SetDirection( { 1, 0, 0 } )
+            .SetLength( 10.0f ).SetTubeRadius( 3.0f ).SetTubeRadiusEnd( endR )
+            .SetECCircumferentialWidth( 1.0f ).SetCellAspectRatio( 1.0f )
+            .SetBranchingDepth( 1 ).SetBranchProbability( 1.0f )
+            .SetBranchingAngle( 90.0f ).SetAngleJitter( 0.0f )
+            .SetTubeRadiusFalloff( 1.0f ) // isolate per-branch taper from Murray drop
+            .SetLengthFalloff( 0.6f ).SetSeed( 1 ).Build();
+    };
+    auto constant = build( -1.0f ); // trunk r=3 constant, children also constant
+    auto tapered  = build( 1.5f );  // trunk r=3→1.5 (0.5× internal), children inherit
+
+    EXPECT_NE( tapered.totalCells, constant.totalCells )
+        << "Tapered trunk must propagate into child ring sizes — cell count differs";
+}
+
+// Depth-3 tree (1+2+4+8=15 branches). Each depth step must add cells.
+TEST( VesselTreeGeneratorTest, ThreeLevelTree_BranchCount )
+{
+    auto make = []( uint32_t depth ) {
+        return VesselTreeGenerator::BranchingTree()
+            .SetOrigin( { 0, 0, 0 } ).SetDirection( { 1, 0, 0 } )
+            .SetLength( 12.0f ).SetTubeRadius( 4.0f )
+            .SetECCircumferentialWidth( 1.0f ).SetCellAspectRatio( 1.0f )
+            .SetBranchingDepth( depth ).SetBranchProbability( 1.0f )
+            .SetAngleJitter( 0.0f ).SetLengthFalloff( 0.65f ).SetSeed( 1 )
+            .Build();
+    };
+    auto d2 = make( 2 );
+    auto d3 = make( 3 );
+    EXPECT_GT( d3.totalCells, d2.totalCells )
+        << "Depth 3 adds 8 L3 branches on top of depth 2's 7 branches";
+}

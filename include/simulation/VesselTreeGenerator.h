@@ -21,9 +21,16 @@ namespace DigitalTwin
         glm::vec4 orientation;     // quaternion: local +Y → radial outward, local +X → axial flow
         glm::vec4 polaritySeed;    // xyz=radial outward (basal direction), w=1.0 magnitude
         uint32_t  morphologyIndex; // 0=elongated rhomboid (Phase 2.3); 1/2 reserved for Phase 2.4
-        uint32_t  _pad0 = 0;
-        uint32_t  _pad1 = 0;
-        uint32_t  _pad2 = 0;
+        // Phase 2.5: 1 iff this cell sits at a bifurcation — parent-last-ring cells on the
+        // split line OR child-first-ring cells facing the sibling branch. Biologically,
+        // these are the cobblestone ECs that line the Y-junction carina (Chiu & Chien 2011
+        // DOI 10.1152/physrev.00047.2009; van der Heiden 2013). Phase 2.5 does not render
+        // them differently — the flag is CPU-only metadata that Phase 2.6.5 dynamic
+        // topology (Voronoi from JKR neighbours) will consume to produce the 6-to-8-sided
+        // polygons real carina cells exhibit.
+        uint32_t  isCarina = 0;
+        uint32_t  _pad1    = 0;
+        uint32_t  _pad2    = 0;
     };
 
     struct VesselTreeResult
@@ -116,6 +123,12 @@ namespace DigitalTwin
             float     endTubeRadius = -1.0f; // Phase 2.4: < 0 → constant radius (no taper)
             uint32_t  depth;
             float     ringAnglePhase = 0.0f; // staggered brick offset carried into child
+            // Phase 2.5: world-space direction from this branch's first-ring centre toward
+            // the sibling branch across the bifurcation that birthed it. Zero for the
+            // trunk (no parent). Children receive ∓p2rand from the split computation,
+            // which lets them flag their own first-ring carina cells without needing a
+            // back-reference to the parent's geometry.
+            glm::vec3 carinaInwardDir = glm::vec3( 0.0f );
         };
 
         void buildBranch( BranchJob job, VesselTreeResult& result );

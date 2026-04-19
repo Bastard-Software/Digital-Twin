@@ -8,6 +8,73 @@
 
 namespace DigitalTwin
 {
+    namespace
+    {
+        // Phase 2.5: flag the K cells on a ring whose radial direction most closely aligns
+        // with `worldInwardDir`. For a child branch, `worldInwardDir` points toward the
+        // sibling branch — these are the inside-facing cells of the Y-junction apex
+        // (Chiu & Chien 2011 cobblestone biology).
+        void FlagCarinaCellsFacingDirection(
+            VesselTreeResult& result,
+            uint32_t          ringStart,
+            uint32_t          ringSize,
+            glm::vec3         ringCenter,
+            glm::vec3         worldInwardDir,
+            uint32_t          k = 2u )
+        {
+            if( ringSize == 0 || glm::dot( worldInwardDir, worldInwardDir ) < 1e-8f ) return;
+
+            const glm::vec3 inward = glm::normalize( worldInwardDir );
+            std::vector<std::pair<float, uint32_t>> scores;
+            scores.reserve( ringSize );
+            for( uint32_t j = 0; j < ringSize; ++j )
+            {
+                glm::vec3 radial = glm::vec3( result.cells[ ringStart + j ].position ) - ringCenter;
+                float     len    = glm::length( radial );
+                if( len < 1e-6f ) continue;
+                radial /= len;
+                scores.emplace_back( glm::dot( radial, inward ), ringStart + j );
+            }
+            std::sort( scores.begin(), scores.end(),
+                       []( const auto& a, const auto& b ) { return a.first > b.first; } );
+            const uint32_t count = std::min( k, static_cast<uint32_t>( scores.size() ) );
+            for( uint32_t i = 0; i < count; ++i )
+                result.cells[ scores[ i ].second ].isCarina = 1u;
+        }
+
+        // Phase 2.5: flag the K cells on a ring closest to a plane (minimum |dot(radial,
+        // planeNormal)|). For the parent-last-ring at a Y-junction, the bisection plane
+        // contains the parent's tangent and the split axis; cells with minimum projection
+        // onto its normal sit ON the flow-divider line biologically.
+        void FlagCarinaCellsOnPlane(
+            VesselTreeResult& result,
+            uint32_t          ringStart,
+            uint32_t          ringSize,
+            glm::vec3         ringCenter,
+            glm::vec3         planeNormal,
+            uint32_t          k = 2u )
+        {
+            if( ringSize == 0 || glm::dot( planeNormal, planeNormal ) < 1e-8f ) return;
+
+            const glm::vec3 normal = glm::normalize( planeNormal );
+            std::vector<std::pair<float, uint32_t>> scores;
+            scores.reserve( ringSize );
+            for( uint32_t j = 0; j < ringSize; ++j )
+            {
+                glm::vec3 radial = glm::vec3( result.cells[ ringStart + j ].position ) - ringCenter;
+                float     len    = glm::length( radial );
+                if( len < 1e-6f ) continue;
+                radial /= len;
+                scores.emplace_back( std::fabs( glm::dot( radial, normal ) ), ringStart + j );
+            }
+            std::sort( scores.begin(), scores.end(),
+                       []( const auto& a, const auto& b ) { return a.first < b.first; } );
+            const uint32_t count = std::min( k, static_cast<uint32_t>( scores.size() ) );
+            for( uint32_t i = 0; i < count; ++i )
+                result.cells[ scores[ i ].second ].isCarina = 1u;
+        }
+    } // namespace
+
     // -------------------------------------------------------------------------
     // Static factory
     // -------------------------------------------------------------------------
@@ -195,6 +262,12 @@ namespace DigitalTwin
 
         const uint32_t branchFirstIdx = static_cast<uint32_t>( result.cells.size() );
 
+        // Phase 2.5: remember per-ring start index + ring centre so we can flag carina
+        // cells after the RNG-consuming split computation runs (preserving the Phase 2.3
+        // RNG sequence — Reproducible_SameSeed).
+        std::vector<uint32_t>  ringStartIdx( numRings );
+        std::vector<glm::vec3> ringCenters( numRings );
+
         // Tiny positional jitter (~1% of cell spacing) breaks the perfect mathematical
         // ring symmetry that would otherwise trigger a coherent radial-breathing mode
         // under the JKR stiffness — all cells equally off-equilibrium in the same
@@ -205,10 +278,13 @@ namespace DigitalTwin
         // ---- Place cells ring by ring ----
         for( uint32_t r = 0; r < numRings; ++r )
         {
+            ringStartIdx[ r ] = static_cast<uint32_t>( result.cells.size() );
+
             float t  = ( numRings > 1 ) ? static_cast<float>( r ) / static_cast<float>( numRings - 1 ) : 0.0f;
             float mt = 1.0f - t;
 
             glm::vec3 ringCenter = mt * mt * P0 + 2.0f * mt * t * P1 + t * t * P2;
+            ringCenters[ r ]     = ringCenter;
             glm::vec3 rawTangent = 2.0f * mt * ( P1 - P0 ) + 2.0f * t * ( P2 - P1 );
             glm::vec3 tangent    = ( glm::length( rawTangent ) > 1e-4f ) ? glm::normalize( rawTangent ) : dir;
 
@@ -260,6 +336,12 @@ namespace DigitalTwin
             endTangent  = tangent;
         }
 
+        // Phase 2.5: if this branch was spawned by a bifurcation, its first-ring cells
+        // nearest to the sibling branch are the child-side carinas. Trunk branches have
+        // `carinaInwardDir == 0` and are skipped.
+        FlagCarinaCellsFacingDirection(
+            result, ringStartIdx[ 0 ], ringSizes[ 0 ], ringCenters[ 0 ], job.carinaInwardDir );
+
         // ---- Recurse into children (branching retained; defect insertion comes in 2.4/2.5) ----
         if( job.depth == 0 )
             return;
@@ -288,12 +370,33 @@ namespace DigitalTwin
         float     childLen2   = job.length * m_lengthFalloff * lenVarDist( m_rng );
         glm::vec3 dir1        = rotDir( +angle1 );
         glm::vec3 dir2        = rotDir( -angle2 );
-        const float childRadius = job.tubeRadius * m_tubeRadiusFalloff;
         const glm::vec3 childOrigin = P2;
 
+        // Phase 2.5: flag parent-last-ring cells on the bisection plane. The plane
+        // contains the parent's end tangent and the split axis; its normal is `p2rand`
+        // (the in-plane direction along which dir1/dir2 separate). Cells with the
+        // smallest |dot(radial, p2rand)| sit ON the flow-divider line — the parent-side
+        // carina cells (Chiu & Chien 2011).
+        FlagCarinaCellsOnPlane(
+            result,
+            ringStartIdx[ numRings - 1u ],
+            ringSizes[ numRings - 1u ],
+            ringCenters[ numRings - 1u ],
+            p2rand );
+
+        // Phase 2.5: per-child tapering propagation. Murray's law (m_tubeRadiusFalloff,
+        // default 0.79 per Murray 1926 DOI 10.1073/pnas.12.3.207) applies AT the bifurcation
+        // as a discrete radius drop; within each child the parent's proportional taper is
+        // preserved so a 3-level tree can go artery → arteriole → capillary continuously
+        // across bifurcations. Trunk-only behaviour (no taper) is preserved when
+        // `job.endTubeRadius < 0` — children also stay constant-radius.
+        const float internalTaperRatio = ( startRadius > 1e-6f ) ? ( endRadius / startRadius ) : 1.0f;
+        const float childStartRadius   = endRadius * m_tubeRadiusFalloff;
+        const float childEndRadius     = ( job.endTubeRadius > 0.0f ) ? childStartRadius * internalTaperRatio : -1.0f;
+
         // Carry staggered-ring phase across the junction so children keep the brick pattern
-        // on the first ring (Phase 2.5 will retro-fit carina heptagons here).
-        // Propagate stagger phase using the LAST ring's dAngle (may differ from first under taper).
+        // on the first ring. Propagate stagger phase using the LAST ring's dAngle (may differ
+        // from first under taper).
         const float lastRingDAngle = ringDAngle( numRings - 1u );
         const float childPhase     = job.ringAnglePhase + ( ( numRings & 1u ) ? lastRingDAngle * 0.5f : 0.0f );
 
@@ -302,23 +405,30 @@ namespace DigitalTwin
         child1.direction       = dir1;
         child1.perp1           = perp1From( dir1, currentPerp1 );
         child1.length          = childLen1;
-        child1.tubeRadius      = childRadius;
+        child1.tubeRadius      = childStartRadius;
+        child1.endTubeRadius   = childEndRadius;
         child1.depth           = job.depth - 1;
         child1.ringAnglePhase  = childPhase;
+        // Child1 is on the +p2rand side of the split (dir1 = rotate(endTangent, +angle, splitAxis));
+        // its sibling child2 sits on the -p2rand side. So child1's carina-inward world direction
+        // is -p2rand (pointing across the Y-junction apex toward child2).
+        child1.carinaInwardDir = -p2rand;
 
         BranchJob child2{};
         child2.origin          = childOrigin + axialStep * dir2;
         child2.direction       = dir2;
         child2.perp1           = perp1From( dir2, currentPerp1 );
         child2.length          = childLen2;
-        child2.tubeRadius      = childRadius;
+        child2.tubeRadius      = childStartRadius;
+        child2.endTubeRadius   = childEndRadius;
         child2.depth           = job.depth - 1;
         child2.ringAnglePhase  = childPhase;
+        child2.carinaInwardDir = +p2rand;
 
         buildBranch( child1, result );
         buildBranch( child2, result );
 
-        (void)branchFirstIdx; // parent-cell tracking deferred to Phase 2.5 (carina heptagons)
+        (void)branchFirstIdx; // reserved for future downstream indexing
     }
 
     // -------------------------------------------------------------------------

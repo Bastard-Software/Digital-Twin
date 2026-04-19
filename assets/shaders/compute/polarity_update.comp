@@ -71,7 +71,9 @@ void main()
     int reqLC = int(pc.reqLC);
     int reqCT = int(pc.reqCT);
     if (reqLC >= 0 && int(phenotypes.data[globalIdx].lifecycleState) != reqLC) return;
-    if (reqCT >= 0 && int(phenotypes.data[globalIdx].cellType)       != reqCT) return;
+    // Mask cellType to lower 16 bits — upper 16 hold the morphology index
+    // (Item 2 Phase 2.1 bit-packing — see Phenotype.h for bit layout).
+    if (reqCT >= 0 && int(phenotypes.data[globalIdx].cellType & 0xFFFFu) != reqCT) return;
 
     vec3  myPos       = inAgents.positions[globalIdx].xyz;
     float cellSize    = pc.domainSize.w;

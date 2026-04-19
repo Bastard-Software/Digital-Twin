@@ -1895,6 +1895,297 @@ TEST_F( ComputeTest, Shader_BuildIndirect_ClassifyCellTypes )
     EXPECT_EQ( reorderResult[ 2 * groupCapacity ], 1u ) << "StalkCell reorder slot 0 should be agent index 1";
 }
 
+// =================================================================================================
+// Phase 2.1 — per-cell morphology index bit-packing (Item 2)
+// =================================================================================================
+//
+// PhenotypeData.cellType layout (see include/simulation/Phenotype.h):
+//   bits  0..15 = CellType enum (biological role: Tip/Stalk/Phalanx/Default)
+//   bits 16..31 = morphologyIndex (mesh variant within AgentGroup's variant list)
+//
+// Shaders that filter on biological role via reqCT MUST mask to the lower 16
+// bits when comparing. build_indirect.comp does an exact uint32 match on the
+// combined packed value against DrawMeta.targetCellType.
+
+// Unit test — pure C++, no GPU. Exhaustive round-trip across CellType enum
+// values and morphology indices 0..15.
+TEST( PhenotypePacking, PackCellType_RoundTrip )
+{
+    using namespace DigitalTwin;
+
+    const CellType types[] = { CellType::Default, CellType::TipCell, CellType::StalkCell, CellType::PhalanxCell };
+    for( CellType t : types )
+    {
+        for( uint32_t m = 0; m < 16; ++m )
+        {
+            uint32_t packed = PackCellType( t, m );
+            EXPECT_EQ( UnpackCellType( packed ), t )            << "Biological role must survive round-trip";
+            EXPECT_EQ( UnpackMorphologyIndex( packed ), m )     << "Morphology index must survive round-trip";
+            // Low-16-bit mask alone recovers the biological role — matches the pattern
+            // every shader filter now uses: `(cellType & 0xFFFFu) != reqCT`.
+            EXPECT_EQ( packed & 0xFFFFu, static_cast<uint32_t>( t ) );
+        }
+    }
+    // Max 16-bit morphology index — boundary case.
+    EXPECT_EQ( UnpackMorphologyIndex( PackCellType( CellType::Default, 0xFFFFu ) ), 0xFFFFu );
+    // Upper bits never spill into biological-role bits.
+    EXPECT_EQ( UnpackCellType( PackCellType( CellType::Default, 0xFFFFu ) ), CellType::Default );
+}
+
+// build_indirect.comp variant dispatch: two morphology variants share biological
+// CellType::Default. Half the agents carry morphIdx=0 (packed cellType = 0,
+// catch-all default), half carry morphIdx=1 (packed cellType = 0x00010000,
+// specific variant draw). Verifies the exact-match dispatch path works
+// against bit-packed keys end-to-end.
+TEST_F( ComputeTest, Shader_BuildIndirect_DispatchesPackedMorphologyVariants )
+{
+    if( !m_device )
+        GTEST_SKIP();
+
+    ShaderHandle          sh   = m_rm->CreateShader( "shaders/graphics/build_indirect.comp" );
+    ComputePipelineDesc   desc{};
+    desc.shader                = sh;
+    ComputePipelineHandle pipe = m_rm->CreatePipeline( desc );
+    ComputePipeline*      pipePtr = m_rm->GetPipeline( pipe );
+
+    const uint32_t agentCount    = 4;
+    const uint32_t drawCmdCount  = 2; // default (variant 0, catch-all) + variant 1
+    const uint32_t groupCapacity = 64;
+
+    struct DrawMeta { uint32_t groupIndex, targetCellType, groupOffset, groupCapacity; };
+    const uint32_t kVariant1Key = DigitalTwin::PackCellType( DigitalTwin::CellType::Default, 1u );
+    std::vector<DrawMeta> metaData = {
+        { 0, 0xFFFFFFFF,    0, groupCapacity }, // variant 0 → catch-all default
+        { 0, kVariant1Key,  0, groupCapacity }, // variant 1 → packed exact match
+    };
+
+    struct DrawCommand { uint32_t indexCount, instanceCount, firstIndex, vertexOffset, firstInstance; };
+    std::vector<DrawCommand> cmds = {
+        { 36, 0, 0, 0, 0 * groupCapacity },
+        { 36, 0, 0, 0, 1 * groupCapacity },
+    };
+
+    std::vector<uint32_t> counts = { agentCount };
+
+    std::vector<glm::vec4> positions( groupCapacity, glm::vec4( 0 ) );
+    for( uint32_t i = 0; i < agentCount; ++i ) positions[ i ] = glm::vec4( float( i ), 0, 0, 1 );
+
+    // Agents 0,1 → morphIdx 0 (cellType=0). Agents 2,3 → morphIdx 1 (cellType=0x00010000).
+    std::vector<PhenotypeData> phenotypes( groupCapacity, { 0, 0.5f, 0.0f, 0u } );
+    phenotypes[ 0 ].cellType = DigitalTwin::PackCellType( DigitalTwin::CellType::Default, 0u );
+    phenotypes[ 1 ].cellType = DigitalTwin::PackCellType( DigitalTwin::CellType::Default, 0u );
+    phenotypes[ 2 ].cellType = DigitalTwin::PackCellType( DigitalTwin::CellType::Default, 1u );
+    phenotypes[ 3 ].cellType = DigitalTwin::PackCellType( DigitalTwin::CellType::Default, 1u );
+
+    uint32_t                 reorderSize = drawCmdCount * groupCapacity;
+    std::vector<uint32_t>    reorderInit( reorderSize, 0xDEADBEEF );
+    std::vector<uint32_t>    visibility  = { 1u };
+
+    auto countBuf      = m_rm->CreateBuffer( { sizeof( uint32_t ),                         BufferType::STORAGE, "BI_Counts2" } );
+    auto indirectBuf   = m_rm->CreateBuffer( { cmds.size() * sizeof( DrawCommand ),        BufferType::STORAGE, "BI_Indirect2" } );
+    auto phenoBuf      = m_rm->CreateBuffer( { phenotypes.size() * sizeof( PhenotypeData ),BufferType::STORAGE, "BI_Pheno2" } );
+    auto reorderBuf    = m_rm->CreateBuffer( { reorderSize * sizeof( uint32_t ),           BufferType::STORAGE, "BI_Reorder2" } );
+    auto metaBuf       = m_rm->CreateBuffer( { metaData.size() * sizeof( DrawMeta ),       BufferType::STORAGE, "BI_Meta2" } );
+    auto agentBuf      = m_rm->CreateBuffer( { positions.size() * sizeof( glm::vec4 ),     BufferType::STORAGE, "BI_Agents2" } );
+    auto visibilityBuf = m_rm->CreateBuffer( { visibility.size() * sizeof( uint32_t ),     BufferType::STORAGE, "BI_Visibility2" } );
+
+    m_stream->UploadBufferImmediate( {
+        { countBuf,      counts.data(),      counts.size() * sizeof( uint32_t ) },
+        { indirectBuf,   cmds.data(),        cmds.size() * sizeof( DrawCommand ) },
+        { phenoBuf,      phenotypes.data(),  phenotypes.size() * sizeof( PhenotypeData ) },
+        { reorderBuf,    reorderInit.data(), reorderInit.size() * sizeof( uint32_t ) },
+        { metaBuf,       metaData.data(),    metaData.size() * sizeof( DrawMeta ) },
+        { agentBuf,      positions.data(),   positions.size() * sizeof( glm::vec4 ) },
+        { visibilityBuf, visibility.data(),  visibility.size() * sizeof( uint32_t ) },
+    } );
+
+    BindingGroup* bg = m_rm->GetBindingGroup( m_rm->CreateBindingGroup( pipe, 0 ) );
+    bg->Bind( 0, m_rm->GetBuffer( countBuf ) );
+    bg->Bind( 1, m_rm->GetBuffer( indirectBuf ) );
+    bg->Bind( 2, m_rm->GetBuffer( phenoBuf ) );
+    bg->Bind( 3, m_rm->GetBuffer( reorderBuf ) );
+    bg->Bind( 4, m_rm->GetBuffer( metaBuf ) );
+    bg->Bind( 5, m_rm->GetBuffer( agentBuf ) );
+    bg->Bind( 6, m_rm->GetBuffer( visibilityBuf ) );
+    bg->Build();
+
+    auto ctx    = m_device->GetThreadContext( m_device->CreateThreadContext( QueueType::COMPUTE ) );
+    auto cmdBuf = ctx->GetCommandBuffer( ctx->CreateCommandBuffer() );
+
+    ComputePushConstants resetPC{};       resetPC.uParam0 = 0; resetPC.uParam1 = drawCmdCount;
+    ComputePushConstants classifyPC{};    classifyPC.uParam0 = 1; classifyPC.uParam1 = drawCmdCount; classifyPC.maxCapacity = groupCapacity;
+
+    cmdBuf->Begin();
+    cmdBuf->SetPipeline( pipePtr );
+    cmdBuf->SetBindingGroup( bg, pipePtr->GetLayout(), VK_PIPELINE_BIND_POINT_COMPUTE );
+    cmdBuf->PushConstants( pipePtr->GetLayout(), VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof( ComputePushConstants ), &resetPC );
+    cmdBuf->Dispatch( 1, 1, 1 );
+
+    VkMemoryBarrier2 barrier = { VK_STRUCTURE_TYPE_MEMORY_BARRIER_2 };
+    barrier.srcStageMask     = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT;
+    barrier.srcAccessMask    = VK_ACCESS_2_SHADER_WRITE_BIT;
+    barrier.dstStageMask     = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT;
+    barrier.dstAccessMask    = VK_ACCESS_2_SHADER_READ_BIT | VK_ACCESS_2_SHADER_WRITE_BIT;
+    VkDependencyInfo dep     = { VK_STRUCTURE_TYPE_DEPENDENCY_INFO };
+    dep.memoryBarrierCount   = 1;
+    dep.pMemoryBarriers      = &barrier;
+    cmdBuf->PipelineBarrier( &dep );
+
+    cmdBuf->PushConstants( pipePtr->GetLayout(), VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof( ComputePushConstants ), &classifyPC );
+    cmdBuf->Dispatch( ( groupCapacity + 255 ) / 256, 1, 1 );
+
+    cmdBuf->End();
+    m_device->GetComputeQueue()->Submit( { cmdBuf } );
+    m_device->GetComputeQueue()->WaitIdle();
+
+    std::vector<DrawCommand> resultCmds( drawCmdCount );
+    m_stream->ReadbackBufferImmediate( indirectBuf, resultCmds.data(), drawCmdCount * sizeof( DrawCommand ) );
+
+    // 2 agents with morphIdx=0 fall through to the catch-all default; 2 with morphIdx=1 hit variant 1.
+    EXPECT_EQ( resultCmds[ 0 ].instanceCount, 2u ) << "Variant 0 (catch-all default) draws the morphIdx=0 agents";
+    EXPECT_EQ( resultCmds[ 1 ].instanceCount, 2u ) << "Variant 1 draws the morphIdx=1 agents";
+}
+
+// jkr_forces.comp lower-16-bit cellType mask (Phase 2.1): two agents both
+// tagged as TipCell but with different morphIdx values must BOTH pass the
+// `reqCT = TipCell` filter. Without the mask change, the morphIdx-tagged
+// agent would be filtered out and its force calculation skipped.
+TEST_F( ComputeTest, Shader_JKR_CellTypeFilter_IgnoresUpperMorphologyBits )
+{
+    if( !m_device )
+        GTEST_SKIP();
+
+    // Two agents close enough to repel each other. Biological role: TipCell for both.
+    // Agent A: cellType packs morphIdx=0 → raw value = TipCell (1). Agent B: morphIdx=5 → 0x00050001.
+    uint32_t ctA = DigitalTwin::PackCellType( DigitalTwin::CellType::TipCell, 0u );
+    uint32_t ctB = DigitalTwin::PackCellType( DigitalTwin::CellType::TipCell, 5u );
+
+    glm::mat4 identity( 1.0f );
+    glm::vec4 profile( 0.0f );  // cadherin OFF via flag
+
+    // Both agents set to TipCell — reqCT = TipCell should match BOTH after masking.
+    // With the mask, both get forces applied → pair moves apart.
+    auto runWithPhenotype = [&]( uint32_t ctA_val, uint32_t ctB_val ) -> std::pair<float, float>
+    {
+        // Manually instantiate the raw-shader harness that underlies RunJKRCadherin.
+        // We reuse the existing helper but need per-agent cellType control — fall back
+        // to a minimal custom dispatch for this test.
+        uint32_t agentCount = 2;
+        std::vector<glm::vec4>  inPos = { glm::vec4( 0.0f, 0.0f, 0.0f, 1.0f ), glm::vec4( 2.0f, 0.0f, 0.0f, 1.0f ) };
+        struct AgentHash { uint32_t hash, idx; };
+        std::vector<AgentHash>  hashes = { { 0u, 0u }, { 0u, 1u } };
+        uint32_t                offsetArraySize = 256;
+        std::vector<uint32_t>   cellOffsets( offsetArraySize, 0xFFFFFFFFu );
+        cellOffsets[ 0 ] = 0;
+        std::vector<PhenotypeData> phenotypes = {
+            { 0u, 0.5f, 0.0f, ctA_val },
+            { 0u, 0.5f, 0.0f, ctB_val },
+        };
+        std::vector<glm::vec4>  profiles = { profile, profile };
+        std::vector<glm::vec4>  polarity = { glm::vec4( 0.0f ), glm::vec4( 0.0f ) };
+        glm::vec4               identityQuat[ 2 ] = { glm::vec4( 0, 0, 0, 1 ), glm::vec4( 0, 0, 0, 1 ) };
+        struct HullBuf           { glm::vec4 meta, points[ 16 ]; } hullDummy{};
+        struct PlateBufferGPU    { glm::uvec4 meta; glm::vec4 plates[ 16 ]; } plateDummy{};
+
+        BufferHandle inBuf    = m_rm->CreateBuffer( { agentCount * sizeof( glm::vec4 ),       BufferType::STORAGE,  "FilterInBuf" } );
+        BufferHandle outBuf   = m_rm->CreateBuffer( { agentCount * sizeof( glm::vec4 ),       BufferType::STORAGE,  "FilterOutBuf" } );
+        BufferHandle pressBuf = m_rm->CreateBuffer( { agentCount * sizeof( float ),           BufferType::STORAGE,  "FilterPressBuf" } );
+        BufferHandle hashBuf  = m_rm->CreateBuffer( { agentCount * sizeof( AgentHash ),       BufferType::STORAGE,  "FilterHashBuf" } );
+        BufferHandle offBuf   = m_rm->CreateBuffer( { offsetArraySize * sizeof( uint32_t ),   BufferType::STORAGE,  "FilterOffBuf" } );
+        BufferHandle cntBuf   = m_rm->CreateBuffer( { agentCount * sizeof( uint32_t ),        BufferType::INDIRECT, "FilterCntBuf" } );
+        BufferHandle phenoBuf = m_rm->CreateBuffer( { agentCount * sizeof( PhenotypeData ),   BufferType::STORAGE,  "FilterPhenoBuf" } );
+        BufferHandle profBuf  = m_rm->CreateBuffer( { agentCount * sizeof( glm::vec4 ),       BufferType::STORAGE,  "FilterProfBuf" } );
+        BufferHandle affBuf   = m_rm->CreateBuffer( { sizeof( glm::mat4 ),                    BufferType::STORAGE,  "FilterAffBuf" } );
+        BufferHandle polBuf   = m_rm->CreateBuffer( { agentCount * sizeof( glm::vec4 ),       BufferType::STORAGE,  "FilterPolBuf" } );
+        BufferHandle oriBuf   = m_rm->CreateBuffer( { sizeof( identityQuat ),                 BufferType::STORAGE,  "FilterOriBuf" } );
+        BufferHandle hullBuf  = m_rm->CreateBuffer( { sizeof( HullBuf ),                      BufferType::STORAGE,  "FilterHullBuf" } );
+        BufferHandle plateBuf = m_rm->CreateBuffer( { sizeof( PlateBufferGPU ),               BufferType::STORAGE,  "FilterPlateBuf" } );
+
+        m_stream->UploadBufferImmediate( { { inBuf, inPos.data(), agentCount * sizeof( glm::vec4 ) } } );
+        m_stream->UploadBufferImmediate( { { hashBuf, hashes.data(), agentCount * sizeof( AgentHash ) } } );
+        m_stream->UploadBufferImmediate( { { offBuf, cellOffsets.data(), offsetArraySize * sizeof( uint32_t ) } } );
+        m_stream->UploadBufferImmediate( { { cntBuf, &agentCount, sizeof( uint32_t ) } } );
+        m_stream->UploadBufferImmediate( { { phenoBuf, phenotypes.data(), agentCount * sizeof( PhenotypeData ) } } );
+        m_stream->UploadBufferImmediate( { { profBuf, profiles.data(), agentCount * sizeof( glm::vec4 ) } } );
+        m_stream->UploadBufferImmediate( { { affBuf, &identity, sizeof( glm::mat4 ) } } );
+        m_stream->UploadBufferImmediate( { { polBuf, polarity.data(), agentCount * sizeof( glm::vec4 ) } } );
+        m_stream->UploadBufferImmediate( { { oriBuf, identityQuat, sizeof( identityQuat ) } } );
+        m_stream->UploadBufferImmediate( { { hullBuf, &hullDummy, sizeof( HullBuf ) } } );
+        m_stream->UploadBufferImmediate( { { plateBuf, &plateDummy, sizeof( PlateBufferGPU ) } } );
+
+        ComputePipelineDesc pipeDesc{};
+        pipeDesc.shader = m_rm->CreateShader( "shaders/compute/jkr_forces.comp" );
+        ComputePipelineHandle pipeH = m_rm->CreatePipeline( pipeDesc );
+        ComputePipeline*      pipe  = m_rm->GetPipeline( pipeH );
+
+        BindingGroup* bg = m_rm->GetBindingGroup( m_rm->CreateBindingGroup( pipeH, 0 ) );
+        bg->Bind( 0, m_rm->GetBuffer( inBuf ) );
+        bg->Bind( 1, m_rm->GetBuffer( outBuf ) );
+        bg->Bind( 2, m_rm->GetBuffer( pressBuf ) );
+        bg->Bind( 3, m_rm->GetBuffer( hashBuf ) );
+        bg->Bind( 4, m_rm->GetBuffer( offBuf ) );
+        bg->Bind( 5, m_rm->GetBuffer( cntBuf ) );
+        bg->Bind( 6, m_rm->GetBuffer( phenoBuf ) );
+        bg->Bind( 7, m_rm->GetBuffer( profBuf ) );
+        bg->Bind( 8, m_rm->GetBuffer( affBuf ) );
+        bg->Bind( 9, m_rm->GetBuffer( polBuf ) );
+        bg->Bind( 10, m_rm->GetBuffer( oriBuf ) );
+        bg->Bind( 11, m_rm->GetBuffer( hullBuf ) );
+        bg->Bind( 12, m_rm->GetBuffer( plateBuf ) );
+        bg->Build();
+
+        ComputePushConstants pc{};
+        pc.dt          = 1.0f;
+        pc.maxCapacity = agentCount;
+        pc.fParam0     = 10.0f;  // repulsion
+        pc.fParam1     = 0.0f;   // adhesion off
+        pc.fParam2     = -1.0f;  // reqLC = any
+        pc.fParam3     = 1.0f;   // reqCT = TipCell — only cells with biological type == TipCell apply forces
+        pc.fParam5     = 1.5f;   // maxRadius
+        pc.uParam0     = offsetArraySize;
+        pc.domainSize  = glm::vec4( 100.0f, 100.0f, 100.0f, 4.0f );
+        pc.gridSize    = glm::uvec4( 0u, 0u, 0u, 0u ); // cadherin + polarity flags OFF
+
+        auto ctx = m_device->GetThreadContext( m_device->CreateThreadContext( QueueType::COMPUTE ) );
+        auto cmd = ctx->GetCommandBuffer( ctx->CreateCommandBuffer() );
+        cmd->Begin();
+        cmd->SetPipeline( pipe );
+        cmd->SetBindingGroup( bg, pipe->GetLayout(), VK_PIPELINE_BIND_POINT_COMPUTE );
+        cmd->PushConstants( pipe->GetLayout(), VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof( pc ), &pc );
+        cmd->Dispatch( 1, 1, 1 );
+        cmd->End();
+        m_device->GetComputeQueue()->Submit( { cmd } );
+        m_device->GetComputeQueue()->WaitIdle();
+
+        std::vector<glm::vec4> result( agentCount );
+        m_stream->ReadbackBufferImmediate( outBuf, result.data(), agentCount * sizeof( glm::vec4 ) );
+
+        m_rm->DestroyBuffer( inBuf );  m_rm->DestroyBuffer( outBuf );  m_rm->DestroyBuffer( pressBuf );
+        m_rm->DestroyBuffer( hashBuf ); m_rm->DestroyBuffer( offBuf ); m_rm->DestroyBuffer( cntBuf );
+        m_rm->DestroyBuffer( phenoBuf );m_rm->DestroyBuffer( profBuf );m_rm->DestroyBuffer( affBuf );
+        m_rm->DestroyBuffer( polBuf ); m_rm->DestroyBuffer( oriBuf ); m_rm->DestroyBuffer( hullBuf );
+        m_rm->DestroyBuffer( plateBuf );
+        return { result[ 0 ].x, result[ 1 ].x };
+    };
+
+    // Both agents tagged TipCell but with different morphIdx — filter must pass them both.
+    auto [mixA, mixB] = runWithPhenotype( ctA, ctB );
+    float dispMix = mixB - mixA;
+
+    // Both agents tagged TipCell with morphIdx=0 → reference baseline (no packing).
+    auto [refA, refB] = runWithPhenotype(
+        DigitalTwin::PackCellType( DigitalTwin::CellType::TipCell, 0u ),
+        DigitalTwin::PackCellType( DigitalTwin::CellType::TipCell, 0u ) );
+    float dispRef = refB - refA;
+
+    // Displacements match within FP tolerance — morphIdx must NOT affect the
+    // reqCT filter decision.
+    EXPECT_NEAR( dispMix, dispRef, 1e-4f )
+        << "Mask change regression: cells with biological TipCell but different morphIdx "
+           "must still pass reqCT=TipCell filter. Ref disp=" << dispRef << ", mixed disp=" << dispMix;
+    // And both must actually have moved (sanity: forces applied, not zero).
+    EXPECT_GT( dispMix, 2.0f + 0.01f )  << "Agents should have been pushed apart";
+}
 
 // =================================================================================================
 // BrownianMotion shader tests

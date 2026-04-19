@@ -43,8 +43,10 @@ void main()
     // --- GPU-Driven: Skip unallocated / dead slots ---
     if(inAgents.positions[globalIdx].w == 0.0) return;
     
-    // Cell type filter: uParam0 = 0xFFFFFFFF means any cell type
-    if( pc.uParam0 != 0xFFFFFFFFu && outPhenotypes.data[globalIdx].cellType != pc.uParam0 ) return;
+    // Cell type filter: uParam0 = 0xFFFFFFFF means any cell type.
+    // Mask cellType to lower 16 bits — upper 16 hold the morphology index
+    // (Item 2 Phase 2.1 bit-packing — see Phenotype.h for bit layout).
+    if( pc.uParam0 != 0xFFFFFFFFu && (outPhenotypes.data[globalIdx].cellType & 0xFFFFu) != pc.uParam0 ) return;
 
     uint  currentState = outPhenotypes.data[globalIdx].lifecycleState;
     float currentMass  = outPhenotypes.data[globalIdx].biomass;

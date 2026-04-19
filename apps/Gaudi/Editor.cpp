@@ -275,9 +275,20 @@ namespace Gaudi
             }, true },
 
             { "Vessels", {
-                // Populated by Phase 2.1+ as TwoShapeDemo, PuzzlePiecePaletteDemo,
-                // StraightTubeDemo, TaperingTubeDemo, BranchingTreeDemo, and finally
-                // DesignedVesselDemo land. Empty after the Phase 2.0 demolition.
+                // Populated phase-by-phase: Phase 2.1 adds TwoShape (this entry);
+                // Phases 2.2+ will append PuzzlePiecePalette, StraightTube,
+                // TaperingTube, BranchingTree, DesignedVessel.
+                { "Two Shape",
+                  "Phase 2.1 engine-plumbing verification. A single AgentGroup\n"
+                  "contains 50 cells split 50/50 across two mesh variants:\n"
+                  "  Row 1 (z = -2): variant 0, flat disc\n"
+                  "  Row 2 (z = +2): variant 1, curved tile\n\n"
+                  "Proves the bit-packed morphology-index dispatch pipeline\n"
+                  "end-to-end (PhenotypeData.cellType upper-16-bit packing ->\n"
+                  "SimulationBuilder multi-DrawMeta emission -> build_indirect.comp\n"
+                  "variant match). No biology, no physics - just the plumbing\n"
+                  "needed for Phase 2.2's real puzzle-piece primitives.",
+                  &Demos::SetupTwoShapeDemo },
             }, false },
         };
 

@@ -3,6 +3,7 @@
 
 #include "core/Core.h"
 #include "simulation/Behaviours.h"
+#include "simulation/Phenotype.h"
 #include <glm/glm.hpp>
 #include <string>
 #include <vector>
@@ -118,6 +119,21 @@ namespace DigitalTwin
             m_initialCellType = cellType;
             return *this;
         }
+
+        /**
+         * @brief Per-cell initial `cellType` override (bit-packed, see PackCellType).
+         *
+         * When non-empty, overrides `SetInitialCellType`. Entries beyond the cell
+         * count are ignored. Each entry is a packed `(biologicalType | (morphIdx << 16))`
+         * value — use `DigitalTwin::PackCellType(CellType, morphIdx)` to produce it.
+         * Intended for Item 2 vessel cells where each ring/branch position gets its
+         * own morphology index.
+         */
+        AgentGroup& SetInitialCellTypes( const std::vector<uint32_t>& cellTypes )
+        {
+            m_initialCellTypes = cellTypes;
+            return *this;
+        }
         AgentGroup& SetVisible( bool visible )
         {
             m_visible = visible;
@@ -142,6 +158,36 @@ namespace DigitalTwin
             return *this;
         }
 
+        /**
+         * @brief Register multiple mesh variants under a single biological CellType.
+         *
+         * Uses Item 2 Phase 2.1 bit-packing (`PackCellType`): each cell's
+         * `PhenotypeData.cellType` encodes `(biologicalType | (morphIdx << 16))`.
+         * Variant 0 is registered as the catch-all default mesh (via `SetMorphology`);
+         * variants 1..N are registered as per-morphologyIndex draws via
+         * `AddCellTypeMorphology(PackCellType(biologicalType, i), mesh)`.
+         *
+         * Biological motivation: a mature vascular monolayer contains heterogeneous
+         * EC shapes within a single lineage-continuous layer (Aird 2007
+         * DOI 10.1161/01.RES.0000255691.76142.4a) — keeping all variants in ONE
+         * AgentGroup preserves cross-variant cadherin neighbourship + spatial hashing.
+         *
+         * @param biologicalType Cell type that all variants share (e.g. CellType::Default).
+         * @param variants       Mesh variants; `variants[0]` is the default mesh.
+         */
+        AgentGroup& SetMorphologyVariants( CellType biologicalType, std::vector<MorphologyData> variants )
+        {
+            if( variants.empty() )
+                return *this;
+            m_morphology = variants[ 0 ];
+            for( size_t i = 1; i < variants.size(); ++i )
+            {
+                uint32_t packedKey = PackCellType( biologicalType, static_cast<uint32_t>( i ) );
+                m_cellTypeMorphologies.push_back( { static_cast<int>( packedKey ), std::move( variants[ i ] ) } );
+            }
+            return *this;
+        }
+
         // --- Getters ---
         const std::string&                   GetName() const { return m_name; }
         uint32_t                             GetCount() const { return m_count; }
@@ -154,6 +200,7 @@ namespace DigitalTwin
         const std::vector<BehaviourRecord>&  GetBehaviours() const { return m_behaviours; }
         std::vector<BehaviourRecord>&        GetBehavioursMutable() { return m_behaviours; }
         const std::vector<MorphologyEntry>&  GetCellTypeMorphologies() const { return m_cellTypeMorphologies; }
+        const std::vector<uint32_t>&         GetInitialCellTypes() const { return m_initialCellTypes; }
         const DistributionSpec&              GetDistributionSpec() const { return m_distSpec; }
         const MorphologyPresetSpec&          GetMorphologyPresetSpec() const { return m_morphSpec; }
 
@@ -165,6 +212,7 @@ namespace DigitalTwin
         std::vector<glm::vec4>        m_orientations; // per-cell normals (empty = use default +Y)
         glm::vec4                     m_color = glm::vec4( 1.0f );
         int                           m_initialCellType = 0;
+        std::vector<uint32_t>         m_initialCellTypes; // per-cell override (empty = use m_initialCellType for all)
         bool                          m_visible         = true;
         std::vector<BehaviourRecord>  m_behaviours;
         std::vector<MorphologyEntry>  m_cellTypeMorphologies;

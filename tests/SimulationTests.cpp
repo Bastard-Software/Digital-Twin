@@ -1305,6 +1305,96 @@ TEST_F( SimulationBuilderTest, MultiMesh_DrawCommandCount )
     state.Destroy( m_resourceManager.get() );
 }
 
+// Phase 2.1 — SetMorphologyVariants emits one DrawMeta per variant.
+// The bit-packed cellType convention means variant 0 becomes the catch-all
+// default (targetCellType = 0xFFFFFFFF) and variants 1..N are registered with
+// targetCellType = PackCellType(biologicalType, i). Verifies the fluent API +
+// builder wiring is correct end-to-end before TwoShapeDemo visual-checks the
+// runtime dispatch.
+TEST_F( SimulationBuilderTest, MorphologyVariants_EmitsPerVariantDrawMeta )
+{
+    if( !m_device )
+        GTEST_SKIP();
+
+    DigitalTwin::SimulationBlueprint blueprint;
+    blueprint.SetDomainSize( glm::vec3( 20.0f ), 1.0f );
+
+    // 4 cells: first 2 → morphIdx 0 (default); last 2 → morphIdx 1 (variant 1).
+    std::vector<glm::vec4> positions = {
+        glm::vec4( -2, 0, -2, 1 ), glm::vec4( -1, 0, -2, 1 ),
+        glm::vec4( -2, 0, +2, 1 ), glm::vec4( -1, 0, +2, 1 ),
+    };
+    std::vector<uint32_t> cellTypes = {
+        DigitalTwin::PackCellType( DigitalTwin::CellType::Default, 0u ),
+        DigitalTwin::PackCellType( DigitalTwin::CellType::Default, 0u ),
+        DigitalTwin::PackCellType( DigitalTwin::CellType::Default, 1u ),
+        DigitalTwin::PackCellType( DigitalTwin::CellType::Default, 1u ),
+    };
+
+    blueprint.AddAgentGroup( "MixedGroup" )
+        .SetCount( 4 )
+        .SetDistribution( positions )
+        .SetInitialCellTypes( cellTypes )
+        .SetMorphologyVariants( DigitalTwin::CellType::Default, {
+            DigitalTwin::MorphologyGenerator::CreateDisc( 0.6f, 0.15f, 16 ),
+            DigitalTwin::MorphologyGenerator::CreateCurvedTile( 60.0f, 1.0f, 0.15f, 1.5f, 4 ),
+        } );
+
+    SimulationBuilder builder( m_resourceManager.get(), m_streamingManager.get() );
+    SimulationState   state = builder.Build( blueprint );
+
+    EXPECT_TRUE( state.IsValid() );
+    EXPECT_EQ( state.groupCount, 1u );
+    // 2 DrawMeta: catch-all default (variant 0) + packed exact-match (variant 1).
+    EXPECT_EQ( state.drawCommandCount, 2u )
+        << "SetMorphologyVariants({v0, v1}) should emit 1 catch-all + 1 variant draw";
+
+    struct DrawMetaCPU { uint32_t groupIndex, targetCellType, groupOffset, groupCapacity; };
+    std::vector<DrawMetaCPU> meta( 2 );
+    m_streamingManager->ReadbackBufferImmediate( state.drawMetaBuffer, meta.data(), 2 * sizeof( DrawMetaCPU ) );
+
+    EXPECT_EQ( meta[ 0 ].targetCellType, 0xFFFFFFFFu )
+        << "Variant 0 becomes the catch-all default";
+
+    const uint32_t expectedV1 = DigitalTwin::PackCellType( DigitalTwin::CellType::Default, 1u );
+    EXPECT_EQ( meta[ 1 ].targetCellType, expectedV1 )
+        << "Variant 1 targets PackCellType(Default, 1) = 0x00010000";
+
+    // Cross-check the indirect command buffer — the two draws must point to
+    // DISTINCT mesh-index ranges. If variant 1's indexCount/vertexOffset
+    // matched variant 0's, both draws would render the same mesh (catching a
+    // builder bug that single-DrawMeta tests would miss).
+    struct DrawCommand { uint32_t indexCount, instanceCount, firstIndex, vertexOffset, firstInstance; };
+    std::vector<DrawCommand> cmds( 2 );
+    m_streamingManager->ReadbackBufferImmediate( state.indirectCmdBuffer, cmds.data(), 2 * sizeof( DrawCommand ) );
+
+    EXPECT_NE( cmds[ 0 ].firstIndex, cmds[ 1 ].firstIndex )
+        << "Variant draws must reference distinct index-buffer ranges (else renders identical mesh)";
+    EXPECT_NE( cmds[ 0 ].vertexOffset, cmds[ 1 ].vertexOffset )
+        << "Variant draws must reference distinct vertex-buffer ranges";
+    // The disc (16 sectors → ~3*2*16 = 96 indices for top+bottom fans + sides; don't pin exact
+    // count, just ensure both are non-zero).
+    EXPECT_GT( cmds[ 0 ].indexCount, 0u );
+    EXPECT_GT( cmds[ 1 ].indexCount, 0u );
+
+    // End-to-end verification: the per-cell cellType tags must actually be
+    // uploaded to the phenotype buffer. Catches the original Phase 2.1 bug
+    // where phenotype buffer allocation was gated only on the group-level
+    // `SetInitialCellType != 0` check — missing the per-cell override path.
+    // Without this check, build_indirect would scatter every cell (all with
+    // cellType=0) into the catch-all default draw, making variant 1 invisible.
+    ASSERT_TRUE( state.phenotypeBuffer.IsValid() )
+        << "Phenotype buffer must be allocated when SetInitialCellTypes is used";
+    std::vector<PhenotypeData> pheno( 4 );
+    m_streamingManager->ReadbackBufferImmediate( state.phenotypeBuffer, pheno.data(), 4 * sizeof( PhenotypeData ) );
+    EXPECT_EQ( pheno[ 0 ].cellType, cellTypes[ 0 ] ) << "Cell 0 cellType tag did not reach GPU";
+    EXPECT_EQ( pheno[ 1 ].cellType, cellTypes[ 1 ] ) << "Cell 1 cellType tag did not reach GPU";
+    EXPECT_EQ( pheno[ 2 ].cellType, cellTypes[ 2 ] ) << "Cell 2 cellType tag did not reach GPU";
+    EXPECT_EQ( pheno[ 3 ].cellType, cellTypes[ 3 ] ) << "Cell 3 cellType tag did not reach GPU";
+
+    state.Destroy( m_resourceManager.get() );
+}
+
 // CellCycle with requiredCellType=StalkCell: StalkCell accumulates biomass and divides;
 // TipCell in the same group does not grow (stays at 0.5).
 TEST_F( SimulationBuilderTest, Behaviour_CellCycle_StalkCellOnlyDivides )

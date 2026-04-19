@@ -42,8 +42,13 @@ void main() {
     vec4 pos = agents.positions[globalIdx];
     if (pos.w == 0.0) return; // dead slot
 
-    uint cellType = phenotypes.data[globalIdx].cellType;
-    if (cellType == 1u) return; // TipCell: committed to migration, no quiescence transitions
+    // Item 2 Phase 2.1 bit-packing: cellType bits 0..15 = biological role (Tip/Stalk/Phalanx),
+    // bits 16..31 = morphology index. Read the packed value, mask for role-based decisions,
+    // and preserve the morphology index on write.
+    uint packedCT = phenotypes.data[globalIdx].cellType;
+    uint roleCT   = packedCT & 0xFFFFu;
+    uint morphHi  = packedCT & 0xFFFF0000u;   // upper bits — preserved across writes
+    if (roleCT == 1u) return; // TipCell: committed to migration, no quiescence transitions
 
     // No VEGF field bound → no transitions possible
     if (pc.gridSize.w == 0u) return;
@@ -53,8 +58,8 @@ void main() {
     ivec3 voxel     = clamp(ivec3(n * vec3(pc.gridSize.xyz)), ivec3(0), ivec3(pc.gridSize.xyz) - 1);
     float localVEGF = imageLoad(u_VEGF, voxel).r;
 
-    if (cellType == 3u && localVEGF > pc.activationThreshold)
-        phenotypes.data[globalIdx].cellType = 2u;  // PhalanxCell → StalkCell (activation)
-    else if (cellType == 2u && localVEGF < pc.deactivationThreshold)
-        phenotypes.data[globalIdx].cellType = 3u;  // StalkCell → PhalanxCell (re-quiescence)
+    if (roleCT == 3u && localVEGF > pc.activationThreshold)
+        phenotypes.data[globalIdx].cellType = morphHi | 2u;  // PhalanxCell → StalkCell (activation) — preserve morphology index
+    else if (roleCT == 2u && localVEGF < pc.deactivationThreshold)
+        phenotypes.data[globalIdx].cellType = morphHi | 3u;  // StalkCell → PhalanxCell (re-quiescence)
 }

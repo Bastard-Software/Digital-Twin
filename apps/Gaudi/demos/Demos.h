@@ -21,6 +21,9 @@ namespace Gaudi::Demos
     void SetupCellMechanicsZooDemo ( DigitalTwin::SimulationBlueprint& blueprint );
     void SetupStressTestDemo       ( DigitalTwin::SimulationBlueprint& blueprint );
 
+    // Vessels (Item 2)
+    void SetupTwoShapeDemo         ( DigitalTwin::SimulationBlueprint& blueprint );
+
     // Shared helper — defined in ECBlobDemo.cpp, reused by EC2DMatrigelDemo.cpp.
     // Populates the given AgentGroup with an elongated random cloud of ~100
     // endothelial cells (CurvedTile morphology, oriented outward from the

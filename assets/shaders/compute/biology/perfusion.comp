@@ -40,7 +40,9 @@ void main() {
     uint globalIdx = pc.offset + idx;
     if (agents.positions[globalIdx].w == 0.0) return; // dead slot
 
-    uint ct = phenotypes.data[globalIdx].cellType;
+    // Mask cellType to lower 16 bits — upper 16 hold the morphology index
+    // (Item 2 Phase 2.1 bit-packing — see Phenotype.h for bit layout).
+    uint ct = phenotypes.data[globalIdx].cellType & 0xFFFFu;
     if (pc.reqCellType >= 0.0) {
         // Explicit cell-type filter set by the behaviour (e.g. PhalanxCell-only = 3.0).
         if (ct != uint(pc.reqCellType)) return;

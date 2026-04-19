@@ -678,13 +678,19 @@ namespace DigitalTwin
             globalHashCapacity <<= 1;
         uint32_t offsetArraySize = 262144;
 
-        // Pre-pass: if any group specifies a non-zero initial cell type, create the phenotype buffer
-        // now with the correct per-group cellType values. All lazy-init checks below will then skip.
+        // Pre-pass: if any group specifies non-zero cellType seeding — either the
+        // group-level `SetInitialCellType` OR the per-cell `SetInitialCellTypes`
+        // override (Item 2 Phase 2.1 bit-packed morphology index) — create the
+        // phenotype buffer now with the correct values. All lazy-init checks
+        // below will then skip this work.
         {
             bool anyNonDefault = false;
             for( const auto& g: blueprint.GetGroups() )
-                if( g.GetCount() > 0 && g.GetInitialCellType() != 0 )
-                    anyNonDefault = true;
+            {
+                if( g.GetCount() == 0 ) continue;
+                if( g.GetInitialCellType() != 0 )            { anyNonDefault = true; break; }
+                if( !g.GetInitialCellTypes().empty() )       { anyNonDefault = true; break; }
+            }
 
             if( anyNonDefault && !outState.phenotypeBuffer.IsValid() )
             {
@@ -702,16 +708,29 @@ namespace DigitalTwin
                 outState.phenotypeBuffer = m_resourceManager->CreateBuffer( { phenotypeSize, BufferType::STORAGE, "PhenotypeBuffer" } );
                 std::vector<PhenotypeData> initPhenotypes( globalCapacity, { 0u, 0.5f, 0.0f, 0u } );
 
-                // Apply per-group initial cell types
+                // Apply per-group initial cell types. The per-cell override
+                // (`SetInitialCellTypes`) takes precedence when non-empty — used by
+                // Item 2 vessel cells to tag each position with its bit-packed
+                // (biologicalType | morphIdx << 16) value. Slots beyond the provided
+                // vector and dead padding slots keep the group-level default.
                 uint32_t off = 0;
                 for( const auto& g: blueprint.GetGroups() )
                 {
                     if( g.GetCount() == 0 ) continue;
                     uint32_t cap = 131072;
                     while( cap < g.GetCount() ) cap <<= 1;
-                    if( g.GetInitialCellType() != 0 )
+
+                    const auto& perCell = g.GetInitialCellTypes();
+                    if( !perCell.empty() )
                     {
-                        for( uint32_t i = 0; i < cap; i++ )
+                        uint32_t copyN = std::min( static_cast<uint32_t>( perCell.size() ), g.GetCount() );
+                        for( uint32_t i = 0; i < copyN; ++i )
+                            initPhenotypes[ off + i ].cellType = perCell[ i ];
+                        // Slots [copyN, cap) retain the { 0, 0.5, 0, 0 } default.
+                    }
+                    else if( g.GetInitialCellType() != 0 )
+                    {
+                        for( uint32_t i = 0; i < cap; ++i )
                             initPhenotypes[ off + i ].cellType = static_cast<uint32_t>( g.GetInitialCellType() );
                     }
                     off += cap;

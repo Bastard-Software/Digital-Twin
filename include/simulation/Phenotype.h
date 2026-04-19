@@ -43,6 +43,24 @@ namespace DigitalTwin
     // Size stays at 16 bytes — cadherin profile lives in a separate buffer (Stage 3).
     // This struct is defined locally in 14 GLSL shaders (no GLSL include mechanism);
     // this header is the single source of truth for C++ code.
+    //
+    // Bit layout of `cellType` (Item 2 Phase 2.1, 2026-04-19):
+    //   bits  0..15 = CellType enum (Tip / Stalk / Phalanx / Default) — biological role
+    //   bits 16..31 = morphologyIndex — mesh variant index within the AgentGroup's
+    //                 variant list (0 = default / first registered mesh)
+    //
+    // Biologically: a mature vascular monolayer contains heterogeneous EC shapes
+    // within a single lineage-continuous layer (Aird 2007 DOI 10.1161/01.RES.0000255691.76142.4a).
+    // Keeping all variants in ONE AgentGroup preserves cross-variant cadherin
+    // neighbourship + spatial hashing; a per-cell morphology index selects which
+    // mesh to render without fragmenting the group.
+    //
+    // Shaders that filter on biological role via `reqCT` MUST mask to the lower
+    // 16 bits when comparing: `(cellType & 0xFFFFu) != uint(reqCT)`. The
+    // `build_indirect.comp` shader performs an exact uint match against
+    // `DrawMeta.targetCellType` which is populated by the builder using
+    // `PackCellType(biologicalType, morphIdx)` on both sides, so that path
+    // needs no mask — the packed 32-bit values match.
     struct PhenotypeData
     {
         uint32_t lifecycleState = 0;
@@ -50,5 +68,20 @@ namespace DigitalTwin
         float    timer          = 0.0f;
         uint32_t cellType       = 0;
     };
+
+    inline uint32_t PackCellType( CellType type, uint32_t morphologyIndex )
+    {
+        return ( static_cast<uint32_t>( type ) & 0xFFFFu ) | ( ( morphologyIndex & 0xFFFFu ) << 16 );
+    }
+
+    inline CellType UnpackCellType( uint32_t packed )
+    {
+        return static_cast<CellType>( packed & 0xFFFFu );
+    }
+
+    inline uint32_t UnpackMorphologyIndex( uint32_t packed )
+    {
+        return ( packed >> 16 ) & 0xFFFFu;
+    }
 
 } // namespace DigitalTwin

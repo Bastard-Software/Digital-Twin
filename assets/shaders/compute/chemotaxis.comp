@@ -63,7 +63,8 @@ void main()
     int reqLC = int(pc.uParam0);
     int reqCT = int(pc.reqCT);
     if (reqLC >= 0 && phenotypes.data[globalIdx].lifecycleState != uint(reqLC)) { outData.positions[globalIdx] = inData.positions[globalIdx]; return; }
-    if (reqCT >= 0 && phenotypes.data[globalIdx].cellType != uint(reqCT))       { outData.positions[globalIdx] = inData.positions[globalIdx]; return; }
+    // Mask cellType to lower 16 bits (Item 2 Phase 2.1 bit-packing — upper 16 = morphology index).
+    if (reqCT >= 0 && (phenotypes.data[globalIdx].cellType & 0xFFFFu) != uint(reqCT)) { outData.positions[globalIdx] = inData.positions[globalIdx]; return; }
 
     vec4 pos = inData.positions[globalIdx];
     if (pos.w == 0.0) { outData.positions[globalIdx] = pos; return; } // dead slot
@@ -115,7 +116,8 @@ void main()
                         if (neighborIdx == globalIdx) continue;
                         vec4 neighborPos = inData.positions[neighborIdx];
                         if (neighborPos.w == 0.0) continue;
-                        if (phenotypes.data[neighborIdx].cellType == 0u) continue; // non-vessel
+                        // Mask cellType to lower 16 bits — upper 16 are morphology index.
+                        if ((phenotypes.data[neighborIdx].cellType & 0xFFFFu) == 0u) continue; // non-vessel
                         float dist = length(pos.xyz - neighborPos.xyz);
                         if (dist < hashCellSize * 2.0) neighborCount++;
                     }

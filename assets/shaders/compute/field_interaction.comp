@@ -53,7 +53,9 @@ void main() {
         if (inPhenotypes.data[globalIdx].lifecycleState != uint(pc.reqLifecycleState)) return;
     }
     if (pc.reqCellType >= 0.0) {
-        if (inPhenotypes.data[globalIdx].cellType != uint(pc.reqCellType)) return;
+        // Mask to biological-role bits; upper 16 bits hold the morphology index
+        // (Item 2 Phase 2.1 bit-packing — see Phenotype.h for bit layout).
+        if ((inPhenotypes.data[globalIdx].cellType & 0xFFFFu) != uint(pc.reqCellType)) return;
     }
 
     vec3 pos = agents.positions[globalIdx].xyz;

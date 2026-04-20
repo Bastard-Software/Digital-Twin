@@ -1,0 +1,114 @@
+#version 460
+layout(local_size_x = 256) in;
+
+// Item 2 Phase 2.6.5.a — Shared spatial-hash neighbour list.
+//
+// Walks the 27-cell neighbourhood of each agent's hash cell, collects all OTHER
+// live agents whose cell hash matches, and writes the result into a per-agent
+// NeighborList SSBO. Downstream consumers (jkr_forces, future
+// voronoi_cell_polygon) iterate the pre-built list instead of re-walking the
+// hash each pass — eliminating the duplicate-walk cost that would otherwise
+// happen once the Phase 2.6.5.b Voronoi pass is online.
+//
+// NO distance filter at this stage. Each downstream consumer applies its own
+// radius threshold (JKR's is `maxRadius × 2`, Voronoi's is
+// `maxInteractionRadius × 0.85 × 2`). Keeping this pass filter-free makes the
+// list reusable across consumers with different reach requirements.
+//
+// Cap: NEIGHBOR_CAP (48) entries per agent. Biologically, an EC has ≤ 8–10
+// spatial neighbours within a realistic interaction radius; 48 provides
+// generous headroom for dense packings (ECBlob's tight cluster, Phase 2.5
+// carina corners, future sprouting overlap scenarios). Initial draft at 24
+// was hitting the cap on dense-cluster demos (ECBlobDemo_LateralAdhesion
+// regression 2026-04-20) — 48 matches the behaviour of the pre-refactor
+// inline walk closely enough to not alter physics. If overflow still occurs
+// the excess is silently dropped (count saturates at 48).
+
+#define NEIGHBOR_CAP 48
+
+layout(push_constant) uniform PushConstants {
+    float dt;
+    float totalTime;
+    float cellSize;        // spatial-hash cell size (from pc.fParam0)
+    float fParam1;
+    float fParam2;
+    float fParam3;
+    float fParam4;
+    float fParam5;
+    uint  offset;
+    uint  maxCapacity;
+    uint  arrayOffset;     // offset-buffer size (matches jkr_forces convention)
+    uint  grpNdx;
+    vec4  domainSize;
+    uvec4 gridSize;
+} pc;
+
+layout(std140, binding = 0) readonly buffer Agents { vec4 positions[]; } inAgents;
+
+struct AgentHash { uint hash; uint agentIndex; };
+layout(std430, binding = 1) readonly buffer Hashes { AgentHash data[]; } sortedHashes;
+layout(std430, binding = 2) readonly buffer Offsets { uint startIndices[]; } cellOffsets;
+
+// Per-agent neighbour list. Flat uint layout, 32 uints per agent (128 bytes):
+//   [base+0]          = neighbour count (0..NEIGHBOR_CAP)
+//   [base+1 .. base+48] = neighbour agent indices
+//   [base+49 .. base+63] = padding (unused; aligns stride to 256 bytes)
+// Flat layout avoids std430 struct-stride subtleties that can shift the count
+// slot under some drivers when a struct is all-uints.
+#define NEIGHBOR_STRIDE 64u
+layout(std430, binding = 3) buffer NeighborListBuf { uint data[]; } outNeighbors;
+
+uint hashPos(ivec3 cell) {
+    const uint p1 = 73856093;
+    const uint p2 = 19349663;
+    const uint p3 = 83492791;
+    return (uint(cell.x) * p1) ^ (uint(cell.y) * p2) ^ (uint(cell.z) * p3);
+}
+
+void main() {
+    uint idx = gl_GlobalInvocationID.x;
+    if (idx >= pc.maxCapacity) return;
+
+    uint globalIdx = pc.offset + idx;
+    vec4 myData    = inAgents.positions[globalIdx];
+
+    uint myBase = globalIdx * NEIGHBOR_STRIDE;
+
+    // Dead agents get an empty list — downstream consumers still index by
+    // globalIdx so we must write a valid `count = 0` for every slot.
+    if (myData.w == 0.0) {
+        outNeighbors.data[myBase] = 0u;
+        return;
+    }
+
+    vec3  myPos            = myData.xyz;
+    ivec3 myCell           = ivec3(floor(myPos / pc.cellSize));
+    uint  offsetArraySize  = pc.arrayOffset;
+    uint  count            = 0u;
+
+    // Standard 3³ hash-cell walk identical to jkr_forces / polarity_update —
+    // consolidated here so downstream consumers don't have to repeat it.
+    for (int z = -1; z <= 1 && count < NEIGHBOR_CAP; z++) {
+        for (int y = -1; y <= 1 && count < NEIGHBOR_CAP; y++) {
+            for (int x = -1; x <= 1 && count < NEIGHBOR_CAP; x++) {
+                uint neighborHash = hashPos(myCell + ivec3(x, y, z));
+                uint offsetIdx    = neighborHash % offsetArraySize;
+                uint startIdx     = cellOffsets.startIndices[offsetIdx];
+                if (startIdx == 0xFFFFFFFFu) continue;
+
+                for (uint i = startIdx; i < pc.maxCapacity && count < NEIGHBOR_CAP; i++) {
+                    if (sortedHashes.data[i].hash != neighborHash) break;
+
+                    uint neighborAgentIdx = sortedHashes.data[i].agentIndex;
+                    if (globalIdx == neighborAgentIdx) continue;
+                    if (inAgents.positions[neighborAgentIdx].w == 0.0) continue;
+
+                    outNeighbors.data[myBase + 1u + count] = neighborAgentIdx;
+                    count++;
+                }
+            }
+        }
+    }
+
+    outNeighbors.data[myBase] = count;
+}

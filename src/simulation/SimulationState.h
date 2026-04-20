@@ -87,6 +87,10 @@ namespace DigitalTwin
         BufferHandle hashBuffer;
         BufferHandle offsetBuffer;
         BufferHandle pressureBuffer;
+        // Phase 2.6.5.a — shared per-agent neighbour list, consumed by
+        // jkr_forces.comp (and future voronoi_cell_polygon.comp). Layout per agent:
+        //   uint count; uint indices[24]; uint _pad[7];  // 128 bytes aligned stride
+        BufferHandle neighborListBuffer;
 
         // Grig fields
         std::vector<GridFieldState> gridFields;

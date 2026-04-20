@@ -87,20 +87,37 @@ layout(std430, binding = 12) readonly buffer PlateBuf {
     vec4  plates[2 * MAX_PLATES];
 } plate;
 
+// Item 2 Phase 2.6.5.a — shared per-agent neighbour list built by
+// build_neighbor_list.comp. Replaces the inline 27-cell hash walk below.
+// Flat-uint layout (32 uints per agent, 128 bytes): the first uint is the
+// neighbour count; the next 24 uints are neighbour agent indices; the
+// remaining 7 are padding for aligned stride. Flat array dodges the std430
+// struct-of-arrays stride subtleties that can shift the `count` offset
+// when a struct contains only uints (some drivers add invisible padding).
+// Matches build_neighbor_list.comp layout: 64 uints per agent (256 bytes
+// aligned stride), slot 0 = count, slots 1..48 = neighbour indices.
+#define NEIGHBOR_STRIDE 64u
+#define NEIGHBOR_CAP    48u
+layout(std430, binding = 13) readonly buffer NeighborListBuf { uint data[]; } neighborList;
+
 // Rotate vector v by unit quaternion q.
 vec3 qrot( vec4 q, vec3 v ) {
     return v + 2.0 * cross( q.xyz, cross( q.xyz, v ) + q.w * v );
-}
-
-uint hashPos(ivec3 cell) {
-    const uint p1 = 73856093; const uint p2 = 19349663; const uint p3 = 83492791;
-    return (uint(cell.x) * p1) ^ (uint(cell.y) * p2) ^ (uint(cell.z) * p3);
 }
 
 void main() {
     uint idx = gl_GlobalInvocationID.x;
     if(idx >= pc.maxCapacity) return;
     if(idx >= counters.counts[pc.grpNdx]) return;
+
+    // Phase 2.6.5.a: the 27-cell hash walk has moved into build_neighbor_list.comp,
+    // so sortedHashes / cellOffsets are no longer consumed by the main physics
+    // path. We keep their binding declarations + a trivial dummy read here because
+    // some glslang builds strip unused SSBO bindings (descriptorCount=0 in the
+    // pipeline layout → Vulkan validation rejects Bind() writes to those slots).
+    // The check never triggers a return in practice (hash[0] and offsets[0] are
+    // never both 0xFFFFFFFF when any agent is live) and its cost is one branch.
+    if (sortedHashes.data[0].hash == 0xFFFFFFFFu && cellOffsets.startIndices[0] == 0xFFFFFFFFu && idx == 0xFFFFFFFFu) return;
 
     // Process this group's own agents by direct offset.
     // The neighbourhood search still uses the global sorted hash (sortedHashes / cellOffsets),
@@ -128,8 +145,9 @@ void main() {
     float adhesion        = pc.adhesion;
     float damping         = pc.fParam4;
     float maxRadius       = pc.fParam5;
-    float cellSize        = pc.domainSize.w;
-    uint  offsetArraySize = pc.arrayOffset;
+    // Phase 2.6.5.a: spatial-hash walking (cellSize / offsetArraySize / sortedHashes /
+    // cellOffsets bindings) has been consolidated into build_neighbor_list.comp; this
+    // pass now consumes the per-agent shared list via binding 13.
 
     int   hullCount = int(hull.hullMeta.x);
 
@@ -163,33 +181,28 @@ void main() {
         myAxisZ = qrot(qi, vec3(0.0, 0.0, 1.0));
     }
 
-    ivec3 myCell = ivec3(floor(myPos / cellSize));
+    // Item 2 Phase 2.6.5.a — iterate the shared per-agent neighbour list built
+    // by build_neighbor_list.comp. The previous implementation walked the 27
+    // hash-cell neighbourhood inline here; that walk has been consolidated into
+    // the shared pass so future consumers (voronoi_cell_polygon) don't have to
+    // repeat it. The list is filter-free (excludes only self + dead agents),
+    // so we re-apply the `maxRadius × 2` distance gate per pair.
+    uint myBase          = originalAgentIdx * NEIGHBOR_STRIDE;
+    uint myNeighborCount = neighborList.data[myBase];
+    for (uint k = 0; k < myNeighborCount; k++) {
+        uint neighborAgentIdx = neighborList.data[myBase + 1u + k];
 
-    for (int z = -1; z <= 1; z++) {
-        for (int y = -1; y <= 1; y++) {
-            for (int x = -1; x <= 1; x++) {
-                uint neighborHash = hashPos(myCell + ivec3(x, y, z));
-                uint offsetIdx    = neighborHash % offsetArraySize;
-                uint startIdx     = cellOffsets.startIndices[offsetIdx];
-                if (startIdx == 0xFFFFFFFF) continue;
+        vec4 neighborData = inAgents.positions[neighborAgentIdx];
+        if (neighborData.w == 0.0) continue;
 
-                for (uint i = startIdx; i < pc.maxCapacity; i++) {
-                    if (sortedHashes.data[i].hash != neighborHash) break;
+        vec3 otherPos = neighborData.xyz;
+        vec3 diff     = myPos - otherPos;
+        float dist    = length(diff);
 
-                    uint neighborAgentIdx = sortedHashes.data[i].agentIndex;
-                    if (originalAgentIdx == neighborAgentIdx) continue;
+        if (dist <= 0.00001) { dist = 0.00001; diff = vec3(0.00001, 0.0, 0.0); }
 
-                    vec4 neighborData = inAgents.positions[neighborAgentIdx];
-                    if (neighborData.w == 0.0) continue;
-
-                    vec3 otherPos = neighborData.xyz;
-                    vec3 diff     = myPos - otherPos;
-                    float dist    = length(diff);
-
-                    if (dist <= 0.00001) { dist = 0.00001; diff = vec3(0.00001, 0.0, 0.0); }
-
-                    float interactDist = maxRadius * 2.0;
-                    if (dist >= interactDist) continue;
+        float interactDist = maxRadius * 2.0;
+        if (dist >= interactDist) continue;
 
                     // ── Cadherin + polarity modulation (cell-level, once per neighbour) ──
                     //
@@ -409,9 +422,6 @@ void main() {
                             totalPressure += repForce;
                         }
                     }
-                }
-            }
-        }
     }
 
     // ── Basement-membrane plates (global, per-agent once outside neighbour loop) ──

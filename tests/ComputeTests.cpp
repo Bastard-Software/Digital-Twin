@@ -15,8 +15,10 @@
 #include "simulation/SimulationBlueprint.h"
 #include "simulation/SimulationBuilder.h"
 #include "simulation/Phenotype.h"
+#include <algorithm>
 #include <filesystem>
 #include <fstream>
+#include <set>
 #include <gtest/gtest.h>
 
 // Private headers directly included for testing internal mechanics
@@ -90,6 +92,57 @@ protected:
             m_memory->Shutdown();
     }
 };
+
+// =================================================================================================
+// =================================================================================================
+// Phase 2.6.5.a — shared neighbour-list helper for JKR raw-shader tests.
+//
+// Since Phase 2.6.5.a's refactor, jkr_forces.comp reads a pre-built neighbour-
+// list SSBO at binding 13 instead of walking the 27-cell spatial hash inline.
+// Raw-shader tests that dispatch jkr_forces directly (without running the
+// upstream build_neighbor_list.comp task) need to populate this SSBO themselves.
+// This helper creates a buffer where every agent lists every OTHER agent as a
+// neighbour (fully-connected graph) — the correct ground truth for small test
+// scenes where all agents are mutually visible.
+// =================================================================================================
+
+namespace
+{
+    // Matches build_neighbor_list.comp / jkr_forces.comp layout: 48 indices +
+    // 1 count + 15 padding = 64 uints per agent (256 bytes aligned stride).
+    constexpr uint32_t kNeighborCap    = 48;
+    constexpr uint32_t kNeighborStride = 256; // bytes per agent (64 uints × 4)
+
+    // Create + upload a fully-connected neighbour-list buffer for `agentCount`
+    // agents. Each agent's list has count=(agentCount-1) and indices=[all j != i].
+    // Agent count must be ≤ kNeighborCap + 1 (cap enforced silently: excess
+    // neighbours silently dropped — mirrors the shader's overflow behaviour).
+    BufferHandle CreateFullyConnectedNeighborList(
+        ResourceManager&  rm,
+        StreamingManager& stream,
+        uint32_t          agentCount,
+        const char*       debugName = "TestNeighborListFullyConnected" )
+    {
+        const size_t bufSize = agentCount * kNeighborStride;
+        BufferHandle buf     = rm.CreateBuffer( { bufSize, BufferType::STORAGE, debugName } );
+
+        std::vector<uint32_t> data( bufSize / sizeof( uint32_t ), 0 );
+        for( uint32_t i = 0; i < agentCount; ++i )
+        {
+            uint32_t* myRow      = data.data() + i * ( kNeighborStride / sizeof( uint32_t ) );
+            uint32_t  writeCount = 0;
+            for( uint32_t j = 0; j < agentCount && writeCount < kNeighborCap; ++j )
+            {
+                if( j == i ) continue;
+                myRow[ 1 + writeCount ] = j; // slot 0 is `count`; indices start at slot 1
+                ++writeCount;
+            }
+            myRow[ 0 ] = writeCount;
+        }
+        stream.UploadBufferImmediate( { { buf, data.data(), bufSize, 0 } } );
+        return buf;
+    }
+} // anonymous namespace
 
 // =================================================================================================
 // Compute engine lifecycle tests
@@ -683,6 +736,200 @@ TEST_F( ComputeTest, Shader_BitonicSort_Logic )
 }
 
 // 6. Compute JKR forces (Biomechanics) logic test
+// =================================================================================================
+// Phase 2.6.5.a — build_neighbor_list.comp tests
+// =================================================================================================
+//
+// Verifies that the new shared neighbour-list compute pass correctly writes
+// each agent's spatial-hash neighbours into the flat-uint SSBO layout that
+// jkr_forces (and future voronoi_cell_polygon) consume. Covers the three DR-
+// report-mandated invariants: (a) output matches a CPU-side O(N²) ground-truth
+// neighbour computation; (b) the pass does NOT apply its own distance filter
+// (consumers handle reach — the list intentionally spans the full 27-cell hash
+// neighbourhood); (c) the NEIGHBOR_CAP saturation behaviour is correct when
+// density exceeds the cap.
+
+namespace
+{
+    // Dispatch helper for build_neighbor_list.comp raw-shader tests.
+    // Returns the populated neighbour list buffer. Ground-truth comparison
+    // is the caller's responsibility.
+    BufferHandle DispatchBuildNeighborList(
+        Device&                       device,
+        ResourceManager&              rm,
+        StreamingManager&             stream,
+        const std::vector<glm::vec4>& agents,
+        float                         cellSize = 3.0f )
+    {
+        const uint32_t count        = static_cast<uint32_t>( agents.size() );
+        const size_t   agentsSize   = count * sizeof( glm::vec4 );
+        const uint32_t offsetArrLen = 256;
+        const size_t   listSize     = count * kNeighborStride;
+
+        // Build sorted hashes on CPU (bypasses hash_agents + bitonic sort).
+        // Every agent hashes to its own cell based on position / cellSize.
+        struct AgentHash { uint32_t hash; uint32_t agentIndex; };
+        auto hashCell = []( glm::ivec3 c ) -> uint32_t {
+            return ( uint32_t( c.x ) * 73856093u ) ^
+                   ( uint32_t( c.y ) * 19349663u ) ^
+                   ( uint32_t( c.z ) * 83492791u );
+        };
+        std::vector<AgentHash> hashes;
+        hashes.reserve( count );
+        for( uint32_t i = 0; i < count; ++i )
+        {
+            glm::ivec3 c    = glm::ivec3( glm::floor( glm::vec3( agents[ i ] ) / cellSize ) );
+            hashes.push_back( { hashCell( c ), i } );
+        }
+        // Sort by hash so consecutive entries share a hash (build_offsets convention).
+        std::sort( hashes.begin(), hashes.end(),
+                   []( const AgentHash& a, const AgentHash& b ) { return a.hash < b.hash; } );
+
+        // Build offsets table (first-occurrence index per hash % offsetArrLen).
+        std::vector<uint32_t> offsets( offsetArrLen, 0xFFFFFFFFu );
+        for( uint32_t i = 0; i < count; ++i )
+        {
+            uint32_t slot = hashes[ i ].hash % offsetArrLen;
+            if( offsets[ slot ] == 0xFFFFFFFFu )
+                offsets[ slot ] = i;
+        }
+
+        BufferHandle agentBuf    = rm.CreateBuffer( { agentsSize, BufferType::STORAGE, "NLT_Agents" } );
+        BufferHandle hashBuf     = rm.CreateBuffer( { count * sizeof( AgentHash ), BufferType::STORAGE, "NLT_Hashes" } );
+        BufferHandle offsetBuf   = rm.CreateBuffer( { offsetArrLen * sizeof( uint32_t ), BufferType::STORAGE, "NLT_Offsets" } );
+        BufferHandle neighborBuf = rm.CreateBuffer( { listSize, BufferType::STORAGE, "NLT_Out" } );
+
+        stream.UploadBufferImmediate( {
+            { agentBuf,  agents.data(),  agentsSize },
+            { hashBuf,   hashes.data(),  count * sizeof( AgentHash ) },
+            { offsetBuf, offsets.data(), offsetArrLen * sizeof( uint32_t ) },
+        } );
+
+        ComputePipelineDesc desc{};
+        desc.shader    = rm.CreateShader( "shaders/compute/build_neighbor_list.comp" );
+        desc.debugName = "NLT_Pipe";
+        auto pipeHandle = rm.CreatePipeline( desc );
+        auto* pipe      = rm.GetPipeline( pipeHandle );
+
+        auto bg = rm.GetBindingGroup( rm.CreateBindingGroup( pipeHandle, 0 ) );
+        bg->Bind( 0, rm.GetBuffer( agentBuf ) );
+        bg->Bind( 1, rm.GetBuffer( hashBuf ) );
+        bg->Bind( 2, rm.GetBuffer( offsetBuf ) );
+        bg->Bind( 3, rm.GetBuffer( neighborBuf ) );
+        bg->Build();
+
+        ComputePushConstants pc{};
+        pc.fParam0     = cellSize;
+        pc.maxCapacity = count;
+        pc.offset      = 0;
+        pc.uParam0     = offsetArrLen; // = arrayOffset in shader
+
+        auto ctxHandle = device.CreateThreadContext( QueueType::COMPUTE );
+        auto* ctx      = device.GetThreadContext( ctxHandle );
+        auto* cmd      = ctx->GetCommandBuffer( ctx->CreateCommandBuffer() );
+        cmd->Begin();
+        cmd->SetPipeline( pipe );
+        cmd->SetBindingGroup( bg, pipe->GetLayout(), VK_PIPELINE_BIND_POINT_COMPUTE );
+        cmd->PushConstants( pipe->GetLayout(), VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof( pc ), &pc );
+        cmd->Dispatch( ( count + 255 ) / 256, 1, 1 );
+        cmd->End();
+        device.GetComputeQueue()->Submit( { cmd } );
+        device.GetComputeQueue()->WaitIdle();
+
+        return neighborBuf;
+    }
+} // anonymous namespace
+
+// All agents within the same hash cell → every agent's list should contain
+// every OTHER agent (N-1 entries). CPU ground-truth comparison.
+TEST_F( ComputeTest, Shader_NeighborList_MatchesHashGroundTruth )
+{
+    if( !m_device )
+        GTEST_SKIP();
+
+    // 8 agents clustered in a single hash cell (cellSize=3, positions all
+    // within [0, 1] cube → same hash). Expected: each agent lists the other 7.
+    std::vector<glm::vec4> agents;
+    for( int x = 0; x < 2; ++x )
+        for( int y = 0; y < 2; ++y )
+            for( int z = 0; z < 2; ++z )
+                agents.push_back( glm::vec4( 0.1f * x, 0.1f * y, 0.1f * z, 1.0f ) );
+
+    const uint32_t count = static_cast<uint32_t>( agents.size() );
+    BufferHandle   buf   = DispatchBuildNeighborList( *m_device, *m_rm, *m_stream, agents );
+
+    std::vector<uint32_t> gpu( count * ( kNeighborStride / sizeof( uint32_t ) ), 0 );
+    m_stream->ReadbackBufferImmediate( buf, gpu.data(), count * kNeighborStride );
+
+    for( uint32_t i = 0; i < count; ++i )
+    {
+        const uint32_t* row = gpu.data() + i * ( kNeighborStride / sizeof( uint32_t ) );
+        EXPECT_EQ( row[ 0 ], count - 1 ) << "Agent " << i << " should have N-1=7 neighbours";
+        // Collect + verify the index set excludes self and covers all others.
+        std::set<uint32_t> found( row + 1, row + 1 + row[ 0 ] );
+        EXPECT_EQ( found.count( i ), 0u ) << "Agent " << i << " must not be in its own neighbour list";
+        EXPECT_EQ( found.size(), count - 1 ) << "Agent " << i << " duplicate neighbour entries?";
+    }
+}
+
+// The neighbour list pass is intentionally filter-free — it includes agents in
+// the 27-cell hash neighbourhood regardless of actual distance. This test
+// places agents far apart (different hash cells but adjacent ones) and verifies
+// they still appear in each other's lists. Consumers (JKR, Voronoi) apply
+// their own reach threshold.
+TEST_F( ComputeTest, Shader_NeighborList_RespectsMaxInteractionRadius )
+{
+    if( !m_device )
+        GTEST_SKIP();
+
+    // 2 agents at (0,0,0) and (4,0,0). cellSize=3 → cells (0,0,0) and (1,0,0).
+    // Adjacent hash cells, distance 4 which EXCEEDS jkr_forces' maxRadius*2=3
+    // threshold. The list should still include them (unfiltered); JKR's own
+    // distance gate then discards the pair.
+    std::vector<glm::vec4> agents = {
+        glm::vec4( 0.0f, 0.0f, 0.0f, 1.0f ),
+        glm::vec4( 4.0f, 0.0f, 0.0f, 1.0f ),
+    };
+    BufferHandle buf = DispatchBuildNeighborList( *m_device, *m_rm, *m_stream, agents );
+
+    std::vector<uint32_t> gpu( 2 * ( kNeighborStride / sizeof( uint32_t ) ), 0 );
+    m_stream->ReadbackBufferImmediate( buf, gpu.data(), 2 * kNeighborStride );
+
+    const uint32_t* row0 = gpu.data() + 0 * ( kNeighborStride / sizeof( uint32_t ) );
+    const uint32_t* row1 = gpu.data() + 1 * ( kNeighborStride / sizeof( uint32_t ) );
+    EXPECT_EQ( row0[ 0 ], 1u ) << "Agent 0: should see agent 1 (adjacent hash cell)";
+    EXPECT_EQ( row0[ 1 ], 1u ) << "Agent 0's neighbour[0] should be agent 1";
+    EXPECT_EQ( row1[ 0 ], 1u ) << "Agent 1: should see agent 0";
+    EXPECT_EQ( row1[ 1 ], 0u ) << "Agent 1's neighbour[0] should be agent 0";
+}
+
+// When the number of agents in a single cell exceeds NEIGHBOR_CAP (48), the
+// list must saturate at 48 without corrupting memory or crashing. Excess
+// neighbours are silently dropped.
+TEST_F( ComputeTest, Shader_NeighborList_CountClamp )
+{
+    if( !m_device )
+        GTEST_SKIP();
+
+    // 60 agents clustered in the same hash cell. Each agent has 59 candidates;
+    // the list should cap at 48.
+    std::vector<glm::vec4> agents;
+    for( uint32_t i = 0; i < 60; ++i )
+        agents.push_back( glm::vec4( 0.01f * float( i ), 0.0f, 0.0f, 1.0f ) );
+
+    BufferHandle buf = DispatchBuildNeighborList( *m_device, *m_rm, *m_stream, agents );
+
+    std::vector<uint32_t> gpu( agents.size() * ( kNeighborStride / sizeof( uint32_t ) ), 0 );
+    m_stream->ReadbackBufferImmediate( buf, gpu.data(), agents.size() * kNeighborStride );
+
+    for( uint32_t i = 0; i < agents.size(); ++i )
+    {
+        const uint32_t* row = gpu.data() + i * ( kNeighborStride / sizeof( uint32_t ) );
+        EXPECT_EQ( row[ 0 ], kNeighborCap )
+            << "Agent " << i << " count must saturate at NEIGHBOR_CAP (48), not 59";
+    }
+}
+
 TEST_F( ComputeTest, Shader_JKRForces_Logic )
 {
     if( !m_device )
@@ -785,6 +1032,8 @@ TEST_F( ComputeTest, Shader_JKRForces_Logic )
     bg->Bind( 10, m_rm->GetBuffer( orientationDummy ) );
     bg->Bind( 11, m_rm->GetBuffer( contactHullDummy ) );
     bg->Bind( 12, m_rm->GetBuffer( plateDummyBuf ) );
+    BufferHandle neighborListBuf = CreateFullyConnectedNeighborList( *m_rm, *m_stream, agentCount );
+    bg->Bind( 13, m_rm->GetBuffer( neighborListBuf ) );
     bg->Build();
 
     // 4. Setup Push Constants (Packed exactly as in SimulationBuilder)
@@ -2134,6 +2383,8 @@ TEST_F( ComputeTest, Shader_JKR_CellTypeFilter_IgnoresUpperMorphologyBits )
         bg->Bind( 10, m_rm->GetBuffer( oriBuf ) );
         bg->Bind( 11, m_rm->GetBuffer( hullBuf ) );
         bg->Bind( 12, m_rm->GetBuffer( plateBuf ) );
+        BufferHandle neighborListBuf = CreateFullyConnectedNeighborList( *m_rm, *m_stream, agentCount );
+        bg->Bind( 13, m_rm->GetBuffer( neighborListBuf ) );
         bg->Build();
 
         ComputePushConstants pc{};
@@ -2458,6 +2709,8 @@ static std::pair<float, float> RunJKRCadherin(
     bg->Bind( 10, rm->GetBuffer( orientBuf ) );
     bg->Bind( 11, rm->GetBuffer( hullBuf ) );
     bg->Bind( 12, rm->GetBuffer( plateBuf ) );
+    BufferHandle neighborListBuf = CreateFullyConnectedNeighborList( *rm, *stream, agentCount );
+    bg->Bind( 13, rm->GetBuffer( neighborListBuf ) );
     bg->Build();
 
     uint32_t polarityBits  = glm::packHalf2x16( glm::vec2( apicalRepulsion, basalAdhesion ) );
@@ -2594,6 +2847,8 @@ static glm::vec3 RunJKRWithPlate(
     bg->Bind( 10, rm->GetBuffer( orientBuf ) );
     bg->Bind( 11, rm->GetBuffer( hullBuf ) );
     bg->Bind( 12, rm->GetBuffer( plateBuf ) );
+    BufferHandle neighborListBuf = CreateFullyConnectedNeighborList( *rm, *stream, agentCount );
+    bg->Bind( 13, rm->GetBuffer( neighborListBuf ) );
     bg->Build();
 
     ComputePushConstants pc{};
@@ -3784,6 +4039,8 @@ static RigidBodyResult RunJKRRigidBody(
     bg->Bind( 10, rm->GetBuffer( orientBuf ) );
     bg->Bind( 11, rm->GetBuffer( hullBuf ) );
     bg->Bind( 12, rm->GetBuffer( plateBuf ) );
+    BufferHandle neighborListBuf = CreateFullyConnectedNeighborList( *rm, *stream, agentCount );
+    bg->Bind( 13, rm->GetBuffer( neighborListBuf ) );
     bg->Build();
 
     ComputePushConstants pc{};

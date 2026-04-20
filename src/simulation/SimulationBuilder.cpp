@@ -440,6 +440,19 @@ namespace DigitalTwin
             // shared across potentially multiple mechanical behaviours.
             outState.pressureBuffer = m_resourceManager->CreateBuffer( { paddedCount * 4, BufferType::STORAGE, "AgentPressures" } );
         }
+        if( !outState.neighborListBuffer.IsValid() )
+        {
+            // Phase 2.6.5.a — shared per-agent neighbour list. Flat uint layout:
+            //   [base+0]            = count (0..48)
+            //   [base+1 .. base+48] = neighbour agent indices
+            //   [base+49 .. base+63] = padding
+            // 64 uints × 4 bytes = 256 bytes per agent (aligned stride). Cap 48
+            // sized to match ECBlob tight-cluster density (previous 24-cap was
+            // dropping neighbours and shifting physics).
+            constexpr uint32_t kNeighborListStride = 256;
+            outState.neighborListBuffer            = m_resourceManager->CreateBuffer(
+                { paddedCount * kNeighborListStride, BufferType::STORAGE, "NeighborList" } );
+        }
 
         // 4. Load Shaders and Create Pipelines for Spatial Partitioning
         ComputePipelineDesc hashDesc{};
@@ -460,6 +473,14 @@ namespace DigitalTwin
         ComputePipelineHandle offsetPipeHandle = m_resourceManager->CreatePipeline( offsetDesc );
         ComputePipeline*      offsetPipe       = m_resourceManager->GetPipeline( offsetPipeHandle );
 
+        // Phase 2.6.5.a — shared neighbour-list build pipeline. Runs after the
+        // offset pass so every agent's 27-cell hash lookup is already valid.
+        ComputePipelineDesc neighborDesc{};
+        neighborDesc.shader                      = m_resourceManager->CreateShader( "shaders/compute/build_neighbor_list.comp" );
+        neighborDesc.debugName                   = "BuildNeighborListPipeline";
+        ComputePipelineHandle neighborPipeHandle = m_resourceManager->CreatePipeline( neighborDesc );
+        ComputePipeline*      neighborPipe       = m_resourceManager->GetPipeline( neighborPipeHandle );
+
         // 5. Setup Binding Groups
         BindingGroup* bgHash0 = m_resourceManager->GetBindingGroup( m_resourceManager->CreateBindingGroup( hashPipeHandle, 0 ) );
         bgHash0->Bind( 0, m_resourceManager->GetBuffer( outState.agentBuffers[ 0 ] ) );
@@ -479,6 +500,23 @@ namespace DigitalTwin
         bgOffset->Bind( 0, m_resourceManager->GetBuffer( outState.hashBuffer ) );
         bgOffset->Bind( 1, m_resourceManager->GetBuffer( outState.offsetBuffer ) );
         bgOffset->Build();
+
+        // Phase 2.6.5.a — neighbour-list binding groups (one per agent buffer ping-pong slot).
+        // Reads: inAgents (slot 0), sortedHashes (slot 1), cellOffsets (slot 2).
+        // Writes: neighborListBuffer (slot 3).
+        BindingGroup* bgNeighbor0 = m_resourceManager->GetBindingGroup( m_resourceManager->CreateBindingGroup( neighborPipeHandle, 0 ) );
+        bgNeighbor0->Bind( 0, m_resourceManager->GetBuffer( outState.agentBuffers[ 0 ] ) );
+        bgNeighbor0->Bind( 1, m_resourceManager->GetBuffer( outState.hashBuffer ) );
+        bgNeighbor0->Bind( 2, m_resourceManager->GetBuffer( outState.offsetBuffer ) );
+        bgNeighbor0->Bind( 3, m_resourceManager->GetBuffer( outState.neighborListBuffer ) );
+        bgNeighbor0->Build();
+
+        BindingGroup* bgNeighbor1 = m_resourceManager->GetBindingGroup( m_resourceManager->CreateBindingGroup( neighborPipeHandle, 0 ) );
+        bgNeighbor1->Bind( 0, m_resourceManager->GetBuffer( outState.agentBuffers[ 1 ] ) );
+        bgNeighbor1->Bind( 1, m_resourceManager->GetBuffer( outState.hashBuffer ) );
+        bgNeighbor1->Bind( 2, m_resourceManager->GetBuffer( outState.offsetBuffer ) );
+        bgNeighbor1->Bind( 3, m_resourceManager->GetBuffer( outState.neighborListBuffer ) );
+        bgNeighbor1->Build();
 
         // 6. Base Push Constants
         ComputePushConstants basePC{};
@@ -519,6 +557,22 @@ namespace DigitalTwin
         ComputeTask offsetTask( offsetPipe, bgOffset, bgOffset, computeHz, offsetPC, offsetDispatch );
         offsetTask.SetPhaseName( "Spatial Grid" );
         outState.computeGraph.AddTask( offsetTask );
+
+        // --- TASK D: BUILD NEIGHBOR LIST (Phase 2.6.5.a) ---
+        // Reads: agentBuffers (ping-pong), hashBuffer, offsetBuffer.
+        // Writes: neighborListBuffer (128 bytes/agent: count + 24 indices + padding).
+        // Consumers: jkr_forces.comp (Phase 2.6.5.a), voronoi_cell_polygon.comp (Phase 2.6.5.b).
+        // NOTE: `arrayOffset` in the shader is slot uParam0 on the C++ side — same
+        // naming convention as jkr_forces.comp (see push-constant layout in
+        // ComputeTask.h: fParam0-5, offset, maxCapacity, uParam0, uParam1).
+        ComputePushConstants neighborPC = basePC;
+        neighborPC.fParam0              = cellSize;
+        neighborPC.uParam0              = offsetArraySize;
+        neighborPC.maxCapacity          = paddedCount;
+        glm::uvec3  neighborDispatch( ( paddedCount + 255 ) / 256, 1, 1 );
+        ComputeTask neighborTask( neighborPipe, bgNeighbor0, bgNeighbor1, computeHz, neighborPC, neighborDispatch );
+        neighborTask.SetPhaseName( "Spatial Grid" );
+        outState.computeGraph.AddTask( neighborTask );
 
         DT_INFO( "[SimulationBuilder] Compiled Global Spatial Grid. Total Agents: {}, Frequency: {}Hz", paddedCount, computeHz );
     }
@@ -1163,6 +1217,7 @@ namespace DigitalTwin
                     bgJkr0->Bind( 10, m_resourceManager->GetBuffer( outState.orientationBuffer ) );
                     bgJkr0->Bind( 11, m_resourceManager->GetBuffer( outState.contactHullBuffer ) );
                     bgJkr0->Bind( 12, m_resourceManager->GetBuffer( outState.basementMembraneBuffer ) );
+                    bgJkr0->Bind( 13, m_resourceManager->GetBuffer( outState.neighborListBuffer ) );
                     bgJkr0->Build();
 
                     BindingGroup* bgJkr1 = m_resourceManager->GetBindingGroup( m_resourceManager->CreateBindingGroup( jkrPipeHandle, 0 ) );
@@ -1182,6 +1237,7 @@ namespace DigitalTwin
                     bgJkr1->Bind( 10, m_resourceManager->GetBuffer( outState.orientationBuffer ) );
                     bgJkr1->Bind( 11, m_resourceManager->GetBuffer( outState.contactHullBuffer ) );
                     bgJkr1->Bind( 12, m_resourceManager->GetBuffer( outState.basementMembraneBuffer ) );
+                    bgJkr1->Bind( 13, m_resourceManager->GetBuffer( outState.neighborListBuffer ) );
                     bgJkr1->Build();
 
                     // 3. Configure Task specific parameters

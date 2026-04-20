@@ -371,6 +371,32 @@ namespace Gaudi
                   "static-primitive limit; Phase 2.6.5 closes it). Tree holds\n"
                   "shape under Item-1 physics alone - no vessel-edge springs.",
                   &Demos::SetupBranchingTreeDemo },
+
+                { "Designed Vessel",
+                  "Phase 2.6 full artery -> arteriole -> capillary hierarchy.\n"
+                  "Depth-3 symmetric Y-branching tree = 15 branches (1 trunk +\n"
+                  "2 L1 + 4 L2 + 8 L3 capillary leaves), 7 bifurcations, ~1000\n"
+                  "cells. Ring cascade: 19 -> 9 -> 5 -> 2 (dual-seam capillary,\n"
+                  "Bar 1984 floor).\n\n"
+                  "Anatomical simplification: uses Murray factor 0.5 instead of\n"
+                  "the biologically symmetric 2-way 0.79. Each demo-level then\n"
+                  "represents ~3 real-physiology Murray bifurcations (0.79^3 =\n"
+                  "0.5) so the full arteriole -> capillary scale transition fits\n"
+                  "in 3 demo levels rather than the 5-8 it takes in vivo. Pries\n"
+                  "& Secomb 2005 'heart -> metarteriole -> capillary' aggregate.\n\n"
+                  "Pure composition demo on the Phase 2.5 bifurcation substrate\n"
+                  "and Item 1 physics stack (damping 500, catch-bond 2.0 peak\n"
+                  "0.3, polarity propagation 1.0). No new generator or shader\n"
+                  "work.\n\n"
+                  "Look for: artery-scale ring 19 trunk tapering into 8 dual-\n"
+                  "seam capillary tips; Murray radius progression visible at\n"
+                  "each of the 7 bifurcation apices; clean rhombus tiling on\n"
+                  "each branch between junctions; known gap / bumpiness at each\n"
+                  "Y-junction carina (static-primitive limit, closes in Phase\n"
+                  "2.6.5 dynamic topology). Whole tree holds shape under Item-1\n"
+                  "physics alone - no vessel-edge springs, no pre-registered\n"
+                  "carina meshes.",
+                  &Demos::SetupDesignedVesselDemo },
             }, false },
         };
 

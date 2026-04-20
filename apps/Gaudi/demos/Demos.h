@@ -28,6 +28,7 @@ namespace Gaudi::Demos
     void SetupCurvedTubeDemo         ( DigitalTwin::SimulationBlueprint& blueprint );
     void SetupTaperingTubeDemo       ( DigitalTwin::SimulationBlueprint& blueprint );
     void SetupBranchingTreeDemo      ( DigitalTwin::SimulationBlueprint& blueprint );
+    void SetupDesignedVesselDemo     ( DigitalTwin::SimulationBlueprint& blueprint );
 
     // Shared helper — defined in ECBlobDemo.cpp, reused by EC2DMatrigelDemo.cpp.
     // Populates the given AgentGroup with an elongated random cloud of ~100

@@ -65,7 +65,8 @@ namespace Gaudi::Demos
 
         auto& ecs = blueprint.AddAgentGroup( "Tapering Vessel Endothelium" );
         ecs.SetVesselTree( tree )
-           .SetColor( glm::vec4( 0.88f, 0.42f, 0.46f, 1.0f ) );
+           .SetColor( glm::vec4( 0.88f, 0.42f, 0.46f, 1.0f ) )
+           .SetDynamicTopology( true ); // Phase 2.6.5.b opt-in
 
         // Phase 2.4.5 — single rhombus variant for the entire tube (pentagon / heptagon
         // registration removed; defect cells never emitted while the flag is off).

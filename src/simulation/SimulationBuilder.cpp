@@ -142,6 +142,11 @@ namespace DigitalTwin
         // 4. Compile specific cellular behaviours (Biomechanics, Chemotaxis, etc.)
         CompileBehaviours( blueprint, state );
 
+        // 5. Phase 2.6.5.b — per-cell Voronoi polygon compute pass. Must run AFTER
+        //    all behaviour tasks so polygon vertices reflect settled-frame agent
+        //    positions. Rendering (Phase 2.6.5.c) reads this buffer downstream.
+        CompileVoronoiPolygon( blueprint, state );
+
         DT_INFO( "[SimulationBuilder] Simulation build process completed successfully." );
 
         return state;
@@ -575,6 +580,113 @@ namespace DigitalTwin
         outState.computeGraph.AddTask( neighborTask );
 
         DT_INFO( "[SimulationBuilder] Compiled Global Spatial Grid. Total Agents: {}, Frequency: {}Hz", paddedCount, computeHz );
+    }
+
+    void SimulationBuilder::CompileVoronoiPolygon( const SimulationBlueprint& blueprint, SimulationState& outState )
+    {
+        // Phase 2.6.5.b — populate per-cell Voronoi polygons every frame for
+        // groups that opted into dynamic topology via AgentGroup::SetDynamicTopology(true).
+        // Physics is unaffected; this pass is pure output. Non-opted groups
+        // (Item 1 trilogy, non-vessel demos) skip this stage entirely —
+        // neither the polygon buffer nor the compute task is created if no
+        // group has flagged in.
+        if( !outState.agentBuffers[ 0 ].IsValid() || outState.totalPaddedAgents == 0 )
+            return;
+
+        // Gate: allocate + register only if at least one group opted in.
+        bool anyEnabled = false;
+        for( const auto& g : blueprint.GetGroups() )
+        {
+            if( g.GetDynamicTopology().enabled ) { anyEnabled = true; break; }
+        }
+        if( !anyEnabled )
+            return;
+
+        const uint32_t paddedCount = outState.totalPaddedAgents;
+        const float    computeHz   = blueprint.GetSpatialPartitioning().computeHz;
+
+        // Allocate polygon buffer covering ALL padded agents (not just opted-in
+        // ones). Simplifies the consumer side (Phase 2.6.5.c render): polygon
+        // data is indexed by global agent index, same as positions/orientations.
+        // Non-opted-in agents' slots stay zero-initialised — harmless for the
+        // eventual dynamic-topology renderer which only reads from opted-in
+        // AgentGroups.
+        if( !outState.polygonBuffer.IsValid() )
+        {
+            constexpr uint32_t kPolygonStride = 208;
+            outState.polygonBuffer            = m_resourceManager->CreateBuffer(
+                { paddedCount * kPolygonStride, BufferType::STORAGE, "PolygonBuffer" } );
+        }
+
+        ComputePipelineDesc desc{};
+        desc.shader                      = m_resourceManager->CreateShader( "shaders/compute/voronoi_cell_polygon.comp" );
+        desc.debugName                   = "VoronoiPolygonPipeline";
+        ComputePipelineHandle pipeHandle = m_resourceManager->CreatePipeline( desc );
+        ComputePipeline*      pipe       = m_resourceManager->GetPipeline( pipeHandle );
+
+        // Shared ping-pong binding groups — same convention as polarity / cadherin
+        // (bg0 reads agents[0], bg1 reads agents[1]). Reused across all per-group
+        // Voronoi tasks since the bindings are identical; only push constants differ.
+        BindingGroup* bg0 = m_resourceManager->GetBindingGroup( m_resourceManager->CreateBindingGroup( pipeHandle, 0 ) );
+        bg0->Bind( 0, m_resourceManager->GetBuffer( outState.agentBuffers[ 0 ] ) );
+        bg0->Bind( 1, m_resourceManager->GetBuffer( outState.orientationBuffer ) );
+        bg0->Bind( 2, m_resourceManager->GetBuffer( outState.neighborListBuffer ) );
+        bg0->Bind( 3, m_resourceManager->GetBuffer( outState.polygonBuffer ) );
+        bg0->Build();
+
+        BindingGroup* bg1 = m_resourceManager->GetBindingGroup( m_resourceManager->CreateBindingGroup( pipeHandle, 0 ) );
+        bg1->Bind( 0, m_resourceManager->GetBuffer( outState.agentBuffers[ 1 ] ) );
+        bg1->Bind( 1, m_resourceManager->GetBuffer( outState.orientationBuffer ) );
+        bg1->Bind( 2, m_resourceManager->GetBuffer( outState.neighborListBuffer ) );
+        bg1->Bind( 3, m_resourceManager->GetBuffer( outState.polygonBuffer ) );
+        bg1->Build();
+
+        // Iterate groups in blueprint order, track running offset (matches
+        // the padding convention used by CompileBehaviours). Dispatch one
+        // Voronoi task per opted-in group with that group's params.
+        uint32_t currentOffset = 0;
+        for( const auto& group : blueprint.GetGroups() )
+        {
+            uint32_t grpPaddedCount = 131072;
+            while( grpPaddedCount < group.GetCount() ) grpPaddedCount <<= 1;
+
+            const auto& dyn = group.GetDynamicTopology();
+            if( !dyn.enabled )
+            {
+                currentOffset += grpPaddedCount;
+                continue;
+            }
+
+            // Per-group max interaction radius (largest across Biomechanics behaviours).
+            float groupMaxRadius = 0.0f;
+            for( const auto& rec : group.GetBehaviours() )
+            {
+                if( auto bio = std::get_if<Behaviours::Biomechanics>( &rec.behaviour ) )
+                    groupMaxRadius = std::max( groupMaxRadius, bio->maxRadius );
+            }
+            if( groupMaxRadius <= 0.0f )
+                groupMaxRadius = 0.75f; // fallback matches Item 1 default
+
+            ComputePushConstants pc{};
+            pc.fParam4     = dyn.clipRadiusScale; // per-group octagon bound scale
+            pc.fParam5     = groupMaxRadius;
+            pc.offset      = currentOffset;
+            pc.maxCapacity = grpPaddedCount;
+
+            glm::uvec3  dispatch( ( grpPaddedCount + 255 ) / 256, 1, 1 );
+            ComputeTask task( pipe, bg0, bg1, computeHz, pc, dispatch );
+            task.SetPhaseName( "Voronoi Polygon" );
+            outState.computeGraph.AddTask( task );
+
+            DT_INFO( "[SimulationBuilder]   Voronoi task for group '{}' — maxRadius {}, clipScale {}, offset {}, count {}",
+                     group.GetName(), groupMaxRadius, dyn.clipRadiusScale, currentOffset, group.GetCount() );
+
+            currentOffset += grpPaddedCount;
+        }
+
+        DT_INFO( "[SimulationBuilder] Compiled Voronoi Polygon pass ({} opted-in groups).",
+                 std::count_if( blueprint.GetGroups().begin(), blueprint.GetGroups().end(),
+                                []( const AgentGroup& g ) { return g.GetDynamicTopology().enabled; } ) );
     }
 
     void SimulationBuilder::CompileGridFields( const SimulationBlueprint& blueprint, SimulationState& outState )

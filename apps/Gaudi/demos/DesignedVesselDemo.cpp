@@ -97,7 +97,8 @@ namespace Gaudi::Demos
 
         auto& ecs = blueprint.AddAgentGroup( "Designed Vessel Endothelium" );
         ecs.SetVesselTree( tree )
-           .SetColor( glm::vec4( 0.88f, 0.42f, 0.46f, 1.0f ) );
+           .SetColor( glm::vec4( 0.88f, 0.42f, 0.46f, 1.0f ) )
+           .SetDynamicTopology( true ); // Phase 2.6.5.b opt-in
 
         // Single rhombus variant throughout. Carina cells flagged by Phase 2.5 but
         // not rendered differently — Phase 2.6.5 dynamic topology will pick up the

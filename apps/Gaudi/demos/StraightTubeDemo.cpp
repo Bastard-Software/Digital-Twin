@@ -61,7 +61,8 @@ namespace Gaudi::Demos
 
         auto& ecs = blueprint.AddAgentGroup( "Vessel Endothelium" );
         ecs.SetVesselTree( tree )
-           .SetColor( glm::vec4( 0.88f, 0.42f, 0.46f, 1.0f ) ); // endothelium rose (Item 1 palette)
+           .SetColor( glm::vec4( 0.88f, 0.42f, 0.46f, 1.0f ) ) // endothelium rose (Item 1 palette)
+           .SetDynamicTopology( true ); // Phase 2.6.5.b opt-in — Voronoi polygon computed each frame
 
         // Phase 2.4.5: true rhombus/diamond tile (Davies 2009 — real arterial ECs are
         // rhomboidal, not rectangular; the previous ElongatedQuad approximation has been

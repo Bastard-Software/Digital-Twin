@@ -34,6 +34,10 @@ namespace DigitalTwin
         void CompileSpatialGrid( const SimulationBlueprint& blueprint, SimulationState& outState );
         void CompileGridFields( const SimulationBlueprint& blueprint, SimulationState& outState );
         void CompileBehaviours( const SimulationBlueprint& blueprint, SimulationState& outState );
+        // Phase 2.6.5.b — allocates PolygonBuffer and registers the per-cell
+        // Voronoi compute pass. Runs after behaviour tasks so vertices reflect
+        // settled agent positions.
+        void CompileVoronoiPolygon( const SimulationBlueprint& blueprint, SimulationState& outState );
 
     private:
         ResourceManager*  m_resourceManager;

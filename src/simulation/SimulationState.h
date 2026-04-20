@@ -91,6 +91,12 @@ namespace DigitalTwin
         // jkr_forces.comp (and future voronoi_cell_polygon.comp). Layout per agent:
         //   uint count; uint indices[24]; uint _pad[7];  // 128 bytes aligned stride
         BufferHandle neighborListBuffer;
+        // Phase 2.6.5.b — per-cell Voronoi polygon buffer (written each frame by
+        // voronoi_cell_polygon.comp). Layout per agent (208 bytes, 16-aligned):
+        //   uint count; uint _pad[3]; vec4 vertices[12];
+        // Rendering consumption deferred to Phase 2.6.5.c; Phase 2.6.5.b only
+        // populates the buffer + CPU-side verification via ComputeTests.
+        BufferHandle polygonBuffer;
 
         // Grig fields
         std::vector<GridFieldState> gridFields;

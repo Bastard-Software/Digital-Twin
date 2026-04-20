@@ -1,0 +1,214 @@
+#version 460
+layout(local_size_x = 256) in;
+
+// Item 2 Phase 2.6.5.b — per-cell Voronoi polygon via Local Tangent Plane
+// Projection + Sutherland-Hodgman clipping against an octagonal bound.
+//
+// One thread per agent. Reads the agent's orientation quaternion to establish
+// a local 2D basis on the vessel-surface tangent plane (local X = axial flow,
+// local Z = circumferential; local Y = outward normal is discarded). Projects
+// each spatial-hash neighbour into that 2D frame, applies a deterministic
+// per-pair microjitter to break collinearity, angular-sorts by atan2, then
+// iteratively clips an 8-vertex bounding octagon against each neighbour's
+// perpendicular bisector. The surviving polygon (≤ 12 vertices) is re-
+// projected to 3D world space and written to PolygonBuffer at binding 4.
+//
+// Rendering is NOT wired up in Phase 2.6.5.b — the polygon buffer is purely
+// verified via CPU readback (ComputeTests.cpp). Phase 2.6.5.c hooks it into
+// the graphics pipeline via SSBO lookup + degenerate-fan triangulation.
+//
+// Algorithm references:
+//   Sutherland & Hodgman 1974 — classic polygon clipping against a plane.
+//   de Berg et al. "Computational Geometry" Ch.7 — 2D Voronoi background.
+//   Deep-research report 2026-04-20 (Local Tangent Plane Projection §Geometry).
+
+#define NEIGHBOR_STRIDE 64u
+#define NEIGHBOR_CAP    48u
+#define MAX_POLY_VERTS  12u
+#define MAX_WORK_VERTS  24u  // internal clipping working size; cap at write time
+
+layout(push_constant) uniform PushConstants {
+    float dt;
+    float totalTime;
+    float fParam0;
+    float fParam1;
+    float fParam2;
+    float fParam3;
+    float clipRadiusScale;  // fParam4 — Phase 2.6.5.b per-group: R_bound scale on the octagon bound.
+                            //   ECs 0.85; epithelium tighter (≈0.6); smooth muscle wider (≈1.0).
+                            //   If 0, shader falls back to 0.85 for backward compatibility.
+    float maxRadius;        // fParam5 — matches JKR; R_bound = maxRadius × 2 × clipRadiusScale.
+    uint  offset;
+    uint  maxCapacity;
+    uint  uParam0;
+    uint  uParam1;
+    vec4  domainSize;
+    uvec4 gridSize;
+} pc;
+
+layout(std140, binding = 0) readonly buffer Agents { vec4 positions[]; } inAgents;
+layout(std430, binding = 1) readonly buffer Orientations { vec4 data[]; } orientations;
+layout(std430, binding = 2) readonly buffer NeighborList { uint data[]; } neighborList;
+
+// Per-agent output polygon. std430 layout, 208 bytes per struct, 16-byte
+// aligned (driven by the vec4 vertices array). Array stride = 208.
+struct CellPolygon {
+    uint count;
+    uint _pad0;
+    uint _pad1;
+    uint _pad2;
+    vec4 vertices[12];  // world-space positions; only xyz used, w reserved
+};
+layout(std430, binding = 3) writeonly buffer Polygons { CellPolygon data[]; } polygons;
+
+// ---- utilities ----
+
+vec3 qrot(vec4 q, vec3 v) {
+    return v + 2.0 * cross(q.xyz, cross(q.xyz, v) + q.w * v);
+}
+
+uint hash32(uint x, uint y) {
+    uint h = x * 0x9E3779B1u + y;
+    h ^= h >> 16; h *= 0x85EBCA6Bu;
+    h ^= h >> 13; h *= 0xC2B2AE35u;
+    h ^= h >> 16;
+    return h;
+}
+
+// Deterministic per-pair 2D microjitter ±1e-4. Breaks collinearity for
+// Sutherland-Hodgman intersection math without randomness. hash32 is
+// symmetric in (a,b) via swap, so agent A sees the same jitter when looking
+// at B as agent B sees when looking at A — keeps neighbour polygons
+// consistent across shared edges.
+vec2 pairJitter(uint a, uint b) {
+    uint lo = min(a, b);
+    uint hi = max(a, b);
+    uint h1 = hash32(lo, hi);
+    uint h2 = hash32(hi, lo);
+    float x = (float(h1) / 4294967296.0) * 2.0e-4 - 1.0e-4;
+    float y = (float(h2) / 4294967296.0) * 2.0e-4 - 1.0e-4;
+    return vec2(x, y);
+}
+
+void main() {
+    uint gid = gl_GlobalInvocationID.x;
+    if (gid >= pc.maxCapacity) return;
+    uint globalIdx = pc.offset + gid;
+
+    vec4 myData = inAgents.positions[globalIdx];
+    if (myData.w == 0.0) {
+        polygons.data[globalIdx].count = 0u;
+        return;
+    }
+
+    vec3 myPos = myData.xyz;
+    vec4 q = orientations.data[globalIdx];
+
+    // Short-arc quaternion convention (Phase 2.3): if stored as (axis, 0) for
+    // legacy agents that only need a normal direction, fall back to identity.
+    // Tests that bypass orientation (agents with default vec4(0,0,0,0)) hit
+    // this path — we produce a polygon in the world XZ plane as sensible
+    // default instead of degenerating.
+    if (abs(q.w) < 0.001 && dot(q.xyz, q.xyz) < 0.001) {
+        q = vec4(0.0, 0.0, 0.0, 1.0);
+    }
+
+    vec3 tangentX = qrot(q, vec3(1.0, 0.0, 0.0));
+    vec3 tangentZ = qrot(q, vec3(0.0, 0.0, 1.0));
+
+    // ---- Collect + project + angular-sort neighbours into 2D ----
+    uint myBase = globalIdx * NEIGHBOR_STRIDE;
+    uint rawCount = neighborList.data[myBase];
+
+    vec2  projected[NEIGHBOR_CAP];
+    float angles[NEIGHBOR_CAP];
+    uint  nActive = 0u;
+    for (uint k = 0; k < rawCount && nActive < NEIGHBOR_CAP; k++) {
+        uint nIdx = neighborList.data[myBase + 1u + k];
+        vec4 nData = inAgents.positions[nIdx];
+        if (nData.w == 0.0) continue;
+
+        vec3 rel = nData.xyz - myPos;
+        vec2 p2  = vec2(dot(rel, tangentX), dot(rel, tangentZ));
+        p2 += pairJitter(globalIdx, nIdx);
+
+        projected[nActive] = p2;
+        angles[nActive]    = atan(p2.y, p2.x);
+        nActive++;
+    }
+
+    // Insertion sort by angle — N ≤ 48, done in private registers, no shared
+    // memory. Stable and branch-predictor-friendly for small N.
+    for (uint i = 1u; i < nActive; i++) {
+        vec2  p = projected[i];
+        float a = angles[i];
+        uint  j = i;
+        while (j > 0u && angles[j - 1u] > a) {
+            projected[j] = projected[j - 1u];
+            angles[j]    = angles[j - 1u];
+            j--;
+        }
+        projected[j] = p;
+        angles[j]    = a;
+    }
+
+    // ---- Initialise octagonal bounding polygon at R_bound ----
+    // R_bound = maxRadius × 2 × clipRadiusScale. Per-group tunable via
+    // AgentGroup::SetDynamicTopology(..., clipRadiusScale). ECs default
+    // to 0.85, epithelium tighter, smooth muscle wider. A zero value is
+    // treated as "no value set" (backward-compat) and defaults to 0.85.
+    float clipScale = (pc.clipRadiusScale > 0.0) ? pc.clipRadiusScale : 0.85;
+    float R_bound   = pc.maxRadius * 2.0 * clipScale;
+
+    vec2 polyA[MAX_WORK_VERTS];
+    vec2 polyB[MAX_WORK_VERTS];
+    uint countA = 8u;
+    const float kPi = 3.14159265358979323846;
+    for (uint i = 0u; i < 8u; i++) {
+        float a  = float(i) * (kPi / 4.0);
+        polyA[i] = vec2(cos(a), sin(a)) * R_bound;
+    }
+
+    // ---- Sutherland-Hodgman: clip polygon against each neighbour's bisector ----
+    // For neighbour at projected position N, the bisector plane is
+    //   dot(p, N) = 0.5 × dot(N, N)
+    // and we keep points on the "origin" side (dot(p, N) ≤ half-distance²).
+    for (uint k = 0u; k < nActive; k++) {
+        vec2  N = projected[k];
+        float halfDotNN = 0.5 * dot(N, N);
+        if (halfDotNN < 1e-8) continue; // degenerate: neighbour on top of cell
+
+        uint countB = 0u;
+        for (uint i = 0u; i < countA && countB < MAX_WORK_VERTS; i++) {
+            vec2  curr = polyA[i];
+            vec2  next = polyA[(i + 1u) % countA];
+            float dc   = dot(curr, N) - halfDotNN; // > 0 = outside, < 0 = inside
+            float dn   = dot(next, N) - halfDotNN;
+
+            if (dc <= 0.0) {
+                polyB[countB++] = curr;
+                if (dn > 0.0 && countB < MAX_WORK_VERTS) {
+                    float t = dc / (dc - dn);
+                    polyB[countB++] = curr + t * (next - curr);
+                }
+            } else if (dn <= 0.0 && countB < MAX_WORK_VERTS) {
+                float t = dc / (dc - dn);
+                polyB[countB++] = curr + t * (next - curr);
+            }
+        }
+
+        // Swap A ↔ B for the next clip iteration.
+        for (uint i = 0u; i < countB; i++) polyA[i] = polyB[i];
+        countA = countB;
+
+        if (countA == 0u) break; // fully clipped away (shouldn't happen with origin always inside)
+    }
+
+    // ---- Write final polygon (capped at MAX_POLY_VERTS=12) ----
+    uint writeCount = min(countA, MAX_POLY_VERTS);
+    polygons.data[globalIdx].count = writeCount;
+    for (uint i = 0u; i < writeCount; i++) {
+        vec3 world = myPos + polyA[i].x * tangentX + polyA[i].y * tangentZ;
+        polygons.data[globalIdx].vertices[i] = vec4(world, 0.0);
+    }
+}

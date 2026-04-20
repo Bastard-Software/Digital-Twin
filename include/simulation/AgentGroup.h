@@ -183,6 +183,49 @@ namespace DigitalTwin
             return *this;
         }
 
+        /**
+         * @brief Phase 2.6.5 dynamic topology per-cell configuration.
+         *
+         *   - `enabled`         — opt-in flag. When false, cells in this group
+         *                         stay on the static `MorphologyData` / rhombus
+         *                         mesh path and the Voronoi compute pass skips
+         *                         this group entirely. Default false.
+         *   - `maxVertsPerCell` — output polygon vertex cap. Shader currently
+         *                         hardcodes 12 (MAX_POLY_VERTS); exposed here
+         *                         for Phase 2.6.5.c when the renderer reads
+         *                         variable vertex counts. Default 12.
+         *   - `thickness`       — biprism extrusion thickness (Phase 2.6.5.g).
+         *                         Ignored until then; stored for forward compat.
+         *                         Default 0.2 matching the Phase 2.4.5 rhombus.
+         *   - `clipRadiusScale` — bounding-octagon radius multiplier. R_bound =
+         *                         biomechanics.maxRadius × 2 × clipRadiusScale.
+         *                         ECs: 0.85 (DR report default). Tighter-packed
+         *                         epithelium: try 0.6–0.7. Smooth muscle: 1.0+.
+         *                         Default 0.85.
+         */
+        struct DynamicTopologyConfig
+        {
+            bool     enabled         = false;
+            uint32_t maxVertsPerCell = 12;
+            float    thickness       = 0.2f;
+            float    clipRadiusScale = 0.85f;
+        };
+
+        AgentGroup& SetDynamicTopology(
+            bool     enabled         = true,
+            uint32_t maxVertsPerCell = 12,
+            float    thickness       = 0.2f,
+            float    clipRadiusScale = 0.85f )
+        {
+            m_dynamicTopology.enabled         = enabled;
+            m_dynamicTopology.maxVertsPerCell = maxVertsPerCell;
+            m_dynamicTopology.thickness       = thickness;
+            m_dynamicTopology.clipRadiusScale = clipRadiusScale;
+            return *this;
+        }
+
+        const DynamicTopologyConfig& GetDynamicTopology() const { return m_dynamicTopology; }
+
         template<typename T>
         BehaviourRecord& AddBehaviour( T behaviour )
         {
@@ -263,5 +306,6 @@ namespace DigitalTwin
         std::vector<MorphologyEntry>  m_cellTypeMorphologies;
         DistributionSpec              m_distSpec;
         MorphologyPresetSpec          m_morphSpec;
+        DynamicTopologyConfig         m_dynamicTopology;
     };
 } // namespace DigitalTwin

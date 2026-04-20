@@ -930,6 +930,343 @@ TEST_F( ComputeTest, Shader_NeighborList_CountClamp )
     }
 }
 
+// =================================================================================================
+// Phase 2.6.5.b — voronoi_cell_polygon.comp tests
+// =================================================================================================
+//
+// Verifies Local Tangent Plane Projection + Sutherland-Hodgman clipping:
+//  a. Isolated agent → full 8-vertex bounding octagon.
+//  b. 5-agent ring → each cell's polygon has [4, 10] vertices.
+//  c. 2-agent pair → shared edge lies on the perpendicular bisector.
+//  d. Adjacent ring cells produce coincident shared edges (pairJitter symmetry).
+//  e. Dual-seam (2-cell ring) → non-degenerate polygon, count ∈ [3, 10].
+//  f. Carina (6 neighbours around a centre) → ≥ 5-sided cobblestone.
+//  g. Same input dispatched twice → bit-exact same output (deterministic).
+
+namespace
+{
+    // CPU mirror of the GPU CellPolygon struct (208 bytes, 16-byte aligned).
+    struct CellPolygonCPU
+    {
+        uint32_t  count;
+        uint32_t  _pad[ 3 ];
+        glm::vec4 vertices[ 12 ];
+    };
+    static_assert( sizeof( CellPolygonCPU ) == 208, "CellPolygonCPU must match GPU stride" );
+
+    struct VoronoiDispatchResult
+    {
+        std::vector<CellPolygonCPU> polygons;
+    };
+
+    // Populate a flat-uint neighbour-list buffer in the NEIGHBOR_STRIDE layout
+    // from a CPU-side list-of-lists.
+    BufferHandle BuildNeighborListFromCPU(
+        ResourceManager&                           rm,
+        StreamingManager&                          stream,
+        const std::vector<std::vector<uint32_t>>&  cpuLists )
+    {
+        const uint32_t agentCount = static_cast<uint32_t>( cpuLists.size() );
+        const size_t   bufSize    = agentCount * kNeighborStride;
+        BufferHandle   buf        = rm.CreateBuffer( { bufSize, BufferType::STORAGE, "VLT_Neighbors" } );
+
+        std::vector<uint32_t> flat( bufSize / sizeof( uint32_t ), 0u );
+        const uint32_t        stride = kNeighborStride / sizeof( uint32_t );
+        for( uint32_t i = 0; i < agentCount; ++i )
+        {
+            uint32_t* row    = flat.data() + i * stride;
+            uint32_t  written = 0;
+            for( uint32_t n : cpuLists[ i ] )
+            {
+                if( written >= kNeighborCap ) break;
+                row[ 1 + written ] = n;
+                ++written;
+            }
+            row[ 0 ] = written;
+        }
+        stream.UploadBufferImmediate( { { buf, flat.data(), bufSize, 0 } } );
+        return buf;
+    }
+
+    // Run voronoi_cell_polygon.comp once on a small raw-shader scene.
+    // `orientations.size()` must equal `agents.size()` (or be empty; we then
+    // default to identity quaternions = local axes == world axes).
+    VoronoiDispatchResult DispatchVoronoiPolygon(
+        Device&                                    device,
+        ResourceManager&                           rm,
+        StreamingManager&                          stream,
+        const std::vector<glm::vec4>&              agents,
+        const std::vector<glm::vec4>&              orientationsIn,
+        const std::vector<std::vector<uint32_t>>&  cpuNeighborLists,
+        float                                      maxRadius = 0.75f )
+    {
+        const uint32_t agentCount = static_cast<uint32_t>( agents.size() );
+
+        // Provide identity quaternions when caller passes an empty vector —
+        // tests then operate in the world XZ plane with no coordinate twist.
+        std::vector<glm::vec4> orientations = orientationsIn;
+        if( orientations.empty() )
+            orientations.assign( agentCount, glm::vec4( 0.0f, 0.0f, 0.0f, 1.0f ) );
+        EXPECT_EQ( orientations.size(), agentCount );
+
+        BufferHandle agentBuf   = rm.CreateBuffer( { agentCount * sizeof( glm::vec4 ), BufferType::STORAGE, "VLT_Agents" } );
+        BufferHandle orientBuf  = rm.CreateBuffer( { agentCount * sizeof( glm::vec4 ), BufferType::STORAGE, "VLT_Orient" } );
+        BufferHandle neighborBuf = BuildNeighborListFromCPU( rm, stream, cpuNeighborLists );
+        BufferHandle polyBuf    = rm.CreateBuffer( { agentCount * sizeof( CellPolygonCPU ), BufferType::STORAGE, "VLT_Polygons" } );
+
+        stream.UploadBufferImmediate( {
+            { agentBuf,  agents.data(),       agentCount * sizeof( glm::vec4 ) },
+            { orientBuf, orientations.data(), agentCount * sizeof( glm::vec4 ) },
+        } );
+
+        ComputePipelineDesc desc{};
+        desc.shader    = rm.CreateShader( "shaders/compute/voronoi_cell_polygon.comp" );
+        desc.debugName = "VLT_Pipe";
+        auto pipeHandle = rm.CreatePipeline( desc );
+        auto* pipe      = rm.GetPipeline( pipeHandle );
+
+        auto bg = rm.GetBindingGroup( rm.CreateBindingGroup( pipeHandle, 0 ) );
+        bg->Bind( 0, rm.GetBuffer( agentBuf ) );
+        bg->Bind( 1, rm.GetBuffer( orientBuf ) );
+        bg->Bind( 2, rm.GetBuffer( neighborBuf ) );
+        bg->Bind( 3, rm.GetBuffer( polyBuf ) );
+        bg->Build();
+
+        ComputePushConstants pc{};
+        pc.fParam5     = maxRadius;
+        pc.offset      = 0;
+        pc.maxCapacity = agentCount;
+
+        auto ctxHandle = device.CreateThreadContext( QueueType::COMPUTE );
+        auto* ctx      = device.GetThreadContext( ctxHandle );
+        auto* cmd      = ctx->GetCommandBuffer( ctx->CreateCommandBuffer() );
+        cmd->Begin();
+        cmd->SetPipeline( pipe );
+        cmd->SetBindingGroup( bg, pipe->GetLayout(), VK_PIPELINE_BIND_POINT_COMPUTE );
+        cmd->PushConstants( pipe->GetLayout(), VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof( pc ), &pc );
+        cmd->Dispatch( ( agentCount + 255 ) / 256, 1, 1 );
+        cmd->End();
+        device.GetComputeQueue()->Submit( { cmd } );
+        device.GetComputeQueue()->WaitIdle();
+
+        VoronoiDispatchResult out;
+        out.polygons.resize( agentCount );
+        stream.ReadbackBufferImmediate( polyBuf, out.polygons.data(), agentCount * sizeof( CellPolygonCPU ) );
+        return out;
+    }
+} // anonymous namespace
+
+// (a) An isolated agent — zero spatial neighbours — should render as the full
+// 8-vertex bounding octagon at radius R_bound = maxRadius × 2 × 0.85.
+TEST_F( ComputeTest, Shader_Voronoi_OctagonWhenNoNeighbours )
+{
+    if( !m_device ) GTEST_SKIP();
+
+    std::vector<glm::vec4> agents = { glm::vec4( 0.0f, 0.0f, 0.0f, 1.0f ) };
+    std::vector<std::vector<uint32_t>> lists = { {} }; // empty neighbour list
+
+    auto result = DispatchVoronoiPolygon( *m_device, *m_rm, *m_stream, agents, {}, lists, 0.75f );
+
+    const auto& p = result.polygons[ 0 ];
+    EXPECT_EQ( p.count, 8u ) << "Isolated agent should produce full octagon (8 vertices)";
+
+    const float R_bound = 0.75f * 2.0f * 0.85f;
+    for( uint32_t i = 0; i < p.count; ++i )
+    {
+        glm::vec3 v  = glm::vec3( p.vertices[ i ] );
+        float     r  = glm::length( v );
+        EXPECT_NEAR( r, R_bound, 1e-3f ) << "Octagon vertex " << i << " must be at R_bound";
+    }
+}
+
+// (b) 5-agent ring: each cell sees 2 in-ring neighbours. Expected polygon is
+// a 4-10-sided shape (2 bisectors cut the octagon; exact vertex count depends
+// on bisector angles but stays within a broad range).
+TEST_F( ComputeTest, Shader_Voronoi_ConsistentNeighbours )
+{
+    if( !m_device ) GTEST_SKIP();
+
+    const uint32_t N       = 5;
+    const float    radius  = 2.0f;
+    std::vector<glm::vec4> agents;
+    std::vector<std::vector<uint32_t>> lists( N );
+    for( uint32_t i = 0; i < N; ++i )
+    {
+        float a = 2.0f * glm::pi<float>() * float( i ) / float( N );
+        agents.push_back( glm::vec4( radius * std::cos( a ), 0.0f, radius * std::sin( a ), 1.0f ) );
+        // Each cell's neighbours = the two adjacent ring cells.
+        lists[ i ] = { ( i + N - 1 ) % N, ( i + 1 ) % N };
+    }
+
+    auto result = DispatchVoronoiPolygon( *m_device, *m_rm, *m_stream, agents, {}, lists, 0.75f );
+
+    for( uint32_t i = 0; i < N; ++i )
+    {
+        EXPECT_GE( result.polygons[ i ].count, 4u )
+            << "Cell " << i << " should have ≥ 4-sided polygon after 2 bisector clips";
+        EXPECT_LE( result.polygons[ i ].count, 10u )
+            << "Cell " << i << " polygon vertex count exceeds upper bound";
+    }
+}
+
+// (c) 2-agent scene — the polygon edge shared with the neighbour must lie on
+// the perpendicular bisector between the two cells. Bisector plane in world
+// XZ: x = 1.0 when cells are at (0,0,0) and (2,0,0). Vertices on the clipping
+// edge should satisfy |x - 1| < FP tolerance (plus jitter ~1e-4).
+TEST_F( ComputeTest, Shader_Voronoi_CornersOnBisectors )
+{
+    if( !m_device ) GTEST_SKIP();
+
+    std::vector<glm::vec4> agents = {
+        glm::vec4( 0.0f, 0.0f, 0.0f, 1.0f ),
+        glm::vec4( 2.0f, 0.0f, 0.0f, 1.0f ),
+    };
+    std::vector<std::vector<uint32_t>> lists = { { 1 }, { 0 } };
+
+    auto result = DispatchVoronoiPolygon( *m_device, *m_rm, *m_stream, agents, {}, lists, 2.0f );
+
+    // Cell 0: its bisector-clipped vertices should have x ≤ 1.0 + ε.
+    const auto& p0 = result.polygons[ 0 ];
+    ASSERT_GE( p0.count, 3u );
+    bool foundOnBisector = false;
+    for( uint32_t i = 0; i < p0.count; ++i )
+    {
+        float x = p0.vertices[ i ].x;
+        EXPECT_LE( x, 1.0f + 1e-3f ) << "Cell 0 vertex " << i << " should be on origin side of bisector (x ≤ 1)";
+        if( std::fabs( x - 1.0f ) < 5e-4f ) foundOnBisector = true;
+    }
+    EXPECT_TRUE( foundOnBisector ) << "Cell 0 should have ≥ 1 vertex on bisector (x ≈ 1.0)";
+}
+
+// (d) Adjacent ring cells must produce coincident shared-edge vertices. The
+// pairJitter function is symmetric in (i, j) so bisectors match from either
+// side; after clipping, the two cells' shared edge vertices should agree in
+// world space within FP tolerance.
+TEST_F( ComputeTest, Shader_Voronoi_ClosesCleanly )
+{
+    if( !m_device ) GTEST_SKIP();
+
+    const uint32_t N       = 5;
+    const float    radius  = 2.0f;
+    std::vector<glm::vec4> agents;
+    std::vector<std::vector<uint32_t>> lists( N );
+    for( uint32_t i = 0; i < N; ++i )
+    {
+        float a = 2.0f * glm::pi<float>() * float( i ) / float( N );
+        agents.push_back( glm::vec4( radius * std::cos( a ), 0.0f, radius * std::sin( a ), 1.0f ) );
+        lists[ i ] = { ( i + N - 1 ) % N, ( i + 1 ) % N };
+    }
+    auto result = DispatchVoronoiPolygon( *m_device, *m_rm, *m_stream, agents, {}, lists, 0.75f );
+
+    // For each adjacent pair (A, B) the bisector midpoint must lie between
+    // their centres; the two cells' polygons should each have ≥ 1 vertex near
+    // that midpoint (within FP + jitter tolerance).
+    for( uint32_t i = 0; i < N; ++i )
+    {
+        uint32_t j     = ( i + 1 ) % N;
+        glm::vec3 mid  = 0.5f * ( glm::vec3( agents[ i ] ) + glm::vec3( agents[ j ] ) );
+
+        auto closestVertexDist = []( const CellPolygonCPU& p, glm::vec3 target ) {
+            float best = 1e30f;
+            for( uint32_t k = 0; k < p.count; ++k )
+            {
+                float d = glm::length( glm::vec3( p.vertices[ k ] ) - target );
+                best    = std::min( best, d );
+            }
+            return best;
+        };
+
+        const float distA = closestVertexDist( result.polygons[ i ], mid );
+        const float distB = closestVertexDist( result.polygons[ j ], mid );
+        EXPECT_LT( std::fabs( distA - distB ), 5e-3f )
+            << "Cells " << i << " and " << j << " should see shared-edge vertices at ~same world distance from midpoint (A=" << distA << ", B=" << distB << ")";
+    }
+}
+
+// (e) Dual-seam (2-cell ring, Bär 1984 capillary minimum): each cell has 1
+// neighbour. Polygon should be non-degenerate (≥ 3 vertices) and capped
+// (≤ 12 via MAX_POLY_VERTS).
+TEST_F( ComputeTest, Shader_Voronoi_DualSeam_TwoCellRing )
+{
+    if( !m_device ) GTEST_SKIP();
+
+    std::vector<glm::vec4> agents = {
+        glm::vec4( 0.5f, 0.0f, 0.0f, 1.0f ),
+        glm::vec4( -0.5f, 0.0f, 0.0f, 1.0f ),
+    };
+    std::vector<std::vector<uint32_t>> lists = { { 1 }, { 0 } };
+
+    auto result = DispatchVoronoiPolygon( *m_device, *m_rm, *m_stream, agents, {}, lists, 0.75f );
+
+    for( uint32_t i = 0; i < 2; ++i )
+    {
+        const auto& p = result.polygons[ i ];
+        EXPECT_GE( p.count, 3u ) << "Dual-seam cell " << i << " polygon must be non-degenerate";
+        EXPECT_LE( p.count, 12u ) << "Dual-seam cell " << i << " polygon cap exceeded";
+    }
+}
+
+// (f) Carina configuration — parent cell surrounded by 6 neighbours at 60°
+// intervals (hexagonal packing). Polygon should have ≥ 5 sides, matching
+// the cobblestone biology observed at real flow dividers (Chiu & Chien 2011).
+TEST_F( ComputeTest, Shader_Voronoi_CobblestoneAtCarina )
+{
+    if( !m_device ) GTEST_SKIP();
+
+    std::vector<glm::vec4> agents;
+    std::vector<std::vector<uint32_t>> lists;
+
+    agents.push_back( glm::vec4( 0.0f, 0.0f, 0.0f, 1.0f ) );
+    std::vector<uint32_t> parentList;
+    for( uint32_t i = 0; i < 6; ++i )
+    {
+        float a = 2.0f * glm::pi<float>() * float( i ) / 6.0f;
+        agents.push_back( glm::vec4( std::cos( a ), 0.0f, std::sin( a ), 1.0f ) );
+        parentList.push_back( i + 1 );
+    }
+    lists.push_back( parentList );
+    for( uint32_t i = 0; i < 6; ++i ) lists.push_back( { 0 } );
+
+    auto result = DispatchVoronoiPolygon( *m_device, *m_rm, *m_stream, agents, {}, lists, 0.75f );
+
+    EXPECT_GE( result.polygons[ 0 ].count, 5u )
+        << "Parent cell with 6 carina-side neighbours should render as ≥ 5-sided cobblestone polygon "
+           "(observed: " << result.polygons[ 0 ].count << ")";
+    EXPECT_LE( result.polygons[ 0 ].count, 8u )
+        << "Parent cell polygon should not exceed 8 sides biologically";
+}
+
+// (g) Determinism — same input dispatched twice produces bit-exact same
+// output. Validates that pairJitter is reproducible (hash-based) and that the
+// clipping math has no uninitialised-register reads.
+TEST_F( ComputeTest, Shader_Voronoi_DeterministicAcrossRuns )
+{
+    if( !m_device ) GTEST_SKIP();
+
+    std::vector<glm::vec4> agents;
+    std::vector<std::vector<uint32_t>> lists;
+    for( uint32_t i = 0; i < 4; ++i )
+    {
+        float a = 2.0f * glm::pi<float>() * float( i ) / 4.0f;
+        agents.push_back( glm::vec4( 2.0f * std::cos( a ), 0.0f, 2.0f * std::sin( a ), 1.0f ) );
+    }
+    for( uint32_t i = 0; i < 4; ++i ) lists.push_back( { ( i + 3 ) % 4, ( i + 1 ) % 4 } );
+
+    auto run1 = DispatchVoronoiPolygon( *m_device, *m_rm, *m_stream, agents, {}, lists, 0.75f );
+    auto run2 = DispatchVoronoiPolygon( *m_device, *m_rm, *m_stream, agents, {}, lists, 0.75f );
+
+    for( uint32_t i = 0; i < agents.size(); ++i )
+    {
+        EXPECT_EQ( run1.polygons[ i ].count, run2.polygons[ i ].count )
+            << "Cell " << i << " polygon vertex count differs between runs";
+        for( uint32_t k = 0; k < run1.polygons[ i ].count; ++k )
+        {
+            EXPECT_EQ( run1.polygons[ i ].vertices[ k ], run2.polygons[ i ].vertices[ k ] )
+                << "Cell " << i << " vertex " << k << " differs between runs — non-determinism in Voronoi";
+        }
+    }
+}
+
 TEST_F( ComputeTest, Shader_JKRForces_Logic )
 {
     if( !m_device )

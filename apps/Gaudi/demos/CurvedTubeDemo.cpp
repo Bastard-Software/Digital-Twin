@@ -48,7 +48,8 @@ namespace Gaudi::Demos
 
         auto& ecs = blueprint.AddAgentGroup( "Vessel Endothelium" );
         ecs.SetVesselTree( tree )
-           .SetColor( glm::vec4( 0.88f, 0.42f, 0.46f, 1.0f ) );
+           .SetColor( glm::vec4( 0.88f, 0.42f, 0.46f, 1.0f ) )
+           .SetDynamicTopology( true ); // Phase 2.6.5.b opt-in
 
         ecs.SetMorphologyVariants(
             DigitalTwin::CellType::Default,

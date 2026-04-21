@@ -61,6 +61,22 @@ struct CellPolygon {
 };
 layout(std430, binding = 3) writeonly buffer Polygons { CellPolygon data[]; } polygons;
 
+// Phase 2.6.5.c.2 Step 4a — per-agent surface info, 2×vec4 per agent:
+//   data[2*i+0].x = surfaceRadius  — vessel-radius at this cell's ring (Step 1).
+//                                    When > 0, polygon vertices project onto the
+//                                    cylinder surface. Adjacent cells agree on
+//                                    shared bisector edges by construction.
+//   data[2*i+0].y = sizeScale      — Step 2 reservation (1.0 here).
+//   data[2*i+0].z = isCarina       — Step 4a branch selector:
+//                                      0.0 → Rhombus-Template Snapping (4-sided)
+//                                      1.0 → pairwise Voronoi (5–7 sided carina)
+//   data[2*i+0].w = axialStep      — Step 4a per-cell axial spacing (template
+//                                    fallback extent when no axial neighbour).
+//   data[2*i+1].x = circumArc      — Step 4a per-cell circumferential arc length
+//                                    (template fallback extent for circum directions).
+//   data[2*i+1].yzw                — reserved.
+layout(std430, binding = 4) readonly buffer SurfaceInfo { vec4 data[]; } surfaceInfo;
+
 // ---- utilities ----
 
 vec3 qrot(vec4 q, vec3 v) {
@@ -115,6 +131,23 @@ void main() {
 
     vec3 tangentX = qrot(q, vec3(1.0, 0.0, 0.0));
     vec3 tangentZ = qrot(q, vec3(0.0, 0.0, 1.0));
+    // Phase 2.6.5.c.2 Step 1 — vessel outward-radial (local +Y axis). Used by:
+    //   (a) Unrolled-cylinder projection of each neighbour (below): we compute
+    //       the cell's angular offset on the cylinder via atan2 of its circum
+    //       and radial components, then translate that angle to arc length.
+    //   (b) Cylinder-surface projection of each polygon vertex at write-back.
+    // Together these two ensure adjacent cells agree on shared bisector edges
+    // by construction (cylinder is intrinsically flat — Voronoi on the
+    // unrolled plane is exact; re-rolling preserves it).
+    vec3 radialOut = qrot(q, vec3(0.0, 1.0, 0.0));
+    // Phase 2.6.5.c.2 Step 4a — fetch both vec4 slots of this agent's SurfaceInfo.
+    vec4  surfA         = surfaceInfo.data[globalIdx * 2u + 0u];
+    vec4  surfB         = surfaceInfo.data[globalIdx * 2u + 1u];
+    float surfaceRadius = surfA.x;
+    // surfA.y = sizeScale (reserved for Step 2; unused here).
+    float isCarina      = surfA.z;
+    float axialStepLoc  = surfA.w;
+    float circumArcLoc  = surfB.x;
 
     // ---- Collect + project + angular-sort neighbours into 2D ----
     // For each neighbour we store BOTH the 2D projection (for angular sort
@@ -130,8 +163,16 @@ void main() {
     uint myBase = globalIdx * NEIGHBOR_STRIDE;
     uint rawCount = neighborList.data[myBase];
 
+    // `projected[k]` holds the neighbour's 2D coords in the per-cell clipping
+    // plane (flat tangent for surfaceRadius=0; UNROLLED cylinder for >0).
+    // `distSq[k]` is the squared distance in that SAME metric — Pythagoras in
+    // 2D when unrolled. This keeps the bisector formula `dot(p, N) = |N|²/2`
+    // internally consistent (both sides live on the unrolled plane), which is
+    // what guarantees adjacent cells' edges coincide on the cylinder after
+    // re-rolling at write-back. Using 3D chord distance here would break the
+    // consistency and produce the ~O(α³) residual divergence.
     vec2  projected[NEIGHBOR_CAP];
-    float dist3DSq[NEIGHBOR_CAP];
+    float distSq[NEIGHBOR_CAP];
     float angles[NEIGHBOR_CAP];
     uint  nActive = 0u;
     for (uint k = 0; k < rawCount && nActive < NEIGHBOR_CAP; k++) {
@@ -140,31 +181,90 @@ void main() {
         if (nData.w == 0.0) continue;
 
         vec3 rel = nData.xyz - myPos;
-        vec2 p2  = vec2(dot(rel, tangentX), dot(rel, tangentZ));
+        vec2 p2;
+        if (surfaceRadius > 0.0) {
+            // Unrolled cylinder: axial unchanged; circumferential = arc length
+            // = R · angular offset, where the angular offset is computed from
+            // the circum/radial components of the 3D relative vector. This is
+            // the exact intrinsic-geodesic 2D map for a cylinder.
+            float u = dot(rel, tangentX);
+            float perpCircum = dot(rel, tangentZ);
+            float perpRadial = dot(rel, radialOut);
+            float angle      = atan(perpCircum, surfaceRadius + perpRadial);
+            p2 = vec2(u, surfaceRadius * angle);
+        } else {
+            // Flat fallback — identical to pre-Step-1 behaviour.
+            p2 = vec2(dot(rel, tangentX), dot(rel, tangentZ));
+        }
         p2 += pairJitter(globalIdx, nIdx);
 
         projected[nActive] = p2;
-        dist3DSq[nActive]  = dot(rel, rel);
+        distSq[nActive]    = dot(p2, p2); // consistent metric: 2D unrolled / flat
         angles[nActive]    = atan(p2.y, p2.x);
         nActive++;
     }
 
+    // Phase 2.6.5.c.2 Step 1.6 — K-closest neighbour cap (stable-topology filter).
+    //
+    // Raw spatial-hash neighbour lists are UNSTABLE under JKR drift: a cell
+    // that drifts even slightly can cross the interaction-radius boundary of
+    // a farther neighbour, adding a spurious extra bisector clip. That's how
+    // we get "heptagon above hexagon" and shared-edge mismatches between
+    // adjacent cells — one side used 6 neighbours, the other side used 7,
+    // they disagree on where their shared edge terminates, and the tile
+    // doesn't close.
+    //
+    // Biology fix: real endothelial monolayers have ~6 stable VE-cadherin
+    // contacts per cell (Halbleib & Nelson 2006 DOI 10.1101/gad.1486806).
+    // Limit each vessel cell's Voronoi to its K closest neighbours and drop
+    // the rest. Drift-induced extras disappear, stable hex topology stays.
+    //
+    // Step 4a follow-up 2026-04-21: carinas (isCarina=1) need a LOOSER cap
+    // because their neighbour set legitimately spans 3 branches (parent
+    // last-ring + 2 daughter first-rings), and with aggressive tapering
+    // (DesignedVessel Murray 0.5) the daughter ring cells are closer in 2D
+    // than the cross-branch sibling cells → K=6 picks mostly daughter-ring
+    // cells and drops the parent-side contribution, producing the messy
+    // pairwise-Voronoi output seen at DesignedVessel Y-junctions. Bumping
+    // carina K_MAX to 12 captures cross-branch neighbours without losing
+    // the straight-stretch stability gained by K=6.
+    //
+    // Gated on `surfaceRadius > 0` so non-vessel agents (Item 1 trilogy) are
+    // bit-identical to their pre-Step-1.6 behaviour.
+    uint K_MAX = (isCarina < 0.5) ? 6u : 12u;
+    if (surfaceRadius > 0.0 && nActive > K_MAX) {
+        // Selection sort: move the K smallest `distSq` entries to the front,
+        // carrying `projected[]` and `angles[]` along with them.
+        for (uint i = 0u; i < K_MAX; i++) {
+            uint minIdx = i;
+            for (uint j = i + 1u; j < nActive; j++) {
+                if (distSq[j] < distSq[minIdx]) minIdx = j;
+            }
+            if (minIdx != i) {
+                vec2  tmpP = projected[i]; projected[i] = projected[minIdx]; projected[minIdx] = tmpP;
+                float tmpD = distSq[i];    distSq[i]    = distSq[minIdx];    distSq[minIdx]    = tmpD;
+                float tmpA = angles[i];    angles[i]    = angles[minIdx];    angles[minIdx]    = tmpA;
+            }
+        }
+        nActive = K_MAX;
+    }
+
     // Insertion sort by angle — N ≤ 48, done in private registers, no shared
     // memory. Stable and branch-predictor-friendly for small N. Moves the
-    // parallel `dist3DSq[]` alongside so each index stays aligned.
+    // parallel `distSq[]` alongside so each index stays aligned.
     for (uint i = 1u; i < nActive; i++) {
         vec2  p = projected[i];
-        float d = dist3DSq[i];
+        float d = distSq[i];
         float a = angles[i];
         uint  j = i;
         while (j > 0u && angles[j - 1u] > a) {
             projected[j] = projected[j - 1u];
-            dist3DSq[j]  = dist3DSq[j - 1u];
+            distSq[j]    = distSq[j - 1u];
             angles[j]    = angles[j - 1u];
             j--;
         }
         projected[j] = p;
-        dist3DSq[j]  = d;
+        distSq[j]    = d;
         angles[j]    = a;
     }
 
@@ -188,70 +288,273 @@ void main() {
     // shrinks to match the local surface scale.
     float clipScale = (pc.clipRadiusScale > 0.0) ? pc.clipRadiusScale : 0.85;
     float R_bound   = pc.maxRadius * 2.0 * clipScale;
-    for (uint k = 0u; k < nActive; k++) {
-        float d3 = sqrt(dist3DSq[k]);
-        float d2 = length(projected[k]);
-        if (d3 > 1e-4 && d2 / d3 < 0.5) {
-            // Neighbour is mostly in the normal direction — surface wraps.
-            R_bound = min(R_bound, d3 * 0.5);
+    // Wrap-around cap is only meaningful in the flat-projection fallback
+    // (surfaceRadius == 0). When unrolling a cylinder, the neighbour is at
+    // arc-length distance in the unrolled plane and distSq[k] is by
+    // construction consistent with the projected 2D layout; no separate wrap
+    // check is needed.
+    if (surfaceRadius <= 0.0) {
+        for (uint k = 0u; k < nActive; k++) {
+            float d3 = sqrt(distSq[k]);       // flat path: distSq == 3D dist²
+            float d2 = length(projected[k]);
+            if (d3 > 1e-4 && d2 / d3 < 0.5) {
+                R_bound = min(R_bound, d3 * 0.5);
+            }
         }
+    }
+
+    // Phase 2.6.5.c.2 Step 1.8 — PAIRWISE BISECTOR INTERSECTION.
+    //
+    // Abandoned the "bound-shape + Sutherland-Hodgman clipping" approach.
+    // It can't produce clean K-sided polygons when neighbour distances are
+    // large relative to the bound — each bisector with `halfDotNN > bound_max`
+    // only clips ONE bound corner (net +1 side) instead of two, and the
+    // polygon settles at up to `bound_corners + K` sides. StraightTube's
+    // 13-cell rings have staggered `halfDotNN = 1.8` while a practical hex
+    // bound at `maxRadius × 1.5 = 1.125` only has corner-dot values up to
+    // ~2, so 4 staggered bisectors gave us 10-12 sides (Step D debug viz
+    // revealed this as widespread magenta tint).
+    //
+    // Instead, compute Voronoi vertices directly as INTERSECTIONS of
+    // angularly-adjacent bisectors. For K angular-sorted neighbours, there
+    // are exactly K such pairs (wrapping around) and exactly K vertices →
+    // guaranteed K-sided polygon, no leftover bound corners.
+    //
+    // Bisector for neighbour i in 2D (this cell at origin, neighbour at N_i):
+    //     dot(p, N_i) = |N_i|² / 2                         (halfDotNN_i)
+    //
+    // Intersection of bisectors i and j (solve 2×2 linear system):
+    //     N_i.x * p.x + N_i.y * p.y = b_i
+    //     N_j.x * p.x + N_j.y * p.y = b_j
+    // →   det   = N_i.x·N_j.y − N_i.y·N_j.x
+    //     p.x = (b_i·N_j.y − b_j·N_i.y) / det
+    //     p.y = (N_i.x·b_j − N_j.x·b_i) / det
+    //
+    // R_bound is still computed (as a cap for unbounded / nearly-parallel
+    // bisector pairs — end cells with a large angular gap between their
+    // outermost two neighbours get clamped here, which becomes the feather
+    // limit).
+    float R_axial  = R_bound;
+    float R_circum = R_bound;
+    if (surfaceRadius > 0.0) {
+        R_axial = min(R_axial, pc.maxRadius * 1.5);
     }
 
     vec2 polyA[MAX_WORK_VERTS];
-    vec2 polyB[MAX_WORK_VERTS];
-    uint countA = 8u;
+    uint countA = 0u;
     const float kPi = 3.14159265358979323846;
-    for (uint i = 0u; i < 8u; i++) {
-        float a  = float(i) * (kPi / 4.0);
-        polyA[i] = vec2(cos(a), sin(a)) * R_bound;
-    }
 
-    // ---- Sutherland-Hodgman: clip polygon against each neighbour's bisector ----
-    // For neighbour at 2D projected position N_2D with 3D squared-distance
-    // d3² from this cell, the plane equidistant from the two cells (in 3D)
-    // intersects this cell's tangent plane as:
-    //   dot(p, N_2D) = d3² / 2
-    // We keep points on the origin side (dot(p, N_2D) ≤ d3²/2). Using the
-    // 3D distance rather than |N_2D|² is the fix for curved-surface gaps:
-    // on a tube/sphere, |N_2D|² < |BA_3D|² because the neighbour sits below
-    // this cell's tangent plane — the smaller denominator placed bisectors
-    // too close to the cell, leaving gaps at shared edges with neighbours.
-    for (uint k = 0u; k < nActive; k++) {
-        vec2  N = projected[k];
-        float halfDotNN = 0.5 * dist3DSq[k];
-        if (halfDotNN < 1e-8) continue; // degenerate: neighbour on top of cell
+    // Phase 2.6.5.c.2 Step 4a — algorithm branch.
+    //
+    // Non-vessel agents (surfaceRadius = 0, Item 1 trilogy + sphere demos) stay
+    // on the pairwise-Voronoi path below — bit-identical to the pre-Step-4a
+    // baseline. Ensures `ItemOneTrilogy_Unchanged_AfterRHT` passes.
+    //
+    // Vessel agents (surfaceRadius > 0) branch on isCarina:
+    //   isCarina = 0  → Rhombus-Template Snapping (RTS) — produces a 4-sided
+    //                   rhomboid polygon by snapping 4 cardinal corners to
+    //                   midpoints with angularly-closest neighbours. Biologically
+    //                   matches Davies 2009 arterial-EC fish-scale tiling.
+    //
+    //   isCarina = 1  → pairwise Voronoi bisector intersection — produces a
+    //                   5–7-sided cobblestone polygon at flow dividers. Matches
+    //                   Chiu & Chien 2011 carina morphology. Flagged at build
+    //                   time by VesselTreeGenerator::FlagCarinaCells{*}.
+    //
+    // Both vessel paths feed the same surface-projection re-roll below, so
+    // shared rhombus↔cobblestone edges at carina boundaries still close on
+    // the cylinder.
+    bool useRTS = (surfaceRadius > 0.0) && (isCarina < 0.5);
+    if (useRTS) {
+        // === DYNAMIC RHOMBUS TEMPLATE with centroid junction-snap (non-carina) ===
+        //
+        // User directive 2026-04-21 (after static template feedback): "why doesn't
+        // this corner dynamically touch the point between connected hulls?"
+        //
+        // Approach: start with the static rhombus template, then snap each corner
+        // to the CENTROID of all neighbour-template-corners within a small radius.
+        // This closes gaps under JKR drift while remaining bit-stable across
+        // frames (no angular-closest tie-break flicker).
+        //
+        // Template corners in local 2D (axial = tangentX, circum = tangentZ):
+        //     v0 = ( +axialStep,      0 )   — axial forward tip
+        //     v1 = (  0, +circumArc/2 )     — circum right tip
+        //     v2 = ( -axialStep,      0 )   — axial back tip
+        //     v3 = (  0, -circumArc/2 )     — circum left tip
+        //
+        // Junction geometry: in a staggered hex pack, the 4-way junction at
+        // (+axialStep, 0) from A has CONTRIBUTIONS from:
+        //   - A's v0 (axial forward)
+        //   - S1 (diag UR)'s v3 (circum left in S1's frame)
+        //   - S2 (diag LR)'s v1 (circum right in S2's frame)
+        //   - (and ring-2 axial C2's v2 if in list, usually out of range)
+        // All 3-4 template corners project to the same world point → centroid =
+        // ideal junction position.
+        //
+        // Symmetry: if cell A sees neighbour B's template corner T close to A's
+        // own template corner, B symmetrically sees A's template corner close
+        // to B's. Both compute the same centroid → identical world position →
+        // gap-free tiling, even under drift.
+        //
+        // Drift handling: if A drifts by δ, its own template shifts with A, and
+        // B's template (fixed relative to B) stays put. Centroid = weighted
+        // average → both cells converge to the same shifted junction. No gaps.
+        vec2 templates[4] = vec2[4](
+            vec2( +axialStepLoc,         0.0        ),
+            vec2(  0.0,  +circumArcLoc * 0.5        ),
+            vec2( -axialStepLoc,         0.0        ),
+            vec2(  0.0,  -circumArcLoc * 0.5        )
+        );
 
-        uint countB = 0u;
-        for (uint i = 0u; i < countA && countB < MAX_WORK_VERTS; i++) {
-            vec2  curr = polyA[i];
-            vec2  next = polyA[(i + 1u) % countA];
-            float dc   = dot(curr, N) - halfDotNN; // > 0 = outside, < 0 = inside
-            float dn   = dot(next, N) - halfDotNN;
+        // Soft-falloff catchment: each neighbour's CLOSEST template corner
+        // contributes weighted by distance, linearly from 1.0 at dist=0 to 0.0
+        // at dist=softRadius. Smooth across the catchment boundary → no flicker
+        // when a drifted neighbour oscillates near the threshold.
+        //
+        // Catchment radius = full min-half-extent. Closest wrong-match template
+        // (a neighbour's opposite-side corner) sits at distance ~= 2·min-half-
+        // extent, so this radius gives clean separation with no false matches
+        // while absorbing drifts up to a full half-extent. Example for demo
+        // defaults (axialStep=2.25, circumArc≈1.57): softRadius=0.785. A drift
+        // of 0.3 contributes weight 1-0.3/0.785=0.62 (strong pull); a drift of
+        // 0.7 contributes 0.11 (weak).
+        float circumExt  = circumArcLoc * 0.5;
+        float softRadius = min(axialStepLoc, circumExt);
 
-            if (dc <= 0.0) {
-                polyB[countB++] = curr;
-                if (dn > 0.0 && countB < MAX_WORK_VERTS) {
-                    float t = dc / (dc - dn);
-                    polyB[countB++] = curr + t * (next - curr);
+        for (uint i = 0u; i < 4u; i++) {
+            vec2  sum   = templates[i];   // own template, weight 1
+            float count = 1.0;
+
+            for (uint k = 0u; k < nActive; k++) {
+                // Find the NEAREST of the neighbour's 4 template corners to
+                // our target i. Each neighbour contributes at most once per i.
+                vec2  bestCorner = vec2(0.0);
+                float bestDist   = 1e30;
+                for (uint j = 0u; j < 4u; j++) {
+                    vec2  corner = projected[k] + templates[j];
+                    float dist   = length(corner - templates[i]);
+                    if (dist < bestDist) {
+                        bestDist   = dist;
+                        bestCorner = corner;
+                    }
                 }
-            } else if (dn <= 0.0 && countB < MAX_WORK_VERTS) {
-                float t = dc / (dc - dn);
-                polyB[countB++] = curr + t * (next - curr);
+                if (bestDist < softRadius) {
+                    float w = 1.0 - bestDist / softRadius;
+                    sum   += w * bestCorner;
+                    count += w;
+                }
+            }
+
+            polyA[i] = sum / count;
+        }
+        countA = 4u;
+    } else {
+        // === PAIRWISE VORONOI (carina, unchanged from Step 1.11) ===
+        //
+        // Angular-sort K-closest neighbours, compute intersection of
+        // angularly-adjacent bisector pairs. Each intersection is the Voronoi
+        // triple junction of (this cell, neighbour_i, neighbour_j) — all three
+        // equidistant → all three cells' polygons share a vertex at this world
+        // point → clean tiling, no gaps. For K=6 stable staggered-hex neighbours
+        // → 6 triple junctions → hexagonal polygon. At Y-junctions, the carina
+        // cell sees more neighbours from two rings meeting → 5–7 sided output.
+        //
+        // Spike prevention: nearly-parallel bisectors (pair gap > 150°, typical
+        // at end cells with only one-sided neighbours) → use bound-edge vertex
+        // in the gap direction instead of running intersection to infinity.
+        //
+        // Fallback (nActive < 3): not enough neighbours for pairwise to close
+        // a polygon. Use hexagon bound + Sutherland-Hodgman clipping with the
+        // available bisectors.
+        if (nActive >= 3u) {
+            const float kPairGapSpikeThreshold = 2.62; // ~150°
+            for (uint i = 0u; i < nActive && countA < MAX_POLY_VERTS; i++) {
+                uint j = (i + 1u) % nActive;
+                vec2 Ni = projected[i];
+                vec2 Nj = projected[j];
+                float bi = 0.5 * distSq[i];
+                float bj = 0.5 * distSq[j];
+                float gap = angles[j] - angles[i];
+                if (gap < 0.0) gap += 2.0 * kPi;
+                float det = Ni.x * Nj.y - Ni.y * Nj.x;
+
+                vec2 p;
+                if (abs(det) < 1e-8 || gap > kPairGapSpikeThreshold) {
+                    float midAngle = angles[i] + 0.5 * gap;
+                    p = vec2(cos(midAngle) * R_axial, sin(midAngle) * R_circum);
+                } else {
+                    p.x = (bi * Nj.y - bj * Ni.y) / det;
+                    p.y = (Ni.x * bj - Nj.x * bi) / det;
+                    float nx = p.x / R_axial, ny = p.y / R_circum;
+                    float nr = sqrt(nx*nx + ny*ny);
+                    if (nr > 1.0) { p.x /= nr; p.y /= nr; }
+                }
+                polyA[countA++] = p;
+            }
+        } else {
+            // Fallback for 0, 1, or 2 neighbours: hex bound + SH clips.
+            countA = 6u;
+            for (uint i = 0u; i < 6u; i++) {
+                float a = float(i) * (kPi / 3.0);
+                polyA[i] = vec2(cos(a) * R_axial, sin(a) * R_circum);
+            }
+            vec2 polyB[MAX_WORK_VERTS];
+            for (uint k = 0u; k < nActive; k++) {
+                vec2  N = projected[k];
+                float halfDotNN = 0.5 * distSq[k];
+                if (halfDotNN < 1e-8) continue;
+                uint countB = 0u;
+                for (uint i = 0u; i < countA && countB < MAX_WORK_VERTS; i++) {
+                    vec2  curr = polyA[i];
+                    vec2  next = polyA[(i + 1u) % countA];
+                    float dc   = dot(curr, N) - halfDotNN;
+                    float dn   = dot(next, N) - halfDotNN;
+                    if (dc <= 0.0) {
+                        polyB[countB++] = curr;
+                        if (dn > 0.0 && countB < MAX_WORK_VERTS) {
+                            float t = dc / (dc - dn);
+                            polyB[countB++] = curr + t * (next - curr);
+                        }
+                    } else if (dn <= 0.0 && countB < MAX_WORK_VERTS) {
+                        float t = dc / (dc - dn);
+                        polyB[countB++] = curr + t * (next - curr);
+                    }
+                }
+                for (uint i = 0u; i < countB; i++) polyA[i] = polyB[i];
+                countA = countB;
             }
         }
-
-        // Swap A ↔ B for the next clip iteration.
-        for (uint i = 0u; i < countB; i++) polyA[i] = polyB[i];
-        countA = countB;
-
-        if (countA == 0u) break; // fully clipped away (shouldn't happen with origin always inside)
     }
 
     // ---- Write final polygon (capped at MAX_POLY_VERTS=12) ----
+    // Phase 2.6.5.c.2 Step 1 — re-roll the unrolled 2D polygon onto the
+    // cylinder surface. The projection-in (above) used arc length in the
+    // circumferential direction, so the inverse (arc-length → angle) here
+    // is mathematically consistent. Paired with the unrolled-distance
+    // bisector math, this guarantees adjacent cells' shared edges coincide
+    // on the cylinder by construction (cylinder has intrinsically flat
+    // geometry — unrolled Voronoi is exact).
+    //
+    //   θ     = z / R                              // arc length → circum angle
+    //   world = myPos + x·tangentX
+    //                + R·sin(θ)·tangentZ           // travel along arc
+    //                - R·(1 - cos(θ))·radialOut    // bend to cylinder surface
+    //
+    // When R = 0 (non-vessel agents) we fall back to flat tangent projection
+    // and the output is bit-identical to the pre-Step-1 baseline.
     uint writeCount = min(countA, MAX_POLY_VERTS);
     polygons.data[globalIdx].count = writeCount;
     for (uint i = 0u; i < writeCount; i++) {
-        vec3 world = myPos + polyA[i].x * tangentX + polyA[i].y * tangentZ;
+        vec3 world;
+        if (surfaceRadius > 0.0) {
+            float theta = polyA[i].y / surfaceRadius;
+            world = myPos
+                  + polyA[i].x * tangentX
+                  + surfaceRadius * sin(theta) * tangentZ
+                  - surfaceRadius * (1.0 - cos(theta)) * radialOut;
+        } else {
+            world = myPos + polyA[i].x * tangentX + polyA[i].y * tangentZ;
+        }
         polygons.data[globalIdx].vertices[i] = vec4(world, 0.0);
     }
 }

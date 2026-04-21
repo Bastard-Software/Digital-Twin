@@ -30,7 +30,22 @@ namespace DigitalTwin
         // polygons real carina cells exhibit.
         uint32_t  isCarina = 0;
         uint32_t  _pad1    = 0;
-        uint32_t  _pad2    = 0;
+        // Phase 2.6.5.c.2 Step 1 — vessel-radius at this cell's ring, passed to the
+        // Voronoi compute shader so polygon vertices project onto the actual curved
+        // surface instead of a flat tangent plane. Surface projection guarantees
+        // that adjacent cells' shared bisector edges coincide in 3D (both lie on
+        // bisector plane ∩ cylinder surface), eliminating tangent-plane divergence
+        // gaps. Non-vessel agents default to 0 → shader falls back to flat.
+        float     surfaceRadius = 0.0f;
+        // Phase 2.6.5.c.2 Step 4a — per-cell placement spacing, passed to the Voronoi
+        // compute shader's Rhombus-Template Snapping path. When a target rhombus corner
+        // direction has no neighbour in its ±45° cone (end cells, boundary cells,
+        // tapered-ring edges), the corner falls back to `templateExtent = axialStep/2`
+        // (axial directions) or `circumArc/2` (circumferential directions). Tapered
+        // tubes have per-cell variation in `circumArc = 2π·localRadius / ringSize`, so
+        // this MUST be per-cell, not per-group.
+        float     axialStep = 0.0f;
+        float     circumArc = 0.0f;
     };
 
     struct VesselTreeResult
@@ -89,6 +104,15 @@ namespace DigitalTwin
         // Phase 2.3: elongated-rhomboid length / width aspect (arterial ECs 5–20:1 in
         // laminar flow per Davies 2009). Drives axial ring spacing = ecCircWidth × aspect.
         VesselTreeGenerator& SetCellAspectRatio( float aspect );
+
+        // Phase 2.6.5.c.2 Step F: multiplicative gap factor applied to BOTH axial and
+        // circumferential cell spacing at placement time. Default 1.0 = cells placed so
+        // their rhombus-hull corners coincide with neighbours (overlap by the full JKR
+        // sub-sphere diameter → strong initial repulsion → asymmetric drift under thermal
+        // noise). Values ≥ 1.1 leave a small gap between hull corners, so JKR adhesion
+        // pulls cells together rather than repulsion pushing them apart. Affects ONLY
+        // initial positions; the sub-sphere radii and hull dimensions are unchanged.
+        VesselTreeGenerator& SetCellSpacingFactor( float factor );
 
         // Phase 2.4: end-of-trunk tube radius for linear taper. When > 0 the trunk radius
         // is linearly interpolated from `tubeRadius` at the origin to `tubeRadiusEnd` at
@@ -152,6 +176,7 @@ namespace DigitalTwin
         uint32_t  m_seed             = 42;
         float     m_ecCircWidth      = 1.0f; // simulation-unit scale; arteriole-analogous default
         float     m_cellAspect       = 5.0f; // Davies 2009 arterial-EC flow alignment
+        float     m_cellSpacingFactor = 1.0f; // Phase 2.6.5.c.2 Step F — opt-in gap factor (demos set 1.1 explicitly to avoid JKR hull interpenetration)
         float     m_tubeRadiusEnd    = -1.0f; // Phase 2.4: trunk taper end radius; < 0 = no taper
         bool      m_stoneWalesAtTaperTransitions = false; // Phase 2.4.5: opt-in defect insertion for continuous taper
 

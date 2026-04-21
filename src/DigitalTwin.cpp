@@ -84,6 +84,11 @@ namespace DigitalTwin
 
         bool m_showStatsOverlay = false;
 
+        // Phase 2.6.5.c.2 Step D — dynamic-topology debug overlay flags.
+        // Forwarded to the renderer's Scene each frame and on to the
+        // voronoi_fan push constant. Zero = normal rendering.
+        uint32_t m_dynamicTopologyDebugFlags = 0u;
+
         Impl()
             : m_initialized( false )
         {
@@ -1089,6 +1094,19 @@ namespace DigitalTwin
 
     void DigitalTwin::SetShowStatsOverlay( bool show ) { m_impl->m_showStatsOverlay = show; }
     bool DigitalTwin::IsShowingStatsOverlay() const { return m_impl->m_showStatsOverlay; }
+
+    // --- Dynamic-topology debug overlay (Phase 2.6.5.c.2 Step D) ------------
+    void DigitalTwin::SetDynamicTopologyDebugFlags( uint32_t flags )
+    {
+        m_impl->m_dynamicTopologyDebugFlags = flags;
+        if( m_impl->m_renderer )
+            m_impl->m_renderer->SetDynamicTopologyDebugFlags( flags );
+    }
+
+    uint32_t DigitalTwin::GetDynamicTopologyDebugFlags() const
+    {
+        return m_impl->m_dynamicTopologyDebugFlags;
+    }
 
     // --- Group Visibility ---------------------------------------------------
     void DigitalTwin::SetGroupVisible( int groupIndex, bool visible )

@@ -55,10 +55,14 @@ namespace DigitalTwin
         // clockwise winding in screen space → flipped cull direction vs the static
         // mesh pipeline. Disabling cull entirely would double-shade back faces.
         m_voronoiVertShader = m_resourceManager->CreateShader( "shaders/graphics/voronoi_fan.vert" );
+        // Phase 2.6.5.c.2 Step D — dedicated frag shader for the Voronoi pipeline.
+        // Same two-light lighting as `geometry.frag`, plus wireframe + vertex-
+        // count-tint debug paths gated by push-constant `debugFlags`.
+        m_voronoiFragShader = m_resourceManager->CreateShader( "shaders/graphics/voronoi_fan.frag" );
 
         GraphicsPipelineDesc voronoiDesc = desc;
         voronoiDesc.vertexShader   = m_voronoiVertShader;
-        voronoiDesc.fragmentShader = m_fragShader; // reuse
+        voronoiDesc.fragmentShader = m_voronoiFragShader;
         voronoiDesc.cullMode       = VK_CULL_MODE_NONE; // polygon winding depends on neighbour order — disable cull for robustness
 
         m_voronoiPipeline = m_resourceManager->CreatePipeline( voronoiDesc );
@@ -68,6 +72,50 @@ namespace DigitalTwin
         for( uint32_t i = 0; i < FRAMES_IN_FLIGHT; ++i )
         {
             m_voronoiBindingGroups[ i ] = m_resourceManager->CreateBindingGroup( m_voronoiPipeline, 0 );
+        }
+
+        // --- Phase 2.6.5.c.2 Step D.2 — debug markers pipeline ---
+        // Line list topology: 16 verts per instance (8 hull rays × 2 endpoints).
+        // Depth write DISABLED so markers don't pollute depth for the main
+        // passes; depth test ENABLED so markers correctly occlude behind
+        // the tube surface where appropriate. Cull NONE — lines have no face.
+        m_debugMarkersVertShader = m_resourceManager->CreateShader( "shaders/graphics/debug_markers.vert" );
+        m_debugMarkersFragShader = m_resourceManager->CreateShader( "shaders/graphics/debug_markers.frag" );
+
+        GraphicsPipelineDesc debugDesc = desc;
+        debugDesc.vertexShader   = m_debugMarkersVertShader;
+        debugDesc.fragmentShader = m_debugMarkersFragShader;
+        debugDesc.cullMode       = VK_CULL_MODE_NONE;
+        debugDesc.topology       = VK_PRIMITIVE_TOPOLOGY_LINE_LIST;
+        debugDesc.depthWriteEnable = false;
+
+        m_debugMarkersPipeline = m_resourceManager->CreatePipeline( debugDesc );
+        if( !m_debugMarkersPipeline.IsValid() )
+            return Result::FAIL;
+
+        for( uint32_t i = 0; i < FRAMES_IN_FLIGHT; ++i )
+        {
+            m_debugMarkersBindingGroups[ i ] = m_resourceManager->CreateBindingGroup( m_debugMarkersPipeline, 0 );
+        }
+
+        // --- Phase 2.6.5.c.2 Step D.3 — debug vectors pipeline (polarity / drift) ---
+        m_debugVectorsVertShader = m_resourceManager->CreateShader( "shaders/graphics/debug_vectors.vert" );
+        m_debugVectorsFragShader = m_resourceManager->CreateShader( "shaders/graphics/debug_vectors.frag" );
+
+        GraphicsPipelineDesc vecDesc = desc;
+        vecDesc.vertexShader     = m_debugVectorsVertShader;
+        vecDesc.fragmentShader   = m_debugVectorsFragShader;
+        vecDesc.cullMode         = VK_CULL_MODE_NONE;
+        vecDesc.topology         = VK_PRIMITIVE_TOPOLOGY_LINE_LIST;
+        vecDesc.depthWriteEnable = false;
+
+        m_debugVectorsPipeline = m_resourceManager->CreatePipeline( vecDesc );
+        if( !m_debugVectorsPipeline.IsValid() )
+            return Result::FAIL;
+
+        for( uint32_t i = 0; i < FRAMES_IN_FLIGHT; ++i )
+        {
+            m_debugVectorsBindingGroups[ i ] = m_resourceManager->CreateBindingGroup( m_debugVectorsPipeline, 0 );
         }
 
         return Result::SUCCESS;
@@ -95,6 +143,41 @@ namespace DigitalTwin
             m_resourceManager->DestroyShader( m_voronoiVertShader );
             m_voronoiVertShader = ShaderHandle::Invalid;
         }
+        if( m_voronoiFragShader.IsValid() )
+        {
+            m_resourceManager->DestroyShader( m_voronoiFragShader );
+            m_voronoiFragShader = ShaderHandle::Invalid;
+        }
+        if( m_debugMarkersPipeline.IsValid() )
+        {
+            m_resourceManager->DestroyPipeline( m_debugMarkersPipeline );
+            m_debugMarkersPipeline = GraphicsPipelineHandle::Invalid;
+        }
+        if( m_debugMarkersVertShader.IsValid() )
+        {
+            m_resourceManager->DestroyShader( m_debugMarkersVertShader );
+            m_debugMarkersVertShader = ShaderHandle::Invalid;
+        }
+        if( m_debugMarkersFragShader.IsValid() )
+        {
+            m_resourceManager->DestroyShader( m_debugMarkersFragShader );
+            m_debugMarkersFragShader = ShaderHandle::Invalid;
+        }
+        if( m_debugVectorsPipeline.IsValid() )
+        {
+            m_resourceManager->DestroyPipeline( m_debugVectorsPipeline );
+            m_debugVectorsPipeline = GraphicsPipelineHandle::Invalid;
+        }
+        if( m_debugVectorsVertShader.IsValid() )
+        {
+            m_resourceManager->DestroyShader( m_debugVectorsVertShader );
+            m_debugVectorsVertShader = ShaderHandle::Invalid;
+        }
+        if( m_debugVectorsFragShader.IsValid() )
+        {
+            m_resourceManager->DestroyShader( m_debugVectorsFragShader );
+            m_debugVectorsFragShader = ShaderHandle::Invalid;
+        }
         if( m_fragShader.IsValid() )
         {
             m_resourceManager->DestroyShader( m_fragShader );
@@ -112,6 +195,16 @@ namespace DigitalTwin
             {
                 m_resourceManager->DestroyBindingGroup( m_voronoiBindingGroups[ i ] );
                 m_voronoiBindingGroups[ i ] = BindingGroupHandle::Invalid;
+            }
+            if( m_debugMarkersBindingGroups[ i ].IsValid() )
+            {
+                m_resourceManager->DestroyBindingGroup( m_debugMarkersBindingGroups[ i ] );
+                m_debugMarkersBindingGroups[ i ] = BindingGroupHandle::Invalid;
+            }
+            if( m_debugVectorsBindingGroups[ i ].IsValid() )
+            {
+                m_resourceManager->DestroyBindingGroup( m_debugVectorsBindingGroups[ i ] );
+                m_debugVectorsBindingGroups[ i ] = BindingGroupHandle::Invalid;
             }
         }
     }
@@ -184,16 +277,108 @@ namespace DigitalTwin
             else
                 vBg->Bind( 6, m_resourceManager->GetBuffer( scene->GetAgentReadBuffer() ) );
             vBg->Bind( 7, m_resourceManager->GetBuffer( scene->polygonBuffer ) );
+            // Phase 2.6.5.c.2 Step 1 — surface info (R per cell) for per-vertex
+            // cylinder-normal computation. Fall back to the agent buffer when
+            // no vessel group is present (R = 0 path in the VS, bit-identical
+            // to pre-Step-1 shading).
+            if( scene->surfaceInfoBuffer.IsValid() )
+                vBg->Bind( 8, m_resourceManager->GetBuffer( scene->surfaceInfoBuffer ) );
+            else
+                vBg->Bind( 8, m_resourceManager->GetBuffer( scene->GetAgentReadBuffer() ) );
             vBg->Build();
 
             cmd->SetPipeline( vPipe );
             cmd->SetBindingGroup( vBg, vPipe->GetLayout(), VK_PIPELINE_BIND_POINT_GRAPHICS );
 
-            uint32_t pushConst = staticDrawCount;
-            cmd->PushConstants( vPipe->GetLayout(), VK_SHADER_STAGE_VERTEX_BIT, 0, sizeof( uint32_t ), &pushConst );
+            // Phase 2.6.5.c.2 Step D — push `{ drawIdOffset, debugFlags }`.
+            // VS forwards `debugFlags` to the frag shader via a flat varying;
+            // 0 means "no debug overlay, render normally" and is bit-identical
+            // to the pre-Step-D output.
+            struct VoronoiPushConstants { uint32_t drawIdOffset; uint32_t debugFlags; };
+            VoronoiPushConstants pushConst{ staticDrawCount, scene->debugFlags };
+            cmd->PushConstants( vPipe->GetLayout(), VK_SHADER_STAGE_VERTEX_BIT, 0,
+                                sizeof( VoronoiPushConstants ), &pushConst );
 
             size_t byteOffset = static_cast<size_t>( staticDrawCount ) * sizeof( VkDrawIndexedIndirectCommand );
             cmd->DrawIndexedIndirect( indirect, byteOffset, scene->dynamicDrawCount, sizeof( VkDrawIndexedIndirectCommand ) );
+        }
+
+        // --- Pass C: Phase 2.6.5.c.2 Step D.2 debug markers (hull + centers) ---
+        // Drawn ONLY when the DYNAMIC_TOPOLOGY_DEBUG_HULL_MARKERS flag is set
+        // (bit 2 of scene->debugFlags). Renders 8 radial lines per agent from
+        // the cell center (yellow endpoint) to each contact-hull point (cyan
+        // endpoint). Requires the contact-hull buffer to be valid (any
+        // AgentGroup with Biomechanics allocates it).
+        constexpr uint32_t DEBUG_HULL_MARKERS_BIT = 1u << 2;
+        if( ( scene->debugFlags & DEBUG_HULL_MARKERS_BIT ) != 0u
+            && scene->contactHullBuffer.IsValid()
+            && scene->orientationBuffer.IsValid() )
+        {
+            GraphicsPipeline* dPipe = m_resourceManager->GetPipeline( m_debugMarkersPipeline );
+            BindingGroup*     dBg   = m_resourceManager->GetBindingGroup( m_debugMarkersBindingGroups[ flightIndex ] );
+
+            dBg->Bind( 0, m_resourceManager->GetBuffer( cameraUBO ) );
+            dBg->Bind( 1, m_resourceManager->GetBuffer( scene->GetAgentReadBuffer() ) );
+            dBg->Bind( 2, m_resourceManager->GetBuffer( scene->orientationBuffer ) );
+            dBg->Bind( 3, m_resourceManager->GetBuffer( scene->contactHullBuffer ) );
+            dBg->Build();
+
+            cmd->SetPipeline( dPipe );
+            cmd->SetBindingGroup( dBg, dPipe->GetLayout(), VK_PIPELINE_BIND_POINT_GRAPHICS );
+
+            // 16 verts per instance × agent count. Use totalPaddedAgents as the
+            // upper bound — the VS skips dead agents (w == 0) by collapsing to
+            // the origin so the extra vertices are invisible.
+            if( scene->totalPaddedAgents > 0 )
+                cmd->Draw( 16, scene->totalPaddedAgents, 0, 0 );
+        }
+
+        // --- Pass D: Phase 2.6.5.c.2 Step D.3 debug vectors ---
+        // Polarity arrows (red, mode=0) and drift lines (yellow, mode=1).
+        // Two dispatches of the same pipeline; push constant selects mode.
+        constexpr uint32_t DEBUG_POLARITY_BIT = 1u << 3;
+        constexpr uint32_t DEBUG_DRIFT_BIT    = 1u << 4;
+        const bool wantPolarity = ( scene->debugFlags & DEBUG_POLARITY_BIT ) != 0u;
+        const bool wantDrift    = ( scene->debugFlags & DEBUG_DRIFT_BIT    ) != 0u;
+        if( ( wantPolarity || wantDrift ) && scene->totalPaddedAgents > 0 )
+        {
+            GraphicsPipeline* vPipe = m_resourceManager->GetPipeline( m_debugVectorsPipeline );
+            BindingGroup*     vBg   = m_resourceManager->GetBindingGroup( m_debugVectorsBindingGroups[ flightIndex ] );
+
+            vBg->Bind( 0, m_resourceManager->GetBuffer( cameraUBO ) );
+            vBg->Bind( 1, m_resourceManager->GetBuffer( scene->GetAgentReadBuffer() ) );
+            // Polarity and initial-positions — fall back to agents if missing
+            // so the descriptor still validates; the VS just reads garbage for
+            // the inactive mode, and we only draw active modes below.
+            if( scene->polarityBuffer.IsValid() )
+                vBg->Bind( 2, m_resourceManager->GetBuffer( scene->polarityBuffer ) );
+            else
+                vBg->Bind( 2, m_resourceManager->GetBuffer( scene->GetAgentReadBuffer() ) );
+            if( scene->initialPositionsBuffer.IsValid() )
+                vBg->Bind( 3, m_resourceManager->GetBuffer( scene->initialPositionsBuffer ) );
+            else
+                vBg->Bind( 3, m_resourceManager->GetBuffer( scene->GetAgentReadBuffer() ) );
+            vBg->Build();
+
+            cmd->SetPipeline( vPipe );
+            cmd->SetBindingGroup( vBg, vPipe->GetLayout(), VK_PIPELINE_BIND_POINT_GRAPHICS );
+
+            struct VectorPushConstants { uint32_t mode; float polarityScale; };
+
+            if( wantPolarity && scene->polarityBuffer.IsValid() )
+            {
+                VectorPushConstants pc{ 0u, 1.0f }; // 1 world unit per magnitude=1
+                cmd->PushConstants( vPipe->GetLayout(), VK_SHADER_STAGE_VERTEX_BIT, 0,
+                                    sizeof( VectorPushConstants ), &pc );
+                cmd->Draw( 2, scene->totalPaddedAgents, 0, 0 );
+            }
+            if( wantDrift && scene->initialPositionsBuffer.IsValid() )
+            {
+                VectorPushConstants pc{ 1u, 1.0f };
+                cmd->PushConstants( vPipe->GetLayout(), VK_SHADER_STAGE_VERTEX_BIT, 0,
+                                    sizeof( VectorPushConstants ), &pc );
+                cmd->Draw( 2, scene->totalPaddedAgents, 0, 0 );
+            }
         }
     }
 } // namespace DigitalTwin

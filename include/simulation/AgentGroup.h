@@ -163,16 +163,29 @@ namespace DigitalTwin
         {
             const uint32_t n = tree.totalCells;
             m_count = n;
-            m_positions.clear();        m_positions.reserve( n );
-            m_orientations.clear();     m_orientations.reserve( n );
-            m_initialPolarities.clear(); m_initialPolarities.reserve( n );
-            m_initialCellTypes.clear(); m_initialCellTypes.reserve( n );
+            m_positions.clear();          m_positions.reserve( n );
+            m_orientations.clear();       m_orientations.reserve( n );
+            m_initialPolarities.clear();  m_initialPolarities.reserve( n );
+            m_initialCellTypes.clear();   m_initialCellTypes.reserve( n );
+            m_initialSurfaceInfo.clear(); m_initialSurfaceInfo.reserve( n * 2 );
             for( const auto& c : tree.cells )
             {
                 m_positions.push_back( c.position );
                 m_orientations.push_back( c.orientation );
                 m_initialPolarities.push_back( c.polaritySeed );
                 m_initialCellTypes.push_back( PackCellType( CellType::Default, c.morphologyIndex ) );
+                // Phase 2.6.5.c.2 Step 4a — per-cell SurfaceInfo, now 2×vec4 per agent.
+                //   data0 = (surfaceRadius, sizeScale, isCarina, axialStep)
+                //   data1 = (circumArc, 0, 0, 0)
+                // surfaceRadius: Step 1 (unchanged) — 0 = flat fallback for non-vessel agents.
+                // sizeScale   : Step 2 reservation (1.0 here; Step 2 will add ±15% jitter).
+                // isCarina    : Step 4a — 0 = use Rhombus-Template Snapping;
+                //                         1 = use existing pairwise-Voronoi (5–7 sided carina).
+                // axialStep/circumArc: Step 4a template-fallback extents when a target corner
+                //                      direction has no neighbour in its ±45° cone.
+                const float isCarinaF = ( c.isCarina != 0u ) ? 1.0f : 0.0f;
+                m_initialSurfaceInfo.push_back( glm::vec4( c.surfaceRadius, 1.0f, isCarinaF, c.axialStep ) );
+                m_initialSurfaceInfo.push_back( glm::vec4( c.circumArc, 0.0f, 0.0f, 0.0f ) );
             }
             return *this;
         }
@@ -288,6 +301,7 @@ namespace DigitalTwin
         const std::vector<MorphologyEntry>&  GetCellTypeMorphologies() const { return m_cellTypeMorphologies; }
         const std::vector<uint32_t>&         GetInitialCellTypes() const { return m_initialCellTypes; }
         const std::vector<glm::vec4>&        GetInitialPolarities() const { return m_initialPolarities; }
+        const std::vector<glm::vec4>&        GetInitialSurfaceInfo() const { return m_initialSurfaceInfo; }
         const DistributionSpec&              GetDistributionSpec() const { return m_distSpec; }
         const MorphologyPresetSpec&          GetMorphologyPresetSpec() const { return m_morphSpec; }
 
@@ -301,6 +315,10 @@ namespace DigitalTwin
         int                           m_initialCellType = 0;
         std::vector<uint32_t>         m_initialCellTypes; // per-cell override (empty = use m_initialCellType for all)
         std::vector<glm::vec4>        m_initialPolarities; // per-cell polarity seed (empty = zero-init)
+        std::vector<glm::vec4>        m_initialSurfaceInfo; // 2×vec4 per cell — Step 4a:
+                                                              // [2*i+0]=(surfaceRadius, sizeScale, isCarina, axialStep)
+                                                              // [2*i+1]=(circumArc, 0, 0, 0)
+                                                              // empty = all zero → shader falls back to flat / static defaults
         bool                          m_visible         = true;
         std::vector<BehaviourRecord>  m_behaviours;
         std::vector<MorphologyEntry>  m_cellTypeMorphologies;

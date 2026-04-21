@@ -75,6 +75,12 @@ namespace DigitalTwin
         void                             SetGridVisualization( const GridVisualizationSettings& settings ) { m_gridVisSettings = settings; }
         const GridVisualizationSettings& GetGridVisualization() const { return m_gridVisSettings; }
 
+        // Phase 2.6.5.c.2 Step D — dynamic-topology debug overlay flags.
+        // Stored here and copied into Scene each frame so GeometryPass can
+        // push them as a constant to the voronoi_fan pipeline.
+        void     SetDynamicTopologyDebugFlags( uint32_t flags ) { m_dynamicTopologyDebugFlags = flags; }
+        uint32_t GetDynamicTopologyDebugFlags() const { return m_dynamicTopologyDebugFlags; }
+
         /**
          * @brief Hot-swap MSAA sample count. Triggers vkDeviceWaitIdle, recreates
          * RenderTargets, and rebuilds all graphics pipelines. Safe at any engine state.
@@ -91,6 +97,8 @@ namespace DigitalTwin
 
         // Settings
         GridVisualizationSettings m_gridVisSettings;
+        // Phase 2.6.5.c.2 Step D — dynamic-topology debug flags.
+        uint32_t                  m_dynamicTopologyDebugFlags = 0u;
 
         // Sub-systems / Passes
         Scope<BuildIndirectPass>     m_buildIndirectPass;

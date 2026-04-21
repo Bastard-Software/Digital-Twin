@@ -55,6 +55,14 @@ namespace Gaudi::Demos
                         .SetTubeRadius( tubeRadius )
                         .SetECCircumferentialWidth( ecWidth )
                         .SetCellAspectRatio( aspect )
+                        // Phase 2.6.5.c.2 Step 4a — user directive 2026-04-21: tightened
+                        // from 1.3 → 1.25 because the extra gap at 1.3 was leaving
+                        // visible rhombus-tiling seams between diagonally-adjacent cells.
+                        // 1.2 = 20% placement gap → sub-sphere pairs at ~0.12 apart (still
+                        // clear of the 0.2 contact radius → no initial JKR explosion),
+                        // while template corners sit close enough for the centroid-based
+                        // junction snap to close the tile boundaries cleanly.
+                        .SetCellSpacingFactor( 1.25f )
                         .SetBranchingDepth( 0 )
                         .SetSeed( 42 )
                         .Build();

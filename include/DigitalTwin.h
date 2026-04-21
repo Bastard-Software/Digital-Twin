@@ -72,6 +72,18 @@ namespace DigitalTwin
         // --- Group Visibility ---
         void SetGroupVisible( int groupIndex, bool visible );
 
+        // --- Phase 2.6.5.c.2 Step D — dynamic-topology debug visualization ---
+        // Bit flags are forwarded to the voronoi_fan pipeline as a push
+        // constant each frame. Zero = normal rendering. Non-vessel demos
+        // (without dynamic topology) ignore these completely.
+        static constexpr uint32_t DYNAMIC_TOPOLOGY_DEBUG_WIREFRAME        = 1u << 0;
+        static constexpr uint32_t DYNAMIC_TOPOLOGY_DEBUG_VERTEX_COUNT     = 1u << 1;
+        static constexpr uint32_t DYNAMIC_TOPOLOGY_DEBUG_HULL_MARKERS     = 1u << 2; // Step D.2
+        static constexpr uint32_t DYNAMIC_TOPOLOGY_DEBUG_POLARITY_VECTORS = 1u << 3; // Step D.3
+        static constexpr uint32_t DYNAMIC_TOPOLOGY_DEBUG_DRIFT_LINES      = 1u << 4; // Step D.3
+        void     SetDynamicTopologyDebugFlags( uint32_t flags );
+        uint32_t GetDynamicTopologyDebugFlags() const;
+
         // --- Camera API ---
         // Relative (interactive editor input from mouse deltas):
         void OrbitCamera( float pixelDX, float pixelDY );

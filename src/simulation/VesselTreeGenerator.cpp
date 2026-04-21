@@ -103,6 +103,7 @@ namespace DigitalTwin
     VesselTreeGenerator& VesselTreeGenerator::SetBranchTwist( float v )            { m_branchTwist = v; return *this; }
     VesselTreeGenerator& VesselTreeGenerator::SetECCircumferentialWidth( float v ) { m_ecCircWidth = std::max( 1e-4f, v ); return *this; }
     VesselTreeGenerator& VesselTreeGenerator::SetCellAspectRatio( float v )        { m_cellAspect = std::max( 1e-4f, v ); return *this; }
+    VesselTreeGenerator& VesselTreeGenerator::SetCellSpacingFactor( float v )      { m_cellSpacingFactor = std::max( 1e-4f, v ); return *this; }
     VesselTreeGenerator& VesselTreeGenerator::SetTubeRadiusEnd( float v )          { m_tubeRadiusEnd = v; return *this; }
     VesselTreeGenerator& VesselTreeGenerator::SetStoneWalesAtTaperTransitions( bool v ) { m_stoneWalesAtTaperTransitions = v; return *this; }
 
@@ -147,7 +148,16 @@ namespace DigitalTwin
         // Dual-seam minimum (Bär 1984).
         const float    startRadius = job.tubeRadius;
         const float    endRadius   = ( job.endTubeRadius > 0.0f ) ? job.endTubeRadius : job.tubeRadius;
-        const float    axialStep   = m_ecCircWidth * m_cellAspect;
+        // Phase 2.6.5.c.2 Step F — spacing factor applied to both axial and
+        // circumferential cell placement. The rhombus contact hull (per cell)
+        // extends ±ecCircWidth×cellAspect axially and ±ecCircWidth/2
+        // circumferentially. Without a gap factor, neighbour-cell hull corners
+        // coincide exactly → JKR sub-spheres (radius 0.1) penetrate by 0.2 at
+        // init → huge repulsion forces destabilise the tube asymmetrically.
+        // Multiplying placement spacing by 1.1 leaves a ~0.18 gap between
+        // corresponding hull corners, so JKR adhesion pulls cells together
+        // instead of repulsion pushing them apart.
+        const float    axialStep   = m_ecCircWidth * m_cellAspect * m_cellSpacingFactor;
         const uint32_t numRings    = std::max( 1u, static_cast<uint32_t>( job.length / axialStep ) + 1u );
 
         auto ringRadiusAt = [&]( uint32_t r ) {
@@ -156,8 +166,11 @@ namespace DigitalTwin
             return startRadius * ( 1.0f - t ) + endRadius * t;
         };
         auto ringSizeFor = [&]( float radius ) {
+            // Spacing factor also widens the effective circumferential slot
+            // each cell occupies → fewer cells per ring → same gap effect.
             return std::max( 2u,
-                static_cast<uint32_t>( std::round( 2.0f * glm::pi<float>() * radius / m_ecCircWidth ) ) );
+                static_cast<uint32_t>( std::round( 2.0f * glm::pi<float>() * radius
+                                                   / ( m_ecCircWidth * m_cellSpacingFactor ) ) ) );
         };
 
         // Precompute per-ring cell counts so transitions are visible before placing anything.
@@ -329,6 +342,15 @@ namespace DigitalTwin
                 cell.orientation     = glm::vec4( q.x, q.y, q.z, q.w );
                 cell.polaritySeed    = glm::vec4( radial, 1.0f );       // basal-outward, full magnitude
                 cell.morphologyIndex = cellMorph[ r ][ j ];             // Phase 2.4: 0/1/2 = rhomboid/pentagon/heptagon
+                cell.surfaceRadius   = localRadius;                     // Phase 2.6.5.c.2: per-cell vessel radius for surface-conforming Voronoi
+                // Phase 2.6.5.c.2 Step 4a — per-cell template extents for Rhombus-Template
+                // Snapping fallback. circumArc is the local per-cell arc-length within the
+                // ring (= 2π·localRadius/ringSize); axialStep is the ring-to-ring spacing.
+                // Used only when a cell has no neighbour inside a target corner's ±45° cone
+                // (end rings, dual-seam capillaries, tapered-ring boundaries); otherwise
+                // RHT snap rule = midpoint(self, neighbour) takes precedence.
+                cell.axialStep       = axialStep;
+                cell.circumArc       = localRadius * dAngle;
                 result.cells.push_back( cell );
             }
 

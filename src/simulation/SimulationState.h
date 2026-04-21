@@ -104,6 +104,23 @@ namespace DigitalTwin
         // populates the buffer + CPU-side verification via ComputeTests.
         BufferHandle polygonBuffer;
 
+        // Phase 2.6.5.c.2 — per-agent surface info for the Voronoi compute shader.
+        // Layout per agent (16 bytes): vec4(surfaceRadius, sizeScale, 0, 0).
+        //   surfaceRadius > 0 → project polygon vertices onto cylinder of that
+        //                       radius (fixes tangent-plane divergence at shared
+        //                       bisector edges on curved vessel surfaces).
+        //   surfaceRadius = 0 → flat tangent-plane fallback (non-vessel agents,
+        //                       bit-identical to pre-Step-1 baseline).
+        //   sizeScale        → Step 2; R_bound multiplier for per-cell size jitter.
+        BufferHandle surfaceInfoBuffer;
+
+        // Phase 2.6.5.c.2 Step D.3 — snapshot of initial agent positions at
+        // build time. Read-only, never updated by simulation. Used by the
+        // drift-line debug overlay to draw lines from each agent's current
+        // position to its initial position so drifted cells are tagged
+        // with long lines. Allocated same-size as agentBuffers[0].
+        BufferHandle initialPositionsBuffer;
+
         // Grig fields
         std::vector<GridFieldState> gridFields;
 

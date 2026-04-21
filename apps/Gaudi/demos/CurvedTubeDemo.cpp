@@ -41,6 +41,8 @@ namespace Gaudi::Demos
                         .SetTubeRadius( tubeRadius )
                         .SetECCircumferentialWidth( ecWidth )
                         .SetCellAspectRatio( aspect )
+                        // Phase 2.6.5.c.2 Step 4a — 20% gap (see StraightTubeDemo comment).
+                        .SetCellSpacingFactor( 1.25f )
                         .SetBranchingDepth( 0 )
                         .SetCurvature( 0.2f )  // 20% lateral deflection of the centreline
                         .SetSeed( 7 )

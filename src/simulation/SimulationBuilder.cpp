@@ -400,6 +400,10 @@ namespace DigitalTwin
         BufferDesc agentDesc{ megaPositions.size() * sizeof( glm::vec4 ), BufferType::STORAGE, "SimulationAgentBuffer" };
         outState.agentBuffers[ 0 ] = m_resourceManager->CreateBuffer( agentDesc );
         outState.agentBuffers[ 1 ] = m_resourceManager->CreateBuffer( agentDesc );
+        // Phase 2.6.5.c.2 Step D.3 — immutable snapshot of initial positions
+        // for the drift-line debug overlay. Same layout as agentBuffers.
+        outState.initialPositionsBuffer = m_resourceManager->CreateBuffer(
+            { megaPositions.size() * sizeof( glm::vec4 ), BufferType::STORAGE, "InitialPositionsBuffer" } );
         outState.agentCountBuffer =
             m_resourceManager->CreateBuffer( { outState.groupCount * sizeof( uint32_t ), BufferType::INDIRECT, "AgentCountBuffer" } );
 
@@ -446,6 +450,7 @@ namespace DigitalTwin
         // Always upload agents
         uploads.push_back( { outState.agentBuffers[ 0 ], megaPositions.data(), megaPositions.size() * sizeof( glm::vec4 ) } );
         uploads.push_back( { outState.agentBuffers[ 1 ], megaPositions.data(), megaPositions.size() * sizeof( glm::vec4 ) } );
+        uploads.push_back( { outState.initialPositionsBuffer, megaPositions.data(), megaPositions.size() * sizeof( glm::vec4 ) } );
         uploads.push_back( { outState.orientationBuffer, megaOrientations.data(), megaOrientations.size() * sizeof( glm::vec4 ) } );
         std::vector<uint32_t> initialCounts;
         for( const auto& group: blueprint.GetGroups() )
@@ -682,6 +687,46 @@ namespace DigitalTwin
                 { paddedCount * kPolygonStride, BufferType::STORAGE, "PolygonBuffer" } );
         }
 
+        // Phase 2.6.5.c.2 Step 4a — SurfaceInfo SSBO is 2×vec4 per agent (32 B/agent):
+        //   [2*i+0] = (surfaceRadius, sizeScale, isCarina, axialStep)
+        //   [2*i+1] = (circumArc, _, _, _)
+        // Groups that did not populate `GetInitialSurfaceInfo()` (non-vessel, sphere
+        // demos, Item 1 trilogy) get zero-initialised slabs → shader falls back to
+        // flat projection + Voronoi path → bit-identical to the pre-Step-4a baseline
+        // for those groups (isCarina=0 chooses RTS, but with no neighbours the fallback
+        // hits template extents axialStep=0, circumArc=0 → polygon collapses to zero
+        // at origin — caught by the `m_count == 0` branch above).
+        if( !outState.surfaceInfoBuffer.IsValid() )
+        {
+            constexpr uint32_t kSurfaceInfoStride = 2u * sizeof( glm::vec4 ); // 32 bytes
+            outState.surfaceInfoBuffer            = m_resourceManager->CreateBuffer(
+                { paddedCount * kSurfaceInfoStride, BufferType::STORAGE, "SurfaceInfoBuffer" } );
+
+            // Zero-fill default (2 vec4s per slot).
+            std::vector<glm::vec4> initialSurface( paddedCount * 2u, glm::vec4( 0.0f ) );
+            uint32_t               slabOffset = 0;
+            for( const auto& g : blueprint.GetGroups() )
+            {
+                uint32_t cap = 131072;
+                while( cap < g.GetCount() ) cap <<= 1;
+                if( g.GetCount() == 0 ) { slabOffset += cap; continue; }
+
+                const auto& info = g.GetInitialSurfaceInfo();
+                if( !info.empty() )
+                {
+                    // info is laid out as 2 vec4s per cell; copy 2·count vec4s total.
+                    uint32_t copyN2 = std::min<uint32_t>( g.GetCount() * 2u,
+                                                         static_cast<uint32_t>( info.size() ) );
+                    std::copy( info.begin(), info.begin() + copyN2,
+                               initialSurface.begin() + slabOffset * 2u );
+                }
+                slabOffset += cap;
+            }
+            m_streamingManager->UploadBufferImmediate(
+                { { outState.surfaceInfoBuffer, initialSurface.data(),
+                    paddedCount * kSurfaceInfoStride, 0 } } );
+        }
+
         ComputePipelineDesc desc{};
         desc.shader                      = m_resourceManager->CreateShader( "shaders/compute/voronoi_cell_polygon.comp" );
         desc.debugName                   = "VoronoiPolygonPipeline";
@@ -696,6 +741,7 @@ namespace DigitalTwin
         bg0->Bind( 1, m_resourceManager->GetBuffer( outState.orientationBuffer ) );
         bg0->Bind( 2, m_resourceManager->GetBuffer( outState.neighborListBuffer ) );
         bg0->Bind( 3, m_resourceManager->GetBuffer( outState.polygonBuffer ) );
+        bg0->Bind( 4, m_resourceManager->GetBuffer( outState.surfaceInfoBuffer ) );
         bg0->Build();
 
         BindingGroup* bg1 = m_resourceManager->GetBindingGroup( m_resourceManager->CreateBindingGroup( pipeHandle, 0 ) );
@@ -703,6 +749,7 @@ namespace DigitalTwin
         bg1->Bind( 1, m_resourceManager->GetBuffer( outState.orientationBuffer ) );
         bg1->Bind( 2, m_resourceManager->GetBuffer( outState.neighborListBuffer ) );
         bg1->Bind( 3, m_resourceManager->GetBuffer( outState.polygonBuffer ) );
+        bg1->Bind( 4, m_resourceManager->GetBuffer( outState.surfaceInfoBuffer ) );
         bg1->Build();
 
         // Iterate groups in blueprint order, track running offset (matches

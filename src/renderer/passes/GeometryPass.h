@@ -38,7 +38,26 @@ namespace DigitalTwin
         // emits a 12-triangle fan per instance with degenerate-triangle slots for
         // cells whose polygon has < 12 vertices.
         ShaderHandle           m_voronoiVertShader;
+        ShaderHandle           m_voronoiFragShader;   // Phase 2.6.5.c.2 Step D — dedicated frag with debug overlay
         GraphicsPipelineHandle m_voronoiPipeline;
         BindingGroupHandle     m_voronoiBindingGroups[ FRAMES_IN_FLIGHT ];
+
+        // Phase 2.6.5.c.2 Step D.2 — debug markers pipeline.
+        // LINE_LIST topology. 16 verts/instance × N_agents. Renders radial
+        // lines from each cell center to each of 8 contact-hull points,
+        // exposing where JKR thinks cells are and how the rigid-body rhombus
+        // hull is oriented. Only dispatched when a debug flag is set.
+        ShaderHandle           m_debugMarkersVertShader;
+        ShaderHandle           m_debugMarkersFragShader;
+        GraphicsPipelineHandle m_debugMarkersPipeline;
+        BindingGroupHandle     m_debugMarkersBindingGroups[ FRAMES_IN_FLIGHT ];
+
+        // Phase 2.6.5.c.2 Step D.3 — debug vectors pipeline (polarity / drift).
+        // LINE_LIST topology, 2 verts/instance × N_agents. One shader, two
+        // draw modes selected via push constant.
+        ShaderHandle           m_debugVectorsVertShader;
+        ShaderHandle           m_debugVectorsFragShader;
+        GraphicsPipelineHandle m_debugVectorsPipeline;
+        BindingGroupHandle     m_debugVectorsBindingGroups[ FRAMES_IN_FLIGHT ];
     };
 } // namespace DigitalTwin

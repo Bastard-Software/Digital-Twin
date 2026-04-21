@@ -365,6 +365,11 @@ namespace DigitalTwin
             renderScene.drawMetaBuffer     = state->drawMetaBuffer;
             renderScene.visibilityBuffer   = state->visibilityBuffer;
             renderScene.polygonBuffer      = state->polygonBuffer;         // Phase 2.6.5.c
+            renderScene.surfaceInfoBuffer  = state->surfaceInfoBuffer;     // Phase 2.6.5.c.2 Step 1
+            renderScene.contactHullBuffer  = state->contactHullBuffer;     // Phase 2.6.5.c.2 Step D.2
+            renderScene.polarityBuffer     = state->polarityBuffer;        // Phase 2.6.5.c.2 Step D.3
+            renderScene.initialPositionsBuffer = state->initialPositionsBuffer; // Step D.3
+            renderScene.debugFlags         = m_dynamicTopologyDebugFlags;  // Phase 2.6.5.c.2 Step D
             renderScene.drawCount          = state->drawCommandCount;
             renderScene.dynamicDrawCount   = state->dynamicDrawCommandCount; // Phase 2.6.5.c
             renderScene.totalPaddedAgents  = state->totalPaddedAgents;

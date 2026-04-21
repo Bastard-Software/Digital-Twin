@@ -78,6 +78,8 @@ namespace Gaudi::Demos
                         .SetTubeRadius( trunkRadius )
                         .SetECCircumferentialWidth( ecWidth )
                         .SetCellAspectRatio( aspect )
+                        // Phase 2.6.5.c.2 Step 4a — 20% gap (see StraightTubeDemo comment).
+                        .SetCellSpacingFactor( 1.25f )
                         .SetBranchingDepth( 3 )            // trunk + L1 + L2 + L3 = 4 levels
                         .SetBranchingAngle( 30.0f )        // slightly less than BranchingTreeDemo's 35°
                                                            //   so the deeper 3-level tree fits comfortably

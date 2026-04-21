@@ -998,7 +998,8 @@ namespace
         const std::vector<glm::vec4>&              agents,
         const std::vector<glm::vec4>&              orientationsIn,
         const std::vector<std::vector<uint32_t>>&  cpuNeighborLists,
-        float                                      maxRadius = 0.75f )
+        float                                      maxRadius = 0.75f,
+        const std::vector<glm::vec4>&              surfaceInfoIn = {} )
     {
         const uint32_t agentCount = static_cast<uint32_t>( agents.size() );
 
@@ -1009,14 +1010,45 @@ namespace
             orientations.assign( agentCount, glm::vec4( 0.0f, 0.0f, 0.0f, 1.0f ) );
         EXPECT_EQ( orientations.size(), agentCount );
 
-        BufferHandle agentBuf   = rm.CreateBuffer( { agentCount * sizeof( glm::vec4 ), BufferType::STORAGE, "VLT_Agents" } );
-        BufferHandle orientBuf  = rm.CreateBuffer( { agentCount * sizeof( glm::vec4 ), BufferType::STORAGE, "VLT_Orient" } );
+        // Phase 2.6.5.c.2 Step 4a — per-agent surface info is now 2×vec4:
+        //   [2*i+0] = (surfaceRadius, sizeScale, isCarina, axialStep)
+        //   [2*i+1] = (circumArc, _, _, _)
+        // Tests may pass either layout for backward compat:
+        //   - empty → zero-filled 2×N
+        //   - size == N (old layout) → treat as data0 slots, auto-zero data1 slots
+        //   - size == 2*N (new layout) → used as-is
+        std::vector<glm::vec4> surfaceInfo;
+        surfaceInfo.reserve( agentCount * 2u );
+        if( surfaceInfoIn.empty() )
+        {
+            surfaceInfo.assign( agentCount * 2u, glm::vec4( 0.0f ) );
+        }
+        else if( surfaceInfoIn.size() == agentCount )
+        {
+            // Old layout: one vec4 per agent. Expand to 2 per agent, data1 = zero.
+            for( uint32_t i = 0; i < agentCount; ++i )
+            {
+                surfaceInfo.push_back( surfaceInfoIn[ i ] );
+                surfaceInfo.push_back( glm::vec4( 0.0f ) );
+            }
+        }
+        else
+        {
+            surfaceInfo = surfaceInfoIn;
+        }
+        EXPECT_EQ( surfaceInfo.size(), agentCount * 2u );
+
+        const size_t surfaceBytes = agentCount * 2u * sizeof( glm::vec4 );
+        BufferHandle agentBuf    = rm.CreateBuffer( { agentCount * sizeof( glm::vec4 ), BufferType::STORAGE, "VLT_Agents" } );
+        BufferHandle orientBuf   = rm.CreateBuffer( { agentCount * sizeof( glm::vec4 ), BufferType::STORAGE, "VLT_Orient" } );
         BufferHandle neighborBuf = BuildNeighborListFromCPU( rm, stream, cpuNeighborLists );
-        BufferHandle polyBuf    = rm.CreateBuffer( { agentCount * sizeof( CellPolygonCPU ), BufferType::STORAGE, "VLT_Polygons" } );
+        BufferHandle polyBuf     = rm.CreateBuffer( { agentCount * sizeof( CellPolygonCPU ), BufferType::STORAGE, "VLT_Polygons" } );
+        BufferHandle surfaceBuf  = rm.CreateBuffer( { surfaceBytes, BufferType::STORAGE, "VLT_Surface" } );
 
         stream.UploadBufferImmediate( {
-            { agentBuf,  agents.data(),       agentCount * sizeof( glm::vec4 ) },
-            { orientBuf, orientations.data(), agentCount * sizeof( glm::vec4 ) },
+            { agentBuf,   agents.data(),       agentCount * sizeof( glm::vec4 ) },
+            { orientBuf,  orientations.data(), agentCount * sizeof( glm::vec4 ) },
+            { surfaceBuf, surfaceInfo.data(),  surfaceBytes },
         } );
 
         ComputePipelineDesc desc{};
@@ -1030,6 +1062,7 @@ namespace
         bg->Bind( 1, rm.GetBuffer( orientBuf ) );
         bg->Bind( 2, rm.GetBuffer( neighborBuf ) );
         bg->Bind( 3, rm.GetBuffer( polyBuf ) );
+        bg->Bind( 4, rm.GetBuffer( surfaceBuf ) );
         bg->Build();
 
         ComputePushConstants pc{};
@@ -1056,9 +1089,14 @@ namespace
     }
 } // anonymous namespace
 
-// (a) An isolated agent — zero spatial neighbours — should render as the full
-// 8-vertex bounding octagon at radius R_bound = maxRadius × 2 × 0.85.
-TEST_F( ComputeTest, Shader_Voronoi_OctagonWhenNoNeighbours )
+// (a) An isolated agent — zero spatial neighbours — renders as a 4-vertex
+// rhombus clamped to the elliptical bound in all four principal directions.
+// Phase 2.6.5.c.2 Step 1.9: 4-direction rhomboid Voronoi — the algorithm
+// buckets neighbours into ±axial / ±circumferential and places one vertex
+// in each direction at half the nearest neighbour distance. With no
+// neighbours, each direction falls back to the bound: `R_bound = maxRadius
+// × 2 × 0.85` → vertex at `R_bound`. Four vertices, aligned with the axes.
+TEST_F( ComputeTest, Shader_Voronoi_HexBoundWhenNoNeighbours )
 {
     if( !m_device ) GTEST_SKIP();
 
@@ -1068,14 +1106,18 @@ TEST_F( ComputeTest, Shader_Voronoi_OctagonWhenNoNeighbours )
     auto result = DispatchVoronoiPolygon( *m_device, *m_rm, *m_stream, agents, {}, lists, 0.75f );
 
     const auto& p = result.polygons[ 0 ];
-    EXPECT_EQ( p.count, 8u ) << "Isolated agent should produce full octagon (8 vertices)";
+    // Phase 2.6.5.c.2 Step 1.11: pairwise Voronoi needs >=3 neighbours.
+    // Fewer than 3 → Sutherland-Hodgman fallback on a 6-vertex hexagon
+    // bound. With zero neighbours, no clipping happens → full hex.
+    EXPECT_EQ( p.count, 6u ) << "Isolated agent should produce a 6-vertex hex bound";
 
     const float R_bound = 0.75f * 2.0f * 0.85f;
     for( uint32_t i = 0; i < p.count; ++i )
     {
-        glm::vec3 v  = glm::vec3( p.vertices[ i ] );
-        float     r  = glm::length( v );
-        EXPECT_NEAR( r, R_bound, 1e-3f ) << "Octagon vertex " << i << " must be at R_bound";
+        glm::vec3 v = glm::vec3( p.vertices[ i ] );
+        float     r = glm::length( v );
+        EXPECT_NEAR( r, R_bound, 1e-3f )
+            << "Hex bound vertex " << i << " must be at R_bound (= " << R_bound << ")";
     }
 }
 
@@ -1207,8 +1249,12 @@ TEST_F( ComputeTest, Shader_Voronoi_DualSeam_TwoCellRing )
 }
 
 // (f) Carina configuration — parent cell surrounded by 6 neighbours at 60°
-// intervals (hexagonal packing). Polygon should have ≥ 5 sides, matching
-// the cobblestone biology observed at real flow dividers (Chiu & Chien 2011).
+// intervals (hexagonal packing). With isCarina=1 the shader routes the parent
+// through the pairwise Voronoi path, producing a 6-vertex cobblestone polygon
+// matching the biology observed at real flow dividers (Chiu & Chien 2011).
+// Phase 2.6.5.c.2 Step 4a: explicit isCarina=1 + surfaceRadius > 0 exercises
+// the carina branch of the new algorithm (isCarina=0 with the same geometry
+// is tested in Shader_Voronoi_RHT_FourSidedForNonCarina below).
 TEST_F( ComputeTest, Shader_Voronoi_CobblestoneAtCarina )
 {
     if( !m_device ) GTEST_SKIP();
@@ -1227,20 +1273,350 @@ TEST_F( ComputeTest, Shader_Voronoi_CobblestoneAtCarina )
     lists.push_back( parentList );
     for( uint32_t i = 0; i < 6; ++i ) lists.push_back( { 0 } );
 
-    auto result = DispatchVoronoiPolygon( *m_device, *m_rm, *m_stream, agents, {}, lists, 0.75f );
+    // 2×vec4 per agent: data0=(surfaceRadius, sizeScale, isCarina, axialStep),
+    // data1=(circumArc, 0, 0, 0). Parent at slot 0 gets isCarina=1 to force
+    // the Voronoi path; neighbours get isCarina=0 (they'd be straight-stretch
+    // cells in a real tree but their polygons aren't checked here).
+    std::vector<glm::vec4> surfaceInfo;
+    for( uint32_t i = 0; i < agents.size(); ++i )
+    {
+        float isCarinaF = ( i == 0 ) ? 1.0f : 0.0f;
+        surfaceInfo.push_back( glm::vec4( /*surfaceRadius*/ 1.0f, 1.0f, isCarinaF, /*axialStep*/ 0.0f ) );
+        surfaceInfo.push_back( glm::vec4( /*circumArc*/ 0.0f, 0.0f, 0.0f, 0.0f ) );
+    }
 
-    EXPECT_GE( result.polygons[ 0 ].count, 5u )
-        << "Parent cell with 6 carina-side neighbours should render as ≥ 5-sided cobblestone polygon "
-           "(observed: " << result.polygons[ 0 ].count << ")";
-    // Upper bound relaxed from 8 → MAX_POLY_VERTS (12) after the per-cell
-    // R_bound cap fix (2026-04-20): when R_bound is capped at
-    // `minDist3D × 0.6` the bisectors barely clip the octagon, leaving
-    // some original octagon corners in place. Biological EC cobblestone
-    // sits at 5–8 sides but the polygon-buffer cap of 12 is the only
-    // hard ceiling the shader guarantees; dynamic rendering (Phase 2.6.5.c)
-    // already triangulates any valid count ≤ 12 correctly.
-    EXPECT_LE( result.polygons[ 0 ].count, 12u )
-        << "Parent cell polygon vertex count must not exceed MAX_POLY_VERTS";
+    auto result = DispatchVoronoiPolygon( *m_device, *m_rm, *m_stream,
+                                          agents, {}, lists, 0.75f, surfaceInfo );
+
+    // Parent cell with isCarina=1 + 6 hex-packed neighbours → pairwise Voronoi
+    // → 6 triple junctions → 6-vertex hexagonal cobblestone polygon.
+    EXPECT_EQ( result.polygons[ 0 ].count, 6u )
+        << "Carina parent (isCarina=1) with 6 hex-packed neighbours should produce "
+           "a 6-vertex pairwise-Voronoi polygon (observed: " << result.polygons[ 0 ].count << ")";
+}
+
+// Phase 2.6.5.c.2 Step 4a — (f') Same 7-cell carina geometry but with the
+// parent cell marked isCarina=0. The shader routes through Rhombus-Template
+// Snapping instead, producing a 4-sided rhomboid polygon from the 4 cardinal
+// snaps. Verifies the non-carina branch fires on vessel agents.
+TEST_F( ComputeTest, Shader_Voronoi_RHT_FourSidedForNonCarina )
+{
+    if( !m_device ) GTEST_SKIP();
+
+    std::vector<glm::vec4> agents;
+    std::vector<std::vector<uint32_t>> lists;
+
+    agents.push_back( glm::vec4( 0.0f, 0.0f, 0.0f, 1.0f ) );
+    std::vector<uint32_t> parentList;
+    for( uint32_t i = 0; i < 6; ++i )
+    {
+        float a = 2.0f * glm::pi<float>() * float( i ) / 6.0f;
+        agents.push_back( glm::vec4( std::cos( a ), 0.0f, std::sin( a ), 1.0f ) );
+        parentList.push_back( i + 1 );
+    }
+    lists.push_back( parentList );
+    for( uint32_t i = 0; i < 6; ++i ) lists.push_back( { 0 } );
+
+    std::vector<glm::vec4> surfaceInfo;
+    for( uint32_t i = 0; i < agents.size(); ++i )
+    {
+        // isCarina=0 everywhere; surfaceRadius=1 to route vessel path.
+        surfaceInfo.push_back( glm::vec4( 1.0f, 1.0f, 0.0f, 2.0f ) );   // axialStep=2
+        surfaceInfo.push_back( glm::vec4( 1.0f, 0.0f, 0.0f, 0.0f ) );   // circumArc=1
+    }
+
+    auto result = DispatchVoronoiPolygon( *m_device, *m_rm, *m_stream,
+                                          agents, {}, lists, 0.75f, surfaceInfo );
+
+    EXPECT_EQ( result.polygons[ 0 ].count, 4u )
+        << "Non-carina vessel cell with 6 neighbours should produce a 4-vertex RTS "
+           "rhombus (observed: " << result.polygons[ 0 ].count << ")";
+}
+
+// Phase 2.6.5.c.2 Step 4a — (f'') 4 cells arranged as the corners of a square
+// around a shared Voronoi corner. RTS snaps each cell's relevant corner to
+// midpoint(self, closest-cardinal-neighbour). The 4 cells should all report a
+// polygon vertex at the common point (0, 0, 0), confirming the symmetric
+// midpoint snap rule is bit-exact across the pair and closes gaps.
+//
+// Layout (in world XZ plane, Y=0):
+//   A at (-1, 0, -0.5)   B at (+1, 0, -0.5)
+//   C at (-1, 0, +0.5)   D at (+1, 0, +0.5)
+// Axial direction = world +X; circum = world +Z. A's axial-forward → B;
+// A's circum-right → C. Both snap to midpoint(A, B) = (0, 0, -0.5) and
+// midpoint(A, C) = (-1, 0, 0) respectively. NOT the common corner directly
+// — instead, the common corner emerges from the way adjacent cells share
+// edges (A's right-edge passes through (0, 0, -0.5) AND (0, 0, 0)).
+// This test instead asserts all 4 cells report count=4 (RTS fires) AND the
+// appropriate shared-midpoints coincide across adjacent pairs.
+TEST_F( ComputeTest, Shader_Voronoi_RHT_ShareCornerFourCells )
+{
+    if( !m_device ) GTEST_SKIP();
+
+    std::vector<glm::vec4> agents = {
+        glm::vec4( -1.0f, 0.0f, -0.5f, 1.0f ),   // A
+        glm::vec4( +1.0f, 0.0f, -0.5f, 1.0f ),   // B
+        glm::vec4( -1.0f, 0.0f, +0.5f, 1.0f ),   // C
+        glm::vec4( +1.0f, 0.0f, +0.5f, 1.0f ),   // D
+    };
+    // Each cell sees the other 3 as neighbours (small scene; all within radius).
+    std::vector<std::vector<uint32_t>> lists = {
+        { 1, 2, 3 }, { 0, 2, 3 }, { 0, 1, 3 }, { 0, 1, 2 },
+    };
+
+    // surfaceRadius = 10000 triggers RTS while making the cylinder re-roll
+    // curvature negligible for sub-unit cell spacing (radial bulge ≈ s²/(2R) ~ 1.25e-8).
+    // axialStep = 1, circumArc = 1 gives template extent = (1, 0.5) — tip reaches
+    // half-way to the opposite cell for the 2-apart axial pair.
+    std::vector<glm::vec4> surfaceInfo;
+    for( uint32_t i = 0; i < agents.size(); ++i )
+    {
+        surfaceInfo.push_back( glm::vec4( 10000.0f, 1.0f, 0.0f, 1.0f ) ); // axialStep=1
+        surfaceInfo.push_back( glm::vec4( 1.0f, 0.0f, 0.0f, 0.0f ) );     // circumArc=1
+    }
+
+    auto result = DispatchVoronoiPolygon( *m_device, *m_rm, *m_stream,
+                                          agents, {}, lists, 2.5f, surfaceInfo );
+
+    for( uint32_t i = 0; i < 4; ++i )
+    {
+        EXPECT_EQ( result.polygons[ i ].count, 4u )
+            << "Cell " << i << " should produce 4-vertex RTS polygon (observed "
+            << result.polygons[ i ].count << ")";
+    }
+
+    // Shared-midpoint symmetry: midpoint(A, B) world = ((-1+1)/2, 0, -0.5) = (0, 0, -0.5).
+    // A and B both see each other as axial-forward/back reciprocal; both compute
+    // the same midpoint as their shared polygon vertex. Assert bit-exact world
+    // coincidence (within fp tolerance + hash-jitter ~1e-4).
+    auto findNear = []( const CellPolygonCPU& p, glm::vec3 target ) {
+        float best = 1e30f;
+        for( uint32_t k = 0; k < p.count; ++k )
+            best = std::min( best, glm::length( glm::vec3( p.vertices[ k ] ) - target ) );
+        return best;
+    };
+    const glm::vec3 midAB( 0.0f, 0.0f, -0.5f );
+    const glm::vec3 midCD( 0.0f, 0.0f, +0.5f );
+    const glm::vec3 midAC( -1.0f, 0.0f, 0.0f );
+    const glm::vec3 midBD( +1.0f, 0.0f, 0.0f );
+    EXPECT_LT( findNear( result.polygons[ 0 ], midAB ), 1e-3f ) << "A missing midAB corner";
+    EXPECT_LT( findNear( result.polygons[ 1 ], midAB ), 1e-3f ) << "B missing midAB corner";
+    EXPECT_LT( findNear( result.polygons[ 2 ], midCD ), 1e-3f ) << "C missing midCD corner";
+    EXPECT_LT( findNear( result.polygons[ 3 ], midCD ), 1e-3f ) << "D missing midCD corner";
+    EXPECT_LT( findNear( result.polygons[ 0 ], midAC ), 1e-3f ) << "A missing midAC corner";
+    EXPECT_LT( findNear( result.polygons[ 2 ], midAC ), 1e-3f ) << "C missing midAC corner";
+    EXPECT_LT( findNear( result.polygons[ 1 ], midBD ), 1e-3f ) << "B missing midBD corner";
+    EXPECT_LT( findNear( result.polygons[ 3 ], midBD ), 1e-3f ) << "D missing midBD corner";
+}
+
+// Phase 2.6.5.c.2 Step 4a — (f''') Isolated vessel cell (surfaceRadius>0,
+// isCarina=0) always uses the static rhombus template. Produces a 4-vertex
+// rhombus at (±axialStep, 0) and (0, ±circumArc/2) — axial extent = full
+// axialStep (reaches the 4-way triple junction with ring-1 staggered + ring-2
+// axial neighbours); circum extent = half circumArc (midway to within-ring).
+TEST_F( ComputeTest, Shader_Voronoi_RHT_IsolatedCellFallsBackToTemplate )
+{
+    if( !m_device ) GTEST_SKIP();
+
+    std::vector<glm::vec4> agents = { glm::vec4( 0.0f, 0.0f, 0.0f, 1.0f ) };
+    std::vector<std::vector<uint32_t>> lists = { {} };
+
+    const float kAxialStep = 2.0f;
+    const float kCircumArc = 1.0f;
+    // Large surfaceRadius so cylinder re-roll curvature is negligible; lets us
+    // verify pre-projection template positions directly.
+    std::vector<glm::vec4> surfaceInfo = {
+        glm::vec4( 10000.0f, 1.0f, 0.0f, kAxialStep ),
+        glm::vec4( kCircumArc, 0.0f, 0.0f, 0.0f ),
+    };
+
+    auto result = DispatchVoronoiPolygon( *m_device, *m_rm, *m_stream,
+                                          agents, {}, lists, 0.75f, surfaceInfo );
+
+    const auto& p = result.polygons[ 0 ];
+    EXPECT_EQ( p.count, 4u ) << "Isolated vessel cell should produce 4-vertex RTS template";
+
+    // Expected corners (local 2D, identity orientation → local X = world X, local Z = world Z):
+    //   v0 = (+axialStep,    0) → world (+2, 0, 0)
+    //   v1 = (0, +circumArc/2) → world (0, 0, +0.5)
+    //   v2 = (-axialStep,    0) → world (-2, 0, 0)
+    //   v3 = (0, -circumArc/2) → world (0, 0, -0.5)
+    auto contains = []( const CellPolygonCPU& p, glm::vec3 target, float tol ) {
+        for( uint32_t k = 0; k < p.count; ++k )
+            if( glm::length( glm::vec3( p.vertices[ k ] ) - target ) < tol ) return true;
+        return false;
+    };
+    EXPECT_TRUE( contains( p, glm::vec3( +2.0f, 0.0f,  0.0f ), 5e-3f ) ) << "missing axial-forward tip at (+axialStep, 0)";
+    EXPECT_TRUE( contains( p, glm::vec3( -2.0f, 0.0f,  0.0f ), 5e-3f ) ) << "missing axial-back tip at (-axialStep, 0)";
+    EXPECT_TRUE( contains( p, glm::vec3(  0.0f, 0.0f, +0.5f ), 5e-3f ) ) << "missing circum-right tip at (0, +circumArc/2)";
+    EXPECT_TRUE( contains( p, glm::vec3(  0.0f, 0.0f, -0.5f ), 5e-3f ) ) << "missing circum-left tip at (0, -circumArc/2)";
+}
+
+// Phase 2.6.5.c.2 Step 4a — (f'''') Two vessel cells across a tapered-ring
+// transition: cell 0 has axialStep=2, cell 1 has axialStep=2 but circumArc
+// differs. Both cells see each other as axial-forward/back neighbours. The
+// snap rule uses WORLD-space midpoint, not template extents → the shared
+// corner is midpoint(cell0, cell1), independent of per-cell template extents.
+TEST_F( ComputeTest, Shader_Voronoi_RHT_TaperingNeighbourSnap )
+{
+    if( !m_device ) GTEST_SKIP();
+
+    std::vector<glm::vec4> agents = {
+        glm::vec4( 0.0f, 0.0f, 0.0f, 1.0f ),
+        glm::vec4( 2.0f, 0.0f, 0.0f, 1.0f ),   // cell 1 at +axial = +X
+    };
+    std::vector<std::vector<uint32_t>> lists = { { 1 }, { 0 } };
+
+    // Both cells share same axialStep=1 (template axial extent = 1 → cells
+    // 2 apart meet at midpoint (1, 0, 0)). Different circumArc (tapering ring)
+    // is deliberate — proves the axial-matching invariant doesn't depend on
+    // circum templates.
+    std::vector<glm::vec4> surfaceInfo = {
+        glm::vec4( 10000.0f, 1.0f, 0.0f, 1.0f ),  // cell 0: axialStep=1
+        glm::vec4( 1.5f, 0.0f, 0.0f, 0.0f ),      // cell 0: circumArc=1.5
+        glm::vec4( 10000.0f, 1.0f, 0.0f, 1.0f ),  // cell 1: axialStep=1
+        glm::vec4( 0.8f, 0.0f, 0.0f, 0.0f ),      // cell 1: circumArc=0.8 (DIFFERENT)
+    };
+
+    auto result = DispatchVoronoiPolygon( *m_device, *m_rm, *m_stream,
+                                          agents, {}, lists, 2.5f, surfaceInfo );
+
+    EXPECT_EQ( result.polygons[ 0 ].count, 4u );
+    EXPECT_EQ( result.polygons[ 1 ].count, 4u );
+
+    // Shared corner = world midpoint = (1, 0, 0). Both cells must report this
+    // vertex. Template extents differ but midpoint doesn't depend on them —
+    // this is the tiling-correctness proof.
+    auto findNear = []( const CellPolygonCPU& p, glm::vec3 target ) {
+        float best = 1e30f;
+        for( uint32_t k = 0; k < p.count; ++k )
+            best = std::min( best, glm::length( glm::vec3( p.vertices[ k ] ) - target ) );
+        return best;
+    };
+    const glm::vec3 shared( 1.0f, 0.0f, 0.0f );
+    const float d0 = findNear( result.polygons[ 0 ], shared );
+    const float d1 = findNear( result.polygons[ 1 ], shared );
+    EXPECT_LT( d0, 5e-3f ) << "Cell 0 missing shared-midpoint corner at " << shared.x << ",0," << shared.z << " (d=" << d0 << ")";
+    EXPECT_LT( d1, 5e-3f ) << "Cell 1 missing shared-midpoint corner";
+    EXPECT_LT( std::fabs( d0 - d1 ), 1e-3f ) << "Shared corner must coincide across the two cells regardless of differing templateExtents";
+}
+
+// (g1) Phase 2.6.5.c.2 Step 4a — surface-conforming projection with static
+// rhombus template: when two cells sit on the same cylinder with circumArc
+// equal to the arc-length separation between them, their facing corners
+// (cell A's +circum v1, cell B's -circum v3) must meet on the cylinder
+// surface. Proves the cylinder re-roll math is correct and that adjacent
+// cells' template corners coincide when spacing matches circumArc.
+TEST_F( ComputeTest, Shader_Voronoi_SurfaceConforming_AdjacentEdgesCoincide )
+{
+    if( !m_device ) GTEST_SKIP();
+
+    // Two cells sitting on a cylinder of radius R = 2, axis along +Z, at
+    // angular separation dθ = 40°. Cell A at angle 0, cell B at angle dθ.
+    // Orientation basis: local +X = axial (world +Z), local +Y = radial outward,
+    // local +Z = circum. Template circumArc = arc-length between the 2 cells
+    // → A's +circum corner v1 and B's -circum corner v3 land at the SAME world
+    // point (midpoint on the cylinder).
+    const float R       = 2.0f;
+    const float dθ      = glm::radians( 40.0f );
+    const float arcLen  = R * dθ;   // arc-length between the 2 cells
+    const float circumArc = arcLen; // ← so each cell's corner extends half-way
+
+    auto basisQuat = []( float angle ) {
+        glm::vec3 tangent( 0.0f, 0.0f, 1.0f );
+        glm::vec3 radial( std::cos( angle ), std::sin( angle ), 0.0f );
+        glm::vec3 circum = glm::normalize( glm::cross( tangent, radial ) );
+        glm::mat3 m( tangent, radial, circum );
+        glm::quat q = glm::quat_cast( m );
+        return glm::vec4( q.x, q.y, q.z, q.w );
+    };
+
+    std::vector<glm::vec4> agents = {
+        glm::vec4( R * std::cos( 0.0f ), R * std::sin( 0.0f ), 0.0f, 1.0f ),
+        glm::vec4( R * std::cos( dθ ),   R * std::sin( dθ ),   0.0f, 1.0f ),
+    };
+    std::vector<glm::vec4> orientations = { basisQuat( 0.0f ), basisQuat( dθ ) };
+    // 2×vec4 per agent: data0 = (surfaceRadius, sizeScale, isCarina, axialStep),
+    // data1 = (circumArc, _, _, _). axialStep = 1.0 is arbitrary (no axial
+    // neighbour in scene to snap against; corners stay at template).
+    std::vector<glm::vec4> surfaceInfo  = {
+        glm::vec4( R, 1.0f, 0.0f, 1.0f ),    glm::vec4( circumArc, 0.0f, 0.0f, 0.0f ),
+        glm::vec4( R, 1.0f, 0.0f, 1.0f ),    glm::vec4( circumArc, 0.0f, 0.0f, 0.0f ),
+    };
+    std::vector<std::vector<uint32_t>> lists = { { 1 }, { 0 } };
+
+    auto result = DispatchVoronoiPolygon( *m_device, *m_rm, *m_stream,
+                                          agents, orientations, lists,
+                                          /*maxRadius*/ 2.0f, surfaceInfo );
+
+    // For each cell, find the vertex closest to the geometric midpoint of the
+    // AB chord projected onto the cylinder surface (the true shared-edge
+    // midpoint). Assert both cells' nearest vertices coincide in 3D within
+    // 5e-3 world units (FP tolerance + hash-jitter ±1e-4 × a few multiplies).
+    glm::vec3 midChord = 0.5f * ( glm::vec3( agents[ 0 ] ) + glm::vec3( agents[ 1 ] ) );
+    glm::vec3 midAxis( 0.0f ); // cylinder axis at z=0
+    glm::vec3 midSurface = midAxis + R * glm::normalize( midChord - midAxis );
+
+    auto closestVertex = []( const CellPolygonCPU& p, glm::vec3 target ) {
+        glm::vec3 best( 0 );
+        float     bestD = 1e30f;
+        for( uint32_t k = 0; k < p.count; ++k )
+        {
+            glm::vec3 v = glm::vec3( p.vertices[ k ] );
+            float     d = glm::length( v - target );
+            if( d < bestD ) { bestD = d; best = v; }
+        }
+        return best;
+    };
+
+    glm::vec3 vA = closestVertex( result.polygons[ 0 ], midSurface );
+    glm::vec3 vB = closestVertex( result.polygons[ 1 ], midSurface );
+
+    float divergence = glm::length( vA - vB );
+    EXPECT_LT( divergence, 5e-3f )
+        << "Adjacent cells' shared-edge vertices diverge by " << divergence
+        << " world units — surface projection did not align them (A="
+        << vA.x << "," << vA.y << "," << vA.z << "; B="
+        << vB.x << "," << vB.y << "," << vB.z << ")";
+}
+
+// (g2) Phase 2.6.5.c.2 Step 1 — when surfaceRadius = 0, the shader must fall
+// back to flat tangent-plane projection, matching the pre-Step-1 baseline.
+// Guarantees non-vessel agents (Item 1 trilogy, sphere demos) are unaffected.
+TEST_F( ComputeTest, Shader_Voronoi_SurfaceRadiusZero_MatchesFlatBaseline )
+{
+    if( !m_device ) GTEST_SKIP();
+
+    // Same 4-cell ring as DeterministicAcrossRuns. Two dispatches: one with
+    // surfaceInfo empty (defaults to zero), one with surfaceInfo explicitly
+    // zero. Output must be bit-exact identical — this is the fallback path.
+    std::vector<glm::vec4> agents;
+    std::vector<std::vector<uint32_t>> lists;
+    for( uint32_t i = 0; i < 4; ++i )
+    {
+        float a = 2.0f * glm::pi<float>() * float( i ) / 4.0f;
+        agents.push_back( glm::vec4( 2.0f * std::cos( a ), 0.0f, 2.0f * std::sin( a ), 1.0f ) );
+    }
+    for( uint32_t i = 0; i < 4; ++i ) lists.push_back( { ( i + 3 ) % 4, ( i + 1 ) % 4 } );
+
+    auto runEmpty = DispatchVoronoiPolygon( *m_device, *m_rm, *m_stream, agents, {}, lists, 0.75f );
+
+    std::vector<glm::vec4> surfaceZero( agents.size(), glm::vec4( 0.0f ) );
+    auto runExplicitZero = DispatchVoronoiPolygon( *m_device, *m_rm, *m_stream,
+                                                   agents, {}, lists, 0.75f, surfaceZero );
+
+    for( uint32_t i = 0; i < agents.size(); ++i )
+    {
+        EXPECT_EQ( runEmpty.polygons[ i ].count, runExplicitZero.polygons[ i ].count );
+        for( uint32_t k = 0; k < runEmpty.polygons[ i ].count; ++k )
+        {
+            EXPECT_EQ( runEmpty.polygons[ i ].vertices[ k ],
+                       runExplicitZero.polygons[ i ].vertices[ k ] )
+                << "Cell " << i << " vertex " << k
+                << " differs between empty and explicit-zero surfaceInfo — "
+                   "non-vessel fallback path is not bit-stable";
+        }
+    }
 }
 
 // (g) Determinism — same input dispatched twice produces bit-exact same

@@ -88,6 +88,81 @@ namespace Gaudi
 
         if( changed && isReset )
             m_engine.SetBlueprint( m_blueprint );
+
+        // ── Dynamic Topology Debug (Phase 2.6.5.c.2 Step D) ─────────────────
+        // Only surfaced when the blueprint actually has a group using dynamic
+        // topology — otherwise these toggles do nothing. They're global (not
+        // per-group) because the debug flags are pushed once per Voronoi draw
+        // call, not per group.
+        bool anyDynamicTopology = false;
+        for( const auto& g : m_blueprint.GetGroups() )
+            if( g.GetDynamicTopology().enabled ) { anyDynamicTopology = true; break; }
+
+        if( anyDynamicTopology )
+        {
+            ImGui::SeparatorText( "Dynamic Topology Debug" );
+
+            uint32_t flags        = m_engine.GetDynamicTopologyDebugFlags();
+            bool     showWire     = ( flags & DigitalTwin::DigitalTwin::DYNAMIC_TOPOLOGY_DEBUG_WIREFRAME    ) != 0u;
+            bool     showVCount   = ( flags & DigitalTwin::DigitalTwin::DYNAMIC_TOPOLOGY_DEBUG_VERTEX_COUNT ) != 0u;
+            bool     showHullMarkers = ( flags & DigitalTwin::DigitalTwin::DYNAMIC_TOPOLOGY_DEBUG_HULL_MARKERS ) != 0u;
+            bool     flagsChanged = false;
+
+            if( ImGui::Checkbox( "Show polygon edges (wireframe)", &showWire ) )
+                flagsChanged = true;
+            ImGui::SetItemTooltip( "Outlines each Voronoi polygon's boundary. Lets you count sides\n"
+                                   "per cell and see where adjacent cells' shared edges meet or miss." );
+
+            if( ImGui::Checkbox( "Tint by polygon vertex count", &showVCount ) )
+                flagsChanged = true;
+            ImGui::SetItemTooltip( "Colours each cell by its polygon vertex count:\n"
+                                   "  4 = green (rhomboid)  5 = blue (pentagon)\n"
+                                   "  6 = no tint (hexagon — normal)\n"
+                                   "  7 = RED (heptagon — the \"heptagon above hexagon\" symptom)\n"
+                                   "  8 = yellow (octagon)  >8 = magenta (error)." );
+
+            if( ImGui::Checkbox( "Show cell centers + hull points (rays)", &showHullMarkers ) )
+                flagsChanged = true;
+            ImGui::SetItemTooltip( "Per cell, draws 8 radial lines from the cell centre (yellow)\n"
+                                   "to each JKR contact-hull sub-sphere position (cyan). The\n"
+                                   "centre is the agent's actual position; the hull points are\n"
+                                   "where the rigid-body rhombus thinks its corners sit.\n"
+                                   "Reveals: cell drift (centres off the cylinder), hull rotation\n"
+                                   "drift (rays pointing in inconsistent directions), and where\n"
+                                   "the physics hull vs the Voronoi polygon disagree." );
+
+            bool showPolarity = ( flags & DigitalTwin::DigitalTwin::DYNAMIC_TOPOLOGY_DEBUG_POLARITY_VECTORS ) != 0u;
+            bool showDrift    = ( flags & DigitalTwin::DigitalTwin::DYNAMIC_TOPOLOGY_DEBUG_DRIFT_LINES      ) != 0u;
+
+            if( ImGui::Checkbox( "Show polarity vectors (red)", &showPolarity ) )
+                flagsChanged = true;
+            ImGui::SetItemTooltip( "Per cell, draws a red line from the cell centre along its\n"
+                                   "polarity direction (length = magnitude). For vessel cells\n"
+                                   "this should point radially OUTWARD from the tube axis on\n"
+                                   "every cell uniformly. If some cells have red arrows pointing\n"
+                                   "sideways or axially instead, polarity has drifted — a\n"
+                                   "candidate cause of the asymmetric cell delamination." );
+
+            if( ImGui::Checkbox( "Show drift lines (yellow)", &showDrift ) )
+                flagsChanged = true;
+            ImGui::SetItemTooltip( "Per cell, draws a yellow line from the cell's CURRENT\n"
+                                   "position to its INITIAL placement position. Cells that\n"
+                                   "haven't moved show no line (start and end coincide).\n"
+                                   "Cells that have drifted show long yellow streaks in the\n"
+                                   "drift direction — directly reveals WHICH side of the tube\n"
+                                   "has physical drift and in what direction." );
+
+            if( flagsChanged )
+            {
+                uint32_t newFlags = 0u;
+                if( showWire )        newFlags |= DigitalTwin::DigitalTwin::DYNAMIC_TOPOLOGY_DEBUG_WIREFRAME;
+                if( showVCount )      newFlags |= DigitalTwin::DigitalTwin::DYNAMIC_TOPOLOGY_DEBUG_VERTEX_COUNT;
+                if( showHullMarkers ) newFlags |= DigitalTwin::DigitalTwin::DYNAMIC_TOPOLOGY_DEBUG_HULL_MARKERS;
+                if( showPolarity )    newFlags |= DigitalTwin::DigitalTwin::DYNAMIC_TOPOLOGY_DEBUG_POLARITY_VECTORS;
+                if( showDrift )       newFlags |= DigitalTwin::DigitalTwin::DYNAMIC_TOPOLOGY_DEBUG_DRIFT_LINES;
+                m_engine.SetDynamicTopologyDebugFlags( newFlags );
+            }
+        }
     }
 
     void InspectorPanel::RenderGroupInspector( DigitalTwin::AgentGroup& group )

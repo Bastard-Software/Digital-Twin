@@ -241,6 +241,20 @@ namespace DigitalTwin
         uint32_t currentReorderOffset  = 0; // offset into reorder buffer
         uint32_t groupIdx              = 0;
 
+        // Phase 2.6.5.c — dynamic-topology DrawMetas are deferred and appended
+        // AFTER all static DrawMetas so GeometryPass can route them to the
+        // voronoi_fan pipeline via a single offset/count range in the indirect
+        // command buffer. Reorder offsets still accumulate in group-iteration
+        // order so agent-to-reorder-slot mapping stays consistent with the
+        // agent-position buffer layout.
+        struct DeferredDynamicDraw
+        {
+            VkDrawIndexedIndirectCommand cmd;
+            glm::vec4                    color;
+            DrawMeta                     meta;
+        };
+        std::vector<DeferredDynamicDraw> dynamicDraws;
+
         for( const auto& group: groups )
         {
             if( group.GetCount() == 0 || group.GetPositions().empty() )
@@ -249,44 +263,69 @@ namespace DigitalTwin
             uint32_t    capacity       = groupCapacities[ groupIdx ];
             const auto& morph          = group.GetMorphology();
             const auto& cellTypeMorphs = group.GetCellTypeMorphologies();
+            const bool  dynamicTopology = group.GetDynamicTopology().enabled;
 
-            // --- Default mesh (catches any cellType not in cellTypeMorphs) ---
-            megaVertices.insert( megaVertices.end(), morph.vertices.begin(), morph.vertices.end() );
-            megaIndices.insert( megaIndices.end(), morph.indices.begin(), morph.indices.end() );
-
-            VkDrawIndexedIndirectCommand defaultCmd{};
-            defaultCmd.indexCount    = static_cast<uint32_t>( morph.indices.size() );
-            defaultCmd.instanceCount = 0; // filled by build_indirect.comp
-            defaultCmd.firstIndex    = currentIndexOffset;
-            defaultCmd.vertexOffset  = currentVertexOffset;
-            defaultCmd.firstInstance  = currentReorderOffset;
-            indirectCommands.push_back( defaultCmd );
-            groupColors.push_back( group.GetColor() );
-            drawMetaEntries.push_back( { groupIdx, 0xFFFFFFFF, currentAgentOffset, capacity } );
-
-            currentVertexOffset += static_cast<uint32_t>( morph.vertices.size() );
-            currentIndexOffset  += static_cast<uint32_t>( morph.indices.size() );
-            currentReorderOffset += capacity;
-
-            // --- Cell-type-specific meshes ---
-            for( const auto& entry: cellTypeMorphs )
+            if( dynamicTopology )
             {
-                megaVertices.insert( megaVertices.end(), entry.mesh.vertices.begin(), entry.mesh.vertices.end() );
-                megaIndices.insert( megaIndices.end(), entry.mesh.indices.begin(), entry.mesh.indices.end() );
+                // Phase 2.6.5.c dynamic path — emit ONE deferred DrawMeta with
+                // targetCellType = 0xFFFFFFFF (catch-all; all cells in the group
+                // route to the single Voronoi draw regardless of their upper
+                // 16-bit morphology index). Skip vertex/index mesh upload.
+                // indexCount/firstIndex/vertexOffset/firstInstance will be
+                // patched below once the shared fan index range is appended
+                // and the static reorder slots are all allocated.
+                VkDrawIndexedIndirectCommand cmd{};
+                cmd.indexCount    = 36; // 12-triangle fan × 3 vertices
+                cmd.instanceCount = 0;  // filled by build_indirect.comp
+                cmd.firstIndex    = 0;  // patched
+                cmd.vertexOffset  = 0;
+                cmd.firstInstance = 0;  // patched
+                dynamicDraws.push_back( {
+                    cmd,
+                    group.GetColor(),
+                    { groupIdx, 0xFFFFFFFF, currentAgentOffset, capacity },
+                } );
+            }
+            else
+            {
+                // --- Default mesh (catches any cellType not in cellTypeMorphs) ---
+                megaVertices.insert( megaVertices.end(), morph.vertices.begin(), morph.vertices.end() );
+                megaIndices.insert( megaIndices.end(), morph.indices.begin(), morph.indices.end() );
 
-                VkDrawIndexedIndirectCommand ctCmd{};
-                ctCmd.indexCount    = static_cast<uint32_t>( entry.mesh.indices.size() );
-                ctCmd.instanceCount = 0; // filled by build_indirect.comp
-                ctCmd.firstIndex    = currentIndexOffset;
-                ctCmd.vertexOffset  = currentVertexOffset;
-                ctCmd.firstInstance  = currentReorderOffset;
-                indirectCommands.push_back( ctCmd );
-                groupColors.push_back( entry.color.x >= 0.0f ? entry.color : group.GetColor() );
-                drawMetaEntries.push_back( { groupIdx, static_cast<uint32_t>( entry.cellTypeIndex ), currentAgentOffset, capacity } );
+                VkDrawIndexedIndirectCommand defaultCmd{};
+                defaultCmd.indexCount    = static_cast<uint32_t>( morph.indices.size() );
+                defaultCmd.instanceCount = 0; // filled by build_indirect.comp
+                defaultCmd.firstIndex    = currentIndexOffset;
+                defaultCmd.vertexOffset  = currentVertexOffset;
+                defaultCmd.firstInstance  = currentReorderOffset;
+                indirectCommands.push_back( defaultCmd );
+                groupColors.push_back( group.GetColor() );
+                drawMetaEntries.push_back( { groupIdx, 0xFFFFFFFF, currentAgentOffset, capacity } );
 
-                currentVertexOffset  += static_cast<uint32_t>( entry.mesh.vertices.size() );
-                currentIndexOffset   += static_cast<uint32_t>( entry.mesh.indices.size() );
+                currentVertexOffset += static_cast<uint32_t>( morph.vertices.size() );
+                currentIndexOffset  += static_cast<uint32_t>( morph.indices.size() );
                 currentReorderOffset += capacity;
+
+                // --- Cell-type-specific meshes ---
+                for( const auto& entry: cellTypeMorphs )
+                {
+                    megaVertices.insert( megaVertices.end(), entry.mesh.vertices.begin(), entry.mesh.vertices.end() );
+                    megaIndices.insert( megaIndices.end(), entry.mesh.indices.begin(), entry.mesh.indices.end() );
+
+                    VkDrawIndexedIndirectCommand ctCmd{};
+                    ctCmd.indexCount    = static_cast<uint32_t>( entry.mesh.indices.size() );
+                    ctCmd.instanceCount = 0; // filled by build_indirect.comp
+                    ctCmd.firstIndex    = currentIndexOffset;
+                    ctCmd.vertexOffset  = currentVertexOffset;
+                    ctCmd.firstInstance  = currentReorderOffset;
+                    indirectCommands.push_back( ctCmd );
+                    groupColors.push_back( entry.color.x >= 0.0f ? entry.color : group.GetColor() );
+                    drawMetaEntries.push_back( { groupIdx, static_cast<uint32_t>( entry.cellTypeIndex ), currentAgentOffset, capacity } );
+
+                    currentVertexOffset  += static_cast<uint32_t>( entry.mesh.vertices.size() );
+                    currentIndexOffset   += static_cast<uint32_t>( entry.mesh.indices.size() );
+                    currentReorderOffset += capacity;
+                }
             }
 
             // --- Agent positions ---
@@ -314,6 +353,31 @@ namespace DigitalTwin
             currentAgentOffset += capacity;
             groupIdx++;
         }
+
+        // Phase 2.6.5.c — append the 12-triangle-fan index range to the shared
+        // index buffer, then emit the deferred dynamic-topology DrawMetas.
+        // Each dynamic draw reuses the SAME 36-index range (vertexOffset = 0
+        // means voronoi_fan.vert sees gl_VertexIndex in [0, 36) regardless of
+        // which cell it's rendering). Dynamic reorder slots come AFTER all
+        // static slots — no reordering of existing reorder-buffer layout.
+        if( !dynamicDraws.empty() )
+        {
+            uint32_t voronoiFanIndexStart = static_cast<uint32_t>( megaIndices.size() );
+            for( uint32_t i = 0; i < 36; ++i )
+                megaIndices.push_back( i );
+
+            for( auto& d : dynamicDraws )
+            {
+                d.cmd.firstIndex    = voronoiFanIndexStart;
+                d.cmd.vertexOffset  = 0;
+                d.cmd.firstInstance = currentReorderOffset;
+                indirectCommands.push_back( d.cmd );
+                groupColors.push_back( d.color );
+                drawMetaEntries.push_back( d.meta );
+                currentReorderOffset += d.meta.groupCapacity;
+            }
+        }
+        outState.dynamicDrawCommandCount = static_cast<uint32_t>( dynamicDraws.size() );
 
         // 4. Create core GPU Buffers via ResourceManager
         if( !megaVertices.empty() )

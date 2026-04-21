@@ -364,7 +364,9 @@ namespace DigitalTwin
             renderScene.agentReorderBuffer = state->agentReorderBuffer;
             renderScene.drawMetaBuffer     = state->drawMetaBuffer;
             renderScene.visibilityBuffer   = state->visibilityBuffer;
+            renderScene.polygonBuffer      = state->polygonBuffer;         // Phase 2.6.5.c
             renderScene.drawCount          = state->drawCommandCount;
+            renderScene.dynamicDrawCount   = state->dynamicDrawCommandCount; // Phase 2.6.5.c
             renderScene.totalPaddedAgents  = state->totalPaddedAgents;
 
             if( profiler )

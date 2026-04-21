@@ -21,11 +21,23 @@ namespace DigitalTwin
         BufferHandle agentReorderBuffer;
         BufferHandle drawMetaBuffer;
         BufferHandle visibilityBuffer; // per-group uint32: 1=visible, 0=hidden (UPLOAD, CPU-writable)
-        uint32_t     drawCount        = 0;
+
+        // Phase 2.6.5.c — per-cell Voronoi polygon data written by
+        // voronoi_cell_polygon.comp. Consumed by voronoi_fan.vert via SSBO lookup.
+        // Invalid handle → no AgentGroup opted into dynamic topology; static pipeline
+        // covers every draw and the dynamic path is skipped in GeometryPass.
+        BufferHandle polygonBuffer;
+
+        uint32_t     drawCount        = 0;  // total draw-command count (static + dynamic)
+        uint32_t     dynamicDrawCount = 0;  // subset rendered via voronoi_fan pipeline;
+                                            //   placed AT THE END of indirectCmdBuffer
+                                            //   (static draws at [0, drawCount - dynamicDrawCount),
+                                            //    dynamic at [drawCount - dynamicDrawCount, drawCount))
         uint32_t     totalPaddedAgents = 0;
         uint32_t     readIndex        = 0; // Which ping-pong buffer holds the latest valid agent positions
 
         BufferHandle GetAgentReadBuffer() const { return agentBuffers[ readIndex ]; }
+        uint32_t     StaticDrawCount()   const { return drawCount - dynamicDrawCount; }
     };
 
 } // namespace DigitalTwin

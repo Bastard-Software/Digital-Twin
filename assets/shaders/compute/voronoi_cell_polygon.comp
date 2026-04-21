@@ -117,10 +117,21 @@ void main() {
     vec3 tangentZ = qrot(q, vec3(0.0, 0.0, 1.0));
 
     // ---- Collect + project + angular-sort neighbours into 2D ----
+    // For each neighbour we store BOTH the 2D projection (for angular sort
+    // and bisector direction) AND the full 3D squared-distance (for the
+    // bisector distance term). The 3D distance is required because cells
+    // on a curved vessel surface can sit slightly above or below each other's
+    // tangent plane — using only the 2D distance would place the bisector
+    // too close to the cell origin, leaving gaps at shared edges and
+    // producing overlapping triangles between neighbouring cells. See the
+    // derivation: for the bisector `|P - A|² = |P - B|²` in A's tangent
+    // plane, the term that survives is `2·dot(p, N_2D) = |BA_3D|²`, not
+    // `|N_2D|²`.
     uint myBase = globalIdx * NEIGHBOR_STRIDE;
     uint rawCount = neighborList.data[myBase];
 
     vec2  projected[NEIGHBOR_CAP];
+    float dist3DSq[NEIGHBOR_CAP];
     float angles[NEIGHBOR_CAP];
     uint  nActive = 0u;
     for (uint k = 0; k < rawCount && nActive < NEIGHBOR_CAP; k++) {
@@ -133,32 +144,58 @@ void main() {
         p2 += pairJitter(globalIdx, nIdx);
 
         projected[nActive] = p2;
+        dist3DSq[nActive]  = dot(rel, rel);
         angles[nActive]    = atan(p2.y, p2.x);
         nActive++;
     }
 
     // Insertion sort by angle — N ≤ 48, done in private registers, no shared
-    // memory. Stable and branch-predictor-friendly for small N.
+    // memory. Stable and branch-predictor-friendly for small N. Moves the
+    // parallel `dist3DSq[]` alongside so each index stays aligned.
     for (uint i = 1u; i < nActive; i++) {
         vec2  p = projected[i];
+        float d = dist3DSq[i];
         float a = angles[i];
         uint  j = i;
         while (j > 0u && angles[j - 1u] > a) {
             projected[j] = projected[j - 1u];
+            dist3DSq[j]  = dist3DSq[j - 1u];
             angles[j]    = angles[j - 1u];
             j--;
         }
         projected[j] = p;
+        dist3DSq[j]  = d;
         angles[j]    = a;
     }
 
     // ---- Initialise octagonal bounding polygon at R_bound ----
-    // R_bound = maxRadius × 2 × clipRadiusScale. Per-group tunable via
-    // AgentGroup::SetDynamicTopology(..., clipRadiusScale). ECs default
-    // to 0.85, epithelium tighter, smooth muscle wider. A zero value is
-    // treated as "no value set" (backward-compat) and defaults to 0.85.
+    // Start at the JKR-reach ceiling `maxRadius × 2 × clipRadiusScale`
+    // (ECs 0.85, epithelium tighter, smooth muscle wider). Bisector
+    // clipping normally shapes the final polygon inside this ceiling.
+    //
+    // Wrap-around cap: if a neighbour projects close to the origin in 2D
+    // but is still close in 3D, it's mostly in this cell's NORMAL direction
+    // — i.e., the surface wraps around and the neighbour sits on the
+    // opposite side. Such a neighbour can't be clipped against in 2D (no
+    // direction for the bisector), so the polygon would otherwise extend
+    // past the cell's local surface region into adjacent-cell territory.
+    // Detect via 2D/3D ratio and cap R_bound at half the 3D distance.
+    //
+    // On arteriole-scale tubes (cell spacing ≪ tube radius) all neighbours
+    // project with ratio ≈ 1; no cap is applied and bisector clipping
+    // alone shapes the polygon. On capillary-scale tubes or dual-seam
+    // rings, the opposite-side partner triggers the cap and the polygon
+    // shrinks to match the local surface scale.
     float clipScale = (pc.clipRadiusScale > 0.0) ? pc.clipRadiusScale : 0.85;
     float R_bound   = pc.maxRadius * 2.0 * clipScale;
+    for (uint k = 0u; k < nActive; k++) {
+        float d3 = sqrt(dist3DSq[k]);
+        float d2 = length(projected[k]);
+        if (d3 > 1e-4 && d2 / d3 < 0.5) {
+            // Neighbour is mostly in the normal direction — surface wraps.
+            R_bound = min(R_bound, d3 * 0.5);
+        }
+    }
 
     vec2 polyA[MAX_WORK_VERTS];
     vec2 polyB[MAX_WORK_VERTS];
@@ -170,12 +207,18 @@ void main() {
     }
 
     // ---- Sutherland-Hodgman: clip polygon against each neighbour's bisector ----
-    // For neighbour at projected position N, the bisector plane is
-    //   dot(p, N) = 0.5 × dot(N, N)
-    // and we keep points on the "origin" side (dot(p, N) ≤ half-distance²).
+    // For neighbour at 2D projected position N_2D with 3D squared-distance
+    // d3² from this cell, the plane equidistant from the two cells (in 3D)
+    // intersects this cell's tangent plane as:
+    //   dot(p, N_2D) = d3² / 2
+    // We keep points on the origin side (dot(p, N_2D) ≤ d3²/2). Using the
+    // 3D distance rather than |N_2D|² is the fix for curved-surface gaps:
+    // on a tube/sphere, |N_2D|² < |BA_3D|² because the neighbour sits below
+    // this cell's tangent plane — the smaller denominator placed bisectors
+    // too close to the cell, leaving gaps at shared edges with neighbours.
     for (uint k = 0u; k < nActive; k++) {
         vec2  N = projected[k];
-        float halfDotNN = 0.5 * dot(N, N);
+        float halfDotNN = 0.5 * dist3DSq[k];
         if (halfDotNN < 1e-8) continue; // degenerate: neighbour on top of cell
 
         uint countB = 0u;

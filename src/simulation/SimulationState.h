@@ -81,6 +81,12 @@ namespace DigitalTwin
         BufferHandle drawMetaBuffer;      // DrawMeta per draw command: {groupIndex, targetCellType, groupOffset, groupCapacity}
         BufferHandle visibilityBuffer;    // uint32_t per group: 1=visible, 0=hidden (UPLOAD, CPU-writable)
         uint32_t     drawCommandCount = 0;
+        // Phase 2.6.5.c — subset of drawCommandCount rendered via the dynamic-
+        // topology (voronoi_fan) pipeline. Dynamic DrawMetas are placed at
+        // the END of the indirect/meta buffers so GeometryPass can issue two
+        // distinct DrawIndexedIndirect calls: [0, staticCount) on the static
+        // pipeline, [staticCount, drawCount) on the dynamic pipeline.
+        uint32_t     dynamicDrawCommandCount = 0;
         uint32_t     totalPaddedAgents = 0;
 
         // Biomechanics
@@ -110,7 +116,14 @@ namespace DigitalTwin
         // Simulation logic
         ComputeGraph computeGraph;
 
-        bool IsValid() const { return vertexBuffer.IsValid(); }
+        bool IsValid() const
+        {
+            // Phase 2.6.5.c: a dynamic-topology-only blueprint has no static mesh
+            // (vertexBuffer remains invalid) but is still renderable via the
+            // Voronoi path. Treat the state as valid whenever it has agents to
+            // draw through EITHER pipeline.
+            return vertexBuffer.IsValid() || polygonBuffer.IsValid();
+        }
 
         /**
          * @brief Safely destroys all GPU resources associated with this state.

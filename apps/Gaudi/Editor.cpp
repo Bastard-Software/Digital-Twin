@@ -146,7 +146,7 @@ namespace Gaudi
                   "under pressure and hypoxia.\n\n"
                   "Demonstrates: CellCycle, JKR biomechanics, O2 coupling.",
                   &Demos::SetupCellCycleDemo },
-            }, true },
+            }, false }, // 2026-04-22 user request: categories closed by default
 
             { "Fields & Diffusion", {
                 { "Diffusion & Decay",
@@ -272,7 +272,7 @@ namespace Gaudi
                   "classical positive/negative control experimental\n"
                   "design.",
                   &Demos::SetupECTubeDemo },
-            }, true },
+            }, false }, // 2026-04-22 user request: categories closed by default
 
             { "Vessels", {
                 // Populated phase-by-phase: Phase 2.1 adds TwoShape; Phase 2.2 adds

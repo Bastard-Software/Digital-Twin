@@ -86,8 +86,10 @@ namespace DigitalTwin
 
         // Phase 2.6.5.c.2 Step D — dynamic-topology debug overlay flags.
         // Forwarded to the renderer's Scene each frame and on to the
-        // voronoi_fan push constant. Zero = normal rendering.
-        uint32_t m_dynamicTopologyDebugFlags = 0u;
+        // voronoi_fan push constant. Wireframe defaults ON (2026-04-22 user
+        // request) — polygon edges make it easy to count sides and see where
+        // shared edges meet; zero cost when no dynamic-topology group exists.
+        uint32_t m_dynamicTopologyDebugFlags = 1u; // bit 0 = DYNAMIC_TOPOLOGY_DEBUG_WIREFRAME
 
         Impl()
             : m_initialized( false )
@@ -392,6 +394,14 @@ namespace DigitalTwin
                 // Apply boot-time MSAA config (validated inside SetMSAA)
                 if( m_config.msaaSamples >= 4 )
                     m_renderer->SetMSAA( VK_SAMPLE_COUNT_4_BIT );
+
+                // Phase 2.6.5.c.2 — propagate the engine's boot-time debug flags
+                // (wireframe default ON) to the freshly-created renderer. Without
+                // this, the Impl member defaults to 1u but the Renderer's own
+                // member defaults to 0u — out of sync until the user toggles the
+                // Inspector checkbox, which is why first-frame wireframe was
+                // invisible (2026-04-22 user report).
+                m_renderer->SetDynamicTopologyDebugFlags( m_dynamicTopologyDebugFlags );
 
                 // Create render resources
                 for( uint32_t ndx = 0; ndx < FRAMES_IN_FLIGHT; ++ndx )

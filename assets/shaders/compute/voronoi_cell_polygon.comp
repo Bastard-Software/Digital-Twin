@@ -52,12 +52,16 @@ layout(std430, binding = 2) readonly buffer NeighborList { uint data[]; } neighb
 
 // Per-agent output polygon. std430 layout, 208 bytes per struct, 16-byte
 // aligned (driven by the vec4 vertices array). Array stride = 208.
+// Phase 2.6.5.c.2 Step 4a.g — the 12 bytes after `count` carry the cell's
+// outward normal (radialOut) as 3 floats. The VS uses this to extrude the
+// polygon ±thickness/2 along the normal for biprism 3D rendering. Previously
+// unused padding.
 struct CellPolygon {
-    uint count;
-    uint _pad0;
-    uint _pad1;
-    uint _pad2;
-    vec4 vertices[12];  // world-space positions; only xyz used, w reserved
+    uint  count;
+    float normal_x;
+    float normal_y;
+    float normal_z;
+    vec4  vertices[12];  // world-space positions; only xyz used, w reserved
 };
 layout(std430, binding = 3) writeonly buffer Polygons { CellPolygon data[]; } polygons;
 
@@ -144,10 +148,16 @@ void main() {
     vec4  surfA         = surfaceInfo.data[globalIdx * 2u + 0u];
     vec4  surfB         = surfaceInfo.data[globalIdx * 2u + 1u];
     float surfaceRadius = surfA.x;
-    // surfA.y = sizeScale (reserved for Step 2; unused here).
+    // Phase 2.6.5.c.2 Step 2 — sizeScale multiplies template extents so each cell
+    // renders at ~±15% of its nominal size (uniform distribution in [0.85, 1.15]
+    // matching Chiu & Chien 2011 in-vivo EC area variance). Multiplied into the
+    // per-cell axialStep and circumArc BEFORE the RTS template extents are
+    // computed; downstream clip math is unaware of the scaling. Physics hull
+    // unaffected — only the rendered polygon size varies per cell.
+    float sizeScale     = (surfA.y > 0.0) ? surfA.y : 1.0;  // default 1.0 for tests that pass empty surfaceInfo
     float isCarina      = surfA.z;
-    float axialStepLoc  = surfA.w;
-    float circumArcLoc  = surfB.x;
+    float axialStepLoc  = surfA.w * sizeScale;
+    float circumArcLoc  = surfB.x * sizeScale;
 
     // ---- Collect + project + angular-sort neighbours into 2D ----
     // For each neighbour we store BOTH the 2D projection (for angular sort
@@ -543,7 +553,15 @@ void main() {
     // When R = 0 (non-vessel agents) we fall back to flat tangent projection
     // and the output is bit-identical to the pre-Step-1 baseline.
     uint writeCount = min(countA, MAX_POLY_VERTS);
-    polygons.data[globalIdx].count = writeCount;
+    polygons.data[globalIdx].count    = writeCount;
+    // Phase 2.6.5.c.2 Step 4a.g — cell's outward normal for biprism extrusion.
+    // Same radialOut already used to re-roll polygon vertices onto the cylinder;
+    // stored so the VS can offset top/bottom faces by ±thickness/2 along this
+    // direction. Non-vessel agents (surfaceRadius=0) still receive a valid normal
+    // (local +Y) so the biprism math doesn't divide-by-zero.
+    polygons.data[globalIdx].normal_x = radialOut.x;
+    polygons.data[globalIdx].normal_y = radialOut.y;
+    polygons.data[globalIdx].normal_z = radialOut.z;
     for (uint i = 0u; i < writeCount; i++) {
         vec3 world;
         if (surfaceRadius > 0.0) {

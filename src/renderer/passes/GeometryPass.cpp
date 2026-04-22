@@ -76,18 +76,22 @@ namespace DigitalTwin
 
         // --- Phase 2.6.5.c.2 Step D.2 — debug markers pipeline ---
         // Line list topology: 16 verts per instance (8 hull rays × 2 endpoints).
-        // Depth write DISABLED so markers don't pollute depth for the main
-        // passes; depth test ENABLED so markers correctly occlude behind
-        // the tube surface where appropriate. Cull NONE — lines have no face.
+        // Depth write + depth test BOTH DISABLED (2026-04-22 user feedback after
+        // biprism shipped): the biprism body now has volume, so debug lines
+        // that should radiate from the cell centre used to be occluded by
+        // the top/bottom/side faces. Turning off depth test makes them
+        // always-on-top — correct for a debug overlay. Cull NONE — lines have
+        // no face.
         m_debugMarkersVertShader = m_resourceManager->CreateShader( "shaders/graphics/debug_markers.vert" );
         m_debugMarkersFragShader = m_resourceManager->CreateShader( "shaders/graphics/debug_markers.frag" );
 
         GraphicsPipelineDesc debugDesc = desc;
-        debugDesc.vertexShader   = m_debugMarkersVertShader;
-        debugDesc.fragmentShader = m_debugMarkersFragShader;
-        debugDesc.cullMode       = VK_CULL_MODE_NONE;
-        debugDesc.topology       = VK_PRIMITIVE_TOPOLOGY_LINE_LIST;
+        debugDesc.vertexShader     = m_debugMarkersVertShader;
+        debugDesc.fragmentShader   = m_debugMarkersFragShader;
+        debugDesc.cullMode         = VK_CULL_MODE_NONE;
+        debugDesc.topology         = VK_PRIMITIVE_TOPOLOGY_LINE_LIST;
         debugDesc.depthWriteEnable = false;
+        debugDesc.depthTestEnable  = false; // always draw on top of biprism
 
         m_debugMarkersPipeline = m_resourceManager->CreatePipeline( debugDesc );
         if( !m_debugMarkersPipeline.IsValid() )
@@ -108,6 +112,7 @@ namespace DigitalTwin
         vecDesc.cullMode         = VK_CULL_MODE_NONE;
         vecDesc.topology         = VK_PRIMITIVE_TOPOLOGY_LINE_LIST;
         vecDesc.depthWriteEnable = false;
+        vecDesc.depthTestEnable  = false; // always on top of biprism (2026-04-22)
 
         m_debugVectorsPipeline = m_resourceManager->CreatePipeline( vecDesc );
         if( !m_debugVectorsPipeline.IsValid() )
@@ -290,12 +295,18 @@ namespace DigitalTwin
             cmd->SetPipeline( vPipe );
             cmd->SetBindingGroup( vBg, vPipe->GetLayout(), VK_PIPELINE_BIND_POINT_GRAPHICS );
 
-            // Phase 2.6.5.c.2 Step D — push `{ drawIdOffset, debugFlags }`.
+            // Phase 2.6.5.c.2 Step D + 4a.g — push `{ drawIdOffset, debugFlags, thickness }`.
             // VS forwards `debugFlags` to the frag shader via a flat varying;
-            // 0 means "no debug overlay, render normally" and is bit-identical
-            // to the pre-Step-D output.
-            struct VoronoiPushConstants { uint32_t drawIdOffset; uint32_t debugFlags; };
-            VoronoiPushConstants pushConst{ staticDrawCount, scene->debugFlags };
+            // 0 means "no debug overlay, render normally." `thickness` drives the
+            // biprism extrusion amount (±half along the cell's outward normal);
+            // 0.15 matches the physics rhombus-hull thickness (Phase 2.4.5
+            // CreateRhombus thickness=0.2 scaled slightly down for visual fit).
+            struct VoronoiPushConstants {
+                uint32_t drawIdOffset;
+                uint32_t debugFlags;
+                float    thickness;
+            };
+            VoronoiPushConstants pushConst{ staticDrawCount, scene->debugFlags, 0.15f };
             cmd->PushConstants( vPipe->GetLayout(), VK_SHADER_STAGE_VERTEX_BIT, 0,
                                 sizeof( VoronoiPushConstants ), &pushConst );
 

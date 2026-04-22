@@ -42,11 +42,13 @@ layout(std430, set = 0, binding = 6) readonly buffer Orientations {
 } orientations;
 
 struct CellPolygon {
-    uint count;
-    uint pad0;
-    uint pad1;
-    uint pad2;
-    vec4 vertices[12];
+    uint  count;
+    // Phase 2.6.5.c.2 Step 4a.g — outward normal (radialOut) written by the
+    // compute shader; used to extrude the polygon ±thickness/2 for 3D biprism.
+    float normal_x;
+    float normal_y;
+    float normal_z;
+    vec4  vertices[12];
 };
 layout(std430, set = 0, binding = 7) readonly buffer Polygons {
     CellPolygon data[];
@@ -70,8 +72,9 @@ layout(std430, set = 0, binding = 8) readonly buffer SurfaceInfo {
 // Bit 0 = wireframe outline, bit 1 = vertex-count tint. Zero = normal
 // rendering (bit-identical to pre-Step-D output).
 layout(push_constant) uniform PushConstants {
-    uint drawIdOffset;
-    uint debugFlags;
+    uint  drawIdOffset;
+    uint  debugFlags;
+    float thickness;       // Phase 2.6.5.c.2 Step 4a.g — biprism extrusion amount
 } pc;
 
 layout(location = 0) out vec3 outNormal;
@@ -94,72 +97,151 @@ void main() {
     vec3        cellCenter = agents[agentIdx].position.xyz;
     CellPolygon poly       = polygons.data[agentIdx];
 
-    // Fan triangulation layout: MAX_POLY_VERTS triangles, 3 vertices each.
-    //   triangle i:
-    //     vert 0 = cell centre
-    //     vert 1 = polygon.vertices[i]
-    //     vert 2 = polygon.vertices[(i+1) % count]
-    // If i ≥ count (polygon has fewer vertices than MAX_POLY_VERTS) the
-    // triangle collapses to the cell centre → zero-area → rasterizer-discarded.
+    // Phase 2.6.5.c.2 Step 4a.g — BIPRISM triangulation: 48 triangles per cell
+    // = 144 indices total, laid out as:
+    //   triangleId [0,  12): TOP fan         — perimeter + centre, +thickness/2
+    //   triangleId [12, 24): BOTTOM fan      — perimeter + centre, -thickness/2 (flipped winding)
+    //   triangleId [24, 48): SIDE quads      — 12 quads × 2 triangles, connecting top and bottom
+    //
+    // Unused slots (sub-index ≥ poly.count) collapse to cell centre → zero-area
+    // triangle → rasterizer discards at no fill-rate cost.
+    //
+    // Phase 2.6.5.c.2 Step 4a.h — perimeter vertex inflation. Each polygon
+    // vertex is pushed 8 % outward from the cell centre so adjacent cells
+    // overlap slightly at shared edges. Closes the visible gaps between
+    // flow-aligned rhomboids at diagonal junctions under ±15% placeJitter.
+    // Applied in the VS only (not the compute shader) so the raw polygon
+    // buffer stays bit-identical for tests that assert exact vertex positions.
+    // The biprism body conceals the per-cell overlap region inside the shell.
+    const float kInflate = 1.08;
+    vec3  biprismNormal = normalize(vec3(poly.normal_x, poly.normal_y, poly.normal_z));
+    float halfThickness = pc.thickness * 0.5;
+    vec3  topOffset     = +halfThickness * biprismNormal;
+    vec3  botOffset     = -halfThickness * biprismNormal;
+
     uint triangleId = gl_VertexIndex / 3u;
     uint vertInTri  = gl_VertexIndex % 3u;
 
     vec3 worldPos;
-    if (poly.count < 3u || triangleId >= poly.count) {
+    vec3 vertexNormal = biprismNormal; // default; overridden per region
+    bool isFanCenter  = false;
+    bool isDegenerate = (poly.count < 3u);
+
+    if (isDegenerate) {
+        // Polygon has too few vertices — collapse entire biprism to cell centre.
         worldPos = cellCenter;
-    } else if (vertInTri == 0u) {
-        worldPos = cellCenter;
-    } else if (vertInTri == 1u) {
-        worldPos = poly.vertices[triangleId].xyz;
-    } else {
-        uint nextIdx = (triangleId + 1u) % poly.count;
-        worldPos = poly.vertices[nextIdx].xyz;
+    }
+    else if (triangleId < MAX_POLY_VERTS) {
+        // --- TOP FAN ---
+        uint subTri = triangleId;
+        if (subTri >= poly.count) {
+            worldPos = cellCenter + topOffset;
+        } else if (vertInTri == 0u) {
+            worldPos     = cellCenter + topOffset;
+            isFanCenter  = true;
+        } else if (vertInTri == 1u) {
+            vec3 pv  = cellCenter + (poly.vertices[subTri].xyz - cellCenter) * kInflate;
+            worldPos = pv + topOffset;
+        } else {
+            uint nextIdx = (subTri + 1u) % poly.count;
+            vec3 pv  = cellCenter + (poly.vertices[nextIdx].xyz - cellCenter) * kInflate;
+            worldPos = pv + topOffset;
+        }
+        vertexNormal = biprismNormal;
+    }
+    else if (triangleId < 2u * MAX_POLY_VERTS) {
+        // --- BOTTOM FAN --- (flip winding order so the bottom faces outward)
+        uint subTri = triangleId - MAX_POLY_VERTS;
+        if (subTri >= poly.count) {
+            worldPos = cellCenter + botOffset;
+        } else if (vertInTri == 0u) {
+            worldPos    = cellCenter + botOffset;
+            isFanCenter = true;
+        } else if (vertInTri == 1u) {
+            // Swapped with vertInTri==2 to flip the winding (vs top fan).
+            uint nextIdx = (subTri + 1u) % poly.count;
+            vec3 pv  = cellCenter + (poly.vertices[nextIdx].xyz - cellCenter) * kInflate;
+            worldPos = pv + botOffset;
+        } else {
+            vec3 pv  = cellCenter + (poly.vertices[subTri].xyz - cellCenter) * kInflate;
+            worldPos = pv + botOffset;
+        }
+        vertexNormal = -biprismNormal;
+    }
+    else {
+        // --- SIDE QUADS --- 24 triangles total (2 per quad, 12 quads).
+        uint quadTriId = triangleId - 2u * MAX_POLY_VERTS;
+        uint quadId    = quadTriId / 2u;
+        uint triInQuad = quadTriId % 2u;
+
+        if (quadId >= poly.count) {
+            worldPos = cellCenter;
+        } else {
+            uint nextIdx = (quadId + 1u) % poly.count;
+            vec3 pvCurr  = cellCenter + (poly.vertices[quadId].xyz  - cellCenter) * kInflate;
+            vec3 pvNext  = cellCenter + (poly.vertices[nextIdx].xyz - cellCenter) * kInflate;
+            vec3 vTop    = pvCurr + topOffset;
+            vec3 vNxtTop = pvNext + topOffset;
+            vec3 vBot    = pvCurr + botOffset;
+            vec3 vNxtBot = pvNext + botOffset;
+
+            // Quad vertices laid out CCW when viewed from outside:
+            //   vBot → vNxtBot → vNxtTop → vTop  (going around)
+            // Split into 2 triangles:
+            //   Tri 0: vBot,    vNxtBot, vNxtTop
+            //   Tri 1: vBot,    vNxtTop, vTop
+            if (triInQuad == 0u) {
+                if      (vertInTri == 0u) worldPos = vBot;
+                else if (vertInTri == 1u) worldPos = vNxtBot;
+                else                      worldPos = vNxtTop;
+            } else {
+                if      (vertInTri == 0u) worldPos = vBot;
+                else if (vertInTri == 1u) worldPos = vNxtTop;
+                else                      worldPos = vTop;
+            }
+
+            // Side-face outward normal: perpendicular to the edge, tangent to
+            // the surface, pointing away from cell centre. Approximated as the
+            // in-tangent-plane projection of (edgeMidpoint - cellCenter).
+            vec3 edgeMid = 0.5 * (poly.vertices[quadId].xyz + poly.vertices[nextIdx].xyz);
+            vec3 outward = edgeMid - cellCenter;
+            outward      = outward - dot(outward, biprismNormal) * biprismNormal;
+            float oLen   = length(outward);
+            vertexNormal = (oLen > 1e-4) ? (outward / oLen) : biprismNormal;
+        }
     }
 
     gl_Position = camera.viewProj * vec4(worldPos, 1.0);
 
-    // Outward normal — per-vertex, NOT per-cell. For cell-center fan vertex the
-    // normal is the cell's radialOut (identical to the old per-cell behaviour).
-    // For polygon vertices we compute the true cylinder-surface normal.
-    //
-    // The cylinder axis is a LINE (through `cellCenter - R·radialOut` in the
-    // `tangentX` direction), not a point. For a vertex with axial offset u from
-    // the cell, the closest axis point slides along `tangentX` by that same u.
-    // A naïve `normalize(worldPos - fixedAxisPoint)` treats the axis as a point
-    // and mixes an axial component into the normal — exactly the error that
-    // made the camera-facing side look hourglass-pinched in earlier screenshots
-    // (the tilted normals fought the lighting direction along the tube axis).
-    //
-    //   axisPoint_fixed = cellCenter - R · radialOut          // at cell's axial coord
-    //   axialOffset     = (worldPos - axisPoint_fixed) · tangentX
-    //   axisPoint_local = axisPoint_fixed + axialOffset · tangentX
-    //   normal          = normalize(worldPos - axisPoint_local)
-    //
-    // With the axis projected properly, pure-axial offsets produce a normal
-    // equal to radialOut (correct for a cylinder — normal has no axial
-    // component), and pure-circumferential offsets produce the rotated
-    // `cos(θ)·radialOut + sin(θ)·tangentZ`. Adjacent cells sharing an edge
-    // still agree on the normal → smooth shading across cell boundaries.
-    vec4 orient = orientations.data[agentIdx];
-    vec3 radialOut;
-    if (abs(orient.w) > 0.001) {
-        radialOut = qrot(orient, vec3(0.0, 1.0, 0.0));
-    } else if (length(orient.xyz) > 0.5) {
-        radialOut = normalize(orient.xyz);
-    } else {
-        radialOut = vec3(0.0, 1.0, 0.0);
-    }
+    // Phase 2.6.5.c.2 Step 4a.g — biprism per-region normals.
+    // Top-fan perimeter vertices get the TRUE cylinder-surface outward normal
+    // (computed by projecting onto the cell's local axis) for smooth shading
+    // across cell boundaries. Top-fan CENTRE vertex, bottom-fan vertices, and
+    // side-quad vertices use the region-specific `vertexNormal` already set
+    // above (biprismNormal, -biprismNormal, or tangent-outward respectively).
+    float surfaceRadius = surfaceInfo.data[agentIdx * 2u].x; // extended SurfaceInfo layout
+    bool  isTopFanPerim = (triangleId < MAX_POLY_VERTS)
+                          && !isFanCenter && !isDegenerate
+                          && (triangleId < poly.count);
 
-    float surfaceRadius = surfaceInfo.data[agentIdx].x;
-    bool  isFanCenter   = (vertInTri == 0u) || (poly.count < 3u) || (triangleId >= poly.count);
-    if (surfaceRadius > 0.0 && !isFanCenter) {
-        vec3  tangentX    = qrot(orient, vec3(1.0, 0.0, 0.0));
-        vec3  axisRef     = cellCenter - surfaceRadius * radialOut;
+    if (surfaceRadius > 0.0 && isTopFanPerim) {
+        // Use cell's orientation to get the local tangent axis; then project
+        // the vertex onto the cylinder's axis line to get the exact outward
+        // direction. Prevents the "hourglass pinched middle" seam artefact
+        // documented in prior sessions.
+        vec4 orient = orientations.data[agentIdx];
+        vec3 tangentX;
+        if (abs(orient.w) > 0.001) {
+            tangentX = qrot(orient, vec3(1.0, 0.0, 0.0));
+        } else {
+            tangentX = vec3(1.0, 0.0, 0.0);
+        }
+        vec3  axisRef     = cellCenter - surfaceRadius * biprismNormal;
         float axialOffset = dot(worldPos - axisRef, tangentX);
         vec3  axisPoint   = axisRef + axialOffset * tangentX;
-        outNormal = normalize(worldPos - axisPoint);
+        outNormal         = normalize(worldPos - axisPoint);
     } else {
-        outNormal = radialOut;
+        outNormal = vertexNormal;
     }
 
     // Phase 2.6.5.c.2 Step D — per-vertex barycentric coordinate. The

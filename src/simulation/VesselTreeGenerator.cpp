@@ -104,6 +104,7 @@ namespace DigitalTwin
     VesselTreeGenerator& VesselTreeGenerator::SetECCircumferentialWidth( float v ) { m_ecCircWidth = std::max( 1e-4f, v ); return *this; }
     VesselTreeGenerator& VesselTreeGenerator::SetCellAspectRatio( float v )        { m_cellAspect = std::max( 1e-4f, v ); return *this; }
     VesselTreeGenerator& VesselTreeGenerator::SetCellSpacingFactor( float v )      { m_cellSpacingFactor = std::max( 1e-4f, v ); return *this; }
+    VesselTreeGenerator& VesselTreeGenerator::SetRingSizeJitter( int v )            { m_ringSizeJitter    = std::max( 0, v );      return *this; }
     VesselTreeGenerator& VesselTreeGenerator::SetTubeRadiusEnd( float v )          { m_tubeRadiusEnd = v; return *this; }
     VesselTreeGenerator& VesselTreeGenerator::SetStoneWalesAtTaperTransitions( bool v ) { m_stoneWalesAtTaperTransitions = v; return *this; }
 
@@ -177,6 +178,25 @@ namespace DigitalTwin
         std::vector<uint32_t> ringSizes( numRings );
         for( uint32_t r = 0; r < numRings; ++r )
             ringSizes[ r ] = ringSizeFor( ringRadiusAt( r ) );
+
+        // Phase 2.6.5.c.2 Step 2 — ring-size jitter for biological irregularity.
+        // Chiu & Chien 2011: real endothelial monolayers have non-uniform ring
+        // cell counts along a tube, not a smooth analytical formula. Apply a
+        // deterministic ±maxDelta jitter per ring, clamped to the Bär 1984
+        // dual-seam minimum (2 cells). Rings at ringSize ≤ 3 (capillary scale)
+        // are skipped — they're already at the floor, jittering would collapse
+        // topology below biological minimum.
+        if( m_ringSizeJitter > 0 )
+        {
+            std::uniform_int_distribution<int> ringJitter( -m_ringSizeJitter, m_ringSizeJitter );
+            for( uint32_t r = 0; r < numRings; ++r )
+            {
+                if( ringSizes[ r ] <= 3u ) continue; // preserve dual-seam capillary rings
+                int delta           = ringJitter( m_rng );
+                int target          = static_cast<int>( ringSizes[ r ] ) + delta;
+                ringSizes[ r ]      = static_cast<uint32_t>( std::max( 2, target ) );
+            }
+        }
 
         // Assign morphology indices per (ring, cellInRing) position.  Default 0 = elongated
         // rhomboid (Phase 2.3); at each ring-count transition, Stone-Wales 5/7 defect pairs
@@ -281,12 +301,30 @@ namespace DigitalTwin
         std::vector<uint32_t>  ringStartIdx( numRings );
         std::vector<glm::vec3> ringCenters( numRings );
 
-        // Tiny positional jitter (~1% of cell spacing) breaks the perfect mathematical
-        // ring symmetry that would otherwise trigger a coherent radial-breathing mode
-        // under the JKR stiffness — all cells equally off-equilibrium in the same
-        // direction cannot settle independently and instead oscillate in phase.
-        // Biologically defensible: real endothelium is not geometrically exact.
-        std::uniform_real_distribution<float> placeJitter( -0.01f, 0.01f );
+        // Phase 2.6.5.c.2 Step 2 — split positional jitter into radial and
+        // circumferential components (2026-04-22 user feedback — large radial
+        // jitter made cells visibly push inside/outside the tube wall, creating
+        // gaps between the biprism shells of neighbouring cells).
+        //
+        //   RADIAL  ±5 %  — just large enough to break the coherent radial-
+        //                   breathing mode under JKR stiffness. Biologically
+        //                   ECs sit ON the basement membrane, so real radial
+        //                   variance is tiny (thickness-scale, not width-scale).
+        //   CIRCUM  ±15 % — matches Chiu & Chien 2011 in-vivo EC in-ring
+        //                   position variance. Generates the visually-organic
+        //                   irregular-tile pattern we want.
+        //
+        // Together with `sizeScale` uniform(0.85, 1.15), the three sources of
+        // variation capture the biology without pulling cells off the cylinder
+        // surface. RTS soft-falloff centroid snap closes residual gaps; biprism
+        // side faces hide any remaining sub-pixel misalignment.
+        std::uniform_real_distribution<float> placeJitterRadial( -0.05f, 0.05f );
+        std::uniform_real_distribution<float> placeJitterCircum( -0.15f, 0.15f );
+
+        // Phase 2.6.5.c.2 Step 2 — per-cell visual size jitter, uniform in [0.85, 1.15]
+        // matching the observed ±15% cell-area variance. Applied at render time only
+        // via SurfaceInfo.y; physics hull (CreateRhombus) stays at the group-level size.
+        std::uniform_real_distribution<float> sizeScaleJitter( 0.85f, 1.15f );
 
         // ---- Place cells ring by ring ----
         for( uint32_t r = 0; r < numRings; ++r )
@@ -323,9 +361,10 @@ namespace DigitalTwin
                 // Per-cell symmetry-breaking jitter on the (radial, circumferential) basis.
                 // Axial jitter omitted — the coherent breathing mode is radial/circumferential
                 // and axial jitter would disperse the rings, breaking tests that group cells
-                // by exact axial position.
-                float jitterR = placeJitter( m_rng ) * localRadius;
-                float jitterC = placeJitter( m_rng ) * m_ecCircWidth;
+                // by exact axial position. Radial uses the tight ±5% distribution; circum
+                // uses the ±15% distribution (see the two `placeJitter*` distributions above).
+                float jitterR = placeJitterRadial( m_rng ) * localRadius;
+                float jitterC = placeJitterCircum( m_rng ) * m_ecCircWidth;
                 glm::vec3 pos = ringCenter
                               + ( localRadius + jitterR ) * radial
                               + jitterC * circum;
@@ -351,6 +390,7 @@ namespace DigitalTwin
                 // RHT snap rule = midpoint(self, neighbour) takes precedence.
                 cell.axialStep       = axialStep;
                 cell.circumArc       = localRadius * dAngle;
+                cell.sizeScale       = sizeScaleJitter( m_rng ); // Phase 2.6.5.c.2 Step 2: ±15% visual area variance
                 result.cells.push_back( cell );
             }
 

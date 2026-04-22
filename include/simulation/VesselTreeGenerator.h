@@ -46,6 +46,15 @@ namespace DigitalTwin
         // this MUST be per-cell, not per-group.
         float     axialStep = 0.0f;
         float     circumArc = 0.0f;
+        // Phase 2.6.5.c.2 Step 2 — per-cell visual size jitter. Uniform(0.85, 1.15)
+        // by default (±15% variance matches Chiu & Chien 2011 in-vivo EC area
+        // distribution). The Voronoi compute shader multiplies `axialStep` and
+        // `circumArc` by this factor when computing template corners → rhomboid
+        // size varies cell to cell. Physics (JKR hull from CreateRhombus) is
+        // NOT affected — hull stays at group-level size. sizeScale = 1.0 means
+        // "no jitter", preserving bit-identical behaviour for tests that don't
+        // populate it.
+        float     sizeScale = 1.0f;
     };
 
     struct VesselTreeResult
@@ -114,6 +123,14 @@ namespace DigitalTwin
         // initial positions; the sub-sphere radii and hull dimensions are unchanged.
         VesselTreeGenerator& SetCellSpacingFactor( float factor );
 
+        // Phase 2.6.5.c.2 Step 2: per-ring cell-count jitter (±N cells). Matches the
+        // in-vivo observation (Chiu & Chien 2011) that real endothelium has irregular
+        // ring-size distribution, not perfectly uniform rings. Default 0 = no jitter
+        // (bit-identical to pre-Step-2 behaviour). Ring sizes are clamped to the
+        // Bär 1984 dual-seam minimum of 2, so capillary-scale rings (ringSize ≤ 3)
+        // are never jittered below the floor.
+        VesselTreeGenerator& SetRingSizeJitter( int maxDelta );
+
         // Phase 2.4: end-of-trunk tube radius for linear taper. When > 0 the trunk radius
         // is linearly interpolated from `tubeRadius` at the origin to `tubeRadiusEnd` at
         // the far end, producing axial ring-count transitions (e.g. arteriole → capillary).
@@ -176,7 +193,8 @@ namespace DigitalTwin
         uint32_t  m_seed             = 42;
         float     m_ecCircWidth      = 1.0f; // simulation-unit scale; arteriole-analogous default
         float     m_cellAspect       = 5.0f; // Davies 2009 arterial-EC flow alignment
-        float     m_cellSpacingFactor = 1.0f; // Phase 2.6.5.c.2 Step F — opt-in gap factor (demos set 1.1 explicitly to avoid JKR hull interpenetration)
+        float     m_cellSpacingFactor = 1.0f; // Phase 2.6.5.c.2 Step F — opt-in gap factor (demos set 1.25 explicitly to avoid JKR hull interpenetration)
+        int       m_ringSizeJitter    = 0;    // Phase 2.6.5.c.2 Step 2 — ±N cells per ring; 0 = uniform (bit-identical pre-Step-2)
         float     m_tubeRadiusEnd    = -1.0f; // Phase 2.4: trunk taper end radius; < 0 = no taper
         bool      m_stoneWalesAtTaperTransitions = false; // Phase 2.4.5: opt-in defect insertion for continuous taper
 

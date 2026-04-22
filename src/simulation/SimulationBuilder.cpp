@@ -275,8 +275,8 @@ namespace DigitalTwin
                 // patched below once the shared fan index range is appended
                 // and the static reorder slots are all allocated.
                 VkDrawIndexedIndirectCommand cmd{};
-                cmd.indexCount    = 36; // 12-triangle fan × 3 vertices
-                cmd.instanceCount = 0;  // filled by build_indirect.comp
+                cmd.indexCount    = 144; // biprism: 12 top + 12 bot + 24 side = 48 tris × 3
+                cmd.instanceCount = 0;   // filled by build_indirect.comp
                 cmd.firstIndex    = 0;  // patched
                 cmd.vertexOffset  = 0;
                 cmd.firstInstance = 0;  // patched
@@ -354,16 +354,18 @@ namespace DigitalTwin
             groupIdx++;
         }
 
-        // Phase 2.6.5.c — append the 12-triangle-fan index range to the shared
+        // Phase 2.6.5.c — append the biprism index range to the shared
         // index buffer, then emit the deferred dynamic-topology DrawMetas.
-        // Each dynamic draw reuses the SAME 36-index range (vertexOffset = 0
-        // means voronoi_fan.vert sees gl_VertexIndex in [0, 36) regardless of
-        // which cell it's rendering). Dynamic reorder slots come AFTER all
+        // Each dynamic draw reuses the SAME 144-index range (vertexOffset = 0
+        // means voronoi_fan.vert sees gl_VertexIndex in [0, 144) regardless of
+        // which cell it's rendering). The 144 indices correspond to 48 triangles
+        // = 12 top-fan + 12 bottom-fan + 24 side-quad triangles (Phase 2.6.5.c.2
+        // Step 4a.g biprism extrusion). Dynamic reorder slots come AFTER all
         // static slots — no reordering of existing reorder-buffer layout.
         if( !dynamicDraws.empty() )
         {
             uint32_t voronoiFanIndexStart = static_cast<uint32_t>( megaIndices.size() );
-            for( uint32_t i = 0; i < 36; ++i )
+            for( uint32_t i = 0; i < 144; ++i )
                 megaIndices.push_back( i );
 
             for( auto& d : dynamicDraws )

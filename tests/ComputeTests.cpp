@@ -946,10 +946,14 @@ TEST_F( ComputeTest, Shader_NeighborList_CountClamp )
 namespace
 {
     // CPU mirror of the GPU CellPolygon struct (208 bytes, 16-byte aligned).
+    // Phase 2.6.5.c.2 Step 4a.g — the 12 bytes after `count` carry the cell's
+    // outward normal (xyz of radialOut) for biprism extrusion in the VS.
     struct CellPolygonCPU
     {
         uint32_t  count;
-        uint32_t  _pad[ 3 ];
+        float     normal_x;
+        float     normal_y;
+        float     normal_z;
         glm::vec4 vertices[ 12 ];
     };
     static_assert( sizeof( CellPolygonCPU ) == 208, "CellPolygonCPU must match GPU stride" );
@@ -1450,6 +1454,59 @@ TEST_F( ComputeTest, Shader_Voronoi_RHT_IsolatedCellFallsBackToTemplate )
     EXPECT_TRUE( contains( p, glm::vec3( -2.0f, 0.0f,  0.0f ), 5e-3f ) ) << "missing axial-back tip at (-axialStep, 0)";
     EXPECT_TRUE( contains( p, glm::vec3(  0.0f, 0.0f, +0.5f ), 5e-3f ) ) << "missing circum-right tip at (0, +circumArc/2)";
     EXPECT_TRUE( contains( p, glm::vec3(  0.0f, 0.0f, -0.5f ), 5e-3f ) ) << "missing circum-left tip at (0, -circumArc/2)";
+}
+
+// Phase 2.6.5.c.2 Step 2 — sizeScale multiplies the rhombus template extents.
+// Two isolated cells with identical axialStep/circumArc but different sizeScale
+// should produce rhombuses whose axial extents are exactly proportional. Isolates
+// the Step 2 shader multiply from other RTS machinery.
+TEST_F( ComputeTest, Shader_Voronoi_SizeScale_ScalesTemplate )
+{
+    if( !m_device ) GTEST_SKIP();
+
+    // 2 isolated cells, far apart so each has empty neighbour list.
+    std::vector<glm::vec4> agents = {
+        glm::vec4(    0.0f, 0.0f, 0.0f, 1.0f ),
+        glm::vec4( 1000.0f, 0.0f, 0.0f, 1.0f ),
+    };
+    std::vector<std::vector<uint32_t>> lists = { {}, {} };
+
+    const float kAxialStep = 2.0f;
+    const float kCircumArc = 1.0f;
+    const float kScale0    = 1.0f;
+    const float kScale1    = 1.2f;   // 20 % larger than cell 0
+
+    std::vector<glm::vec4> surfaceInfo = {
+        glm::vec4( 10000.0f, kScale0, 0.0f, kAxialStep ),
+        glm::vec4( kCircumArc, 0.0f, 0.0f, 0.0f ),
+        glm::vec4( 10000.0f, kScale1, 0.0f, kAxialStep ),
+        glm::vec4( kCircumArc, 0.0f, 0.0f, 0.0f ),
+    };
+
+    auto result = DispatchVoronoiPolygon( *m_device, *m_rm, *m_stream,
+                                          agents, {}, lists, 0.75f, surfaceInfo );
+
+    ASSERT_EQ( result.polygons[ 0 ].count, 4u );
+    ASSERT_EQ( result.polygons[ 1 ].count, 4u );
+
+    auto maxAxialExtent = []( const CellPolygonCPU& p, glm::vec3 cellPos ) {
+        float best = 0.0f;
+        for( uint32_t k = 0; k < p.count; ++k )
+        {
+            float dx = std::fabs( p.vertices[ k ].x - cellPos.x );
+            if( dx > best ) best = dx;
+        }
+        return best;
+    };
+    float ext0 = maxAxialExtent( result.polygons[ 0 ], glm::vec3( agents[ 0 ] ) );
+    float ext1 = maxAxialExtent( result.polygons[ 1 ], glm::vec3( agents[ 1 ] ) );
+
+    // Cell 0 expected axialStep·kScale0 = 2.0 × 1.0 = 2.0.
+    // Cell 1 expected axialStep·kScale1 = 2.0 × 1.2 = 2.4.
+    EXPECT_NEAR( ext0, kAxialStep * kScale0, 5e-3f ) << "cell 0 axial extent mismatch";
+    EXPECT_NEAR( ext1, kAxialStep * kScale1, 5e-3f ) << "cell 1 axial extent mismatch";
+    EXPECT_NEAR( ext1 / ext0, kScale1 / kScale0, 1e-3f )
+        << "sizeScale ratio not preserved between cells";
 }
 
 // Phase 2.6.5.c.2 Step 4a — (f'''') Two vessel cells across a tapered-ring

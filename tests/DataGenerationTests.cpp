@@ -8,6 +8,7 @@
 #include <glm/gtc/quaternion.hpp>
 #include <algorithm>
 #include <cmath>
+#include <map>
 #include <numeric>
 
 using namespace DigitalTwin;
@@ -695,8 +696,16 @@ TEST( VesselTreeGeneratorTest, StaggeredBricks_OddRingOffset )
     float       diff     = std::fabs( ring1[ 0 ] - ring0[ 0 ] );
     diff                 = std::fmod( diff, dAngle ); // wrap into [0, dAngle)
     if( diff > dAngle * 0.5f ) diff = dAngle - diff;
-    EXPECT_NEAR( diff, expected, dAngle * 0.1f )
-        << "Ring 1 must be offset by half a cell-width circumferentially";
+
+    // Tolerance budget: per-cell circumferential jitter ±0.15·ecWidth (Phase 2.6.5.c.2
+    // Step 2, bumped from ±1%) → ±(0.15·ecWidth/tubeRadius) rad per cell; 2 cells'
+    // independent jitter sums to a 2× budget. Floor at dAngle·0.1 for small-jitter
+    // configurations (e.g., with SetPlaceJitter API in future).
+    const float circJitterMag = 0.15f * ecWidth;
+    const float jitterAngular = circJitterMag / tubeRadius;
+    const float tolerance     = std::max( dAngle * 0.1f, 2.0f * jitterAngular );
+    EXPECT_NEAR( diff, expected, tolerance )
+        << "Ring 1 must be offset by half a cell-width circumferentially (±15% placeJitter budget from Step 2)";
 }
 
 // Orientation quaternion: applying it to local +Y must produce the world radial-outward
@@ -1462,4 +1471,112 @@ TEST( VesselTreeGeneratorTest, DesignedVessel_HasDualSeamCapillaryTips )
            "time. Floor relaxed from 0.3 → 0.1 to allow the observed ~0.29 between sibling-L3 "
            "carina cells at tight junctions (children separated by 2·axialStep·sin(angle/2), "
            "minus their carina-side radial offsets — pulls close at deep Murray-0.5 levels).";
+}
+
+// Phase 2.6.5.c.2 Step 2 — ring-size jitter respects the Bär 1984 dual-seam minimum
+// (2 cells per ring). Generate a moderately-long tube with jitter ±1; iterate cells,
+// group by axial position (approximately by ring), assert every ring has ≥ 2 cells.
+TEST( VesselTreeGeneratorTest, RingSizeJitter_RespectsMinimum )
+{
+    auto tree = VesselTreeGenerator::BranchingTree()
+                    .SetOrigin( { 0.0f, 0.0f, 0.0f } ).SetDirection( { 1, 0, 0 } )
+                    .SetLength( 20.0f ).SetTubeRadius( 1.5f )
+                    .SetECCircumferentialWidth( 1.0f ).SetCellAspectRatio( 1.5f )
+                    .SetBranchingDepth( 0 ).SetRingSizeJitter( 1 )
+                    .SetSeed( 7 )
+                    .Build();
+
+    ASSERT_GT( tree.totalCells, 0u );
+
+    // Group cells by approximate axial position (within one axialStep = 1.5).
+    std::map<int, uint32_t> cellsPerRing;
+    for( const auto& c : tree.cells )
+    {
+        int ringIdx = static_cast<int>( std::round( c.position.x / 1.5f ) );
+        cellsPerRing[ ringIdx ]++;
+    }
+
+    for( const auto& [ring, count] : cellsPerRing )
+    {
+        EXPECT_GE( count, 2u )
+            << "Ring " << ring << " has " << count
+            << " cells — below Bär 1984 dual-seam minimum of 2";
+    }
+}
+
+// Phase 2.6.5.c.2 Step 2 — placement jitter magnitude matches the ±15% target
+// (bumped from ±1%). Assert observed positional offsets from ideal ring position
+// stay within the documented bound (0.15 × localRadius for radial, 0.15 × ecWidth
+// for circumferential). Uses a straight tube of known radius so the ideal position
+// is simply `R = tubeRadius` along the radial axis from the ring centre.
+TEST( VesselTreeGeneratorTest, PlaceJitter_Magnitude )
+{
+    const float kTubeRadius = 2.0f;
+    const float kEcWidth    = 1.0f;
+
+    auto tree = VesselTreeGenerator::BranchingTree()
+                    .SetOrigin( { 0.0f, 0.0f, 0.0f } ).SetDirection( { 1, 0, 0 } )
+                    .SetLength( 15.0f ).SetTubeRadius( kTubeRadius )
+                    .SetECCircumferentialWidth( kEcWidth ).SetCellAspectRatio( 1.5f )
+                    .SetBranchingDepth( 0 ).SetSeed( 42 )
+                    .Build();
+
+    ASSERT_GT( tree.totalCells, 0u );
+
+    // For each cell, measure its radial distance from the tube axis (at y=z=0).
+    // Phase 2.6.5.c.2 Step 2 (2026-04-22 revision) — radial bound is ±5 % of
+    // kTubeRadius (tightened from ±15 % so cells stay near the cylinder
+    // surface and biprism shells don't leave gaps between inward/outward cells).
+    // Circumferential jitter stays at ±15 % (checked by `StaggeredBricks_OddRingOffset`).
+    const float kRadialTolerance = 0.05f * kTubeRadius + 1e-3f;
+    float maxRadialDeviation = 0.0f;
+    for( const auto& c : tree.cells )
+    {
+        glm::vec3 pos    = glm::vec3( c.position );
+        float     rAxis  = std::sqrt( pos.y * pos.y + pos.z * pos.z );
+        float     devAbs = std::fabs( rAxis - kTubeRadius );
+        if( devAbs > maxRadialDeviation ) maxRadialDeviation = devAbs;
+    }
+
+    EXPECT_LE( maxRadialDeviation, kRadialTolerance )
+        << "Radial jitter exceeded ±5 % bound: observed deviation " << maxRadialDeviation
+        << " vs tolerance " << kRadialTolerance << " at tubeRadius=" << kTubeRadius;
+
+    // Also assert the jitter is actually active (not stuck at old ±1%) — at least one
+    // cell should deviate by more than 1% of tubeRadius (otherwise the bump didn't take effect).
+    const float kMinDev = 0.01f * kTubeRadius;
+    EXPECT_GT( maxRadialDeviation, kMinDev )
+        << "Radial jitter stuck below 1% — Step 2 bump may not be active";
+}
+
+// Phase 2.6.5.c.2 Step 2 — per-cell sizeScale is populated in [0.85, 1.15]. Emit a
+// moderate-size tree and verify the distribution of sizeScale lies within bounds
+// AND has spread (not all stuck at 1.0).
+TEST( VesselTreeGeneratorTest, SizeScale_PopulatedInExpectedRange )
+{
+    auto tree = VesselTreeGenerator::BranchingTree()
+                    .SetOrigin( { 0.0f, 0.0f, 0.0f } ).SetDirection( { 1, 0, 0 } )
+                    .SetLength( 20.0f ).SetTubeRadius( 2.0f )
+                    .SetECCircumferentialWidth( 1.0f ).SetCellAspectRatio( 1.5f )
+                    .SetBranchingDepth( 0 ).SetSeed( 123 )
+                    .Build();
+
+    ASSERT_GT( tree.totalCells, 10u );
+
+    float minScale = 2.0f, maxScale = 0.0f, sumScale = 0.0f;
+    for( const auto& c : tree.cells )
+    {
+        if( c.sizeScale < minScale ) minScale = c.sizeScale;
+        if( c.sizeScale > maxScale ) maxScale = c.sizeScale;
+        sumScale += c.sizeScale;
+    }
+    float meanScale = sumScale / static_cast<float>( tree.totalCells );
+
+    // Bounds [0.85, 1.15] per uniform distribution.
+    EXPECT_GE( minScale, 0.85f - 1e-5f ) << "sizeScale below 0.85 lower bound";
+    EXPECT_LE( maxScale, 1.15f + 1e-5f ) << "sizeScale above 1.15 upper bound";
+    // Mean should be near 1.0 (uniform midpoint); loose tolerance for small sample.
+    EXPECT_NEAR( meanScale, 1.0f, 0.05f ) << "sizeScale mean drifted from 1.0";
+    // Spread check: distribution should span at least 0.1 of the range.
+    EXPECT_GT( maxScale - minScale, 0.1f ) << "sizeScale distribution has no spread";
 }

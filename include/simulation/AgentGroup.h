@@ -184,7 +184,7 @@ namespace DigitalTwin
                 // axialStep/circumArc: Step 4a template-fallback extents when a target corner
                 //                      direction has no neighbour in its ±45° cone.
                 const float isCarinaF = ( c.isCarina != 0u ) ? 1.0f : 0.0f;
-                m_initialSurfaceInfo.push_back( glm::vec4( c.surfaceRadius, 1.0f, isCarinaF, c.axialStep ) );
+                m_initialSurfaceInfo.push_back( glm::vec4( c.surfaceRadius, c.sizeScale, isCarinaF, c.axialStep ) );
                 m_initialSurfaceInfo.push_back( glm::vec4( c.circumArc, 0.0f, 0.0f, 0.0f ) );
             }
             return *this;

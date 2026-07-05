@@ -1,0 +1,202 @@
+#version 460
+layout(local_size_x = 256) in;
+
+// Antigen-specific cytotoxic killing (CD8+ T cell / CTL effector function).
+//
+// Only ImmuneCell (cellType == 5) invocations scan; for each TumorCell
+// (cellType == 4) neighbour within contactDistance whose presentedAntigens
+// shares a bit with this killer's recognizedAntigens, a continuous kill rate
+// is converted to a per-frame Poisson probability and rolled. A mismatched
+// target (no shared antigen bit) is never killed — this is what lets an
+// antigen-loss tumour subclone escape a cytotoxic response that clears the
+// matched subclone. See Behaviours::AntigenKilling / AntigenExpression.
+//
+// Neighbour-search skeleton mirrors anastomosis.comp (27-cell spatial hash).
+// Unlike anastomosis, the killer's OWN state is never mutated, so (unlike
+// that shader) this one does not return after the first match — a single
+// killer may kill several matched neighbours within its contact radius in
+// one dispatch.
+//
+// Each kill also releases cytokine at the KILLER's own voxel (interaction-
+// delta injection, same fixed-point convention as perfusion.comp) and raises
+// the killer's activation. cytokineField binding follows the NotchDll4 VEGF
+// convention: gridSize.w = 1 when a real field is bound, 0 → skip (dummy
+// 1-element delta buffer / texture still bound so the descriptor is always
+// valid).
+//
+// Feedback (Step 1.4): local cytokine at the killer's own voxel is sampled
+// from the field's READ texture (binding 7) and scales killProbPerSec by
+// (1 + cytokineFeedbackGain * cytokine) -- more inflammation locally, more
+// killing, more cytokine released. This positive loop is what produces an
+// emergent storm; the field's own decayRate (authored on the GridField, not
+// here) is the brake.
+
+layout(push_constant) uniform PushConstants {
+    float dt;
+    float totalTime;
+    float contactDistance;        // fParam0
+    float killProbPerSec;         // fParam1
+    float startTime;              // fParam2 — vaccine gate; behaviour is inert before this sim-time
+    float cytokineReleasePerKill; // fParam3 — fixed quantity injected per kill event (not a rate)
+    float cytokineFeedbackGain;   // fParam4 — scales killProbPerSec by (1 + gain * local cytokine)
+    float fParam5;
+    uint  offset;
+    uint  maxCapacity;
+    uint  offsetArraySize;  // uParam0 — hash grid slot count
+    uint  grpNdx;           // uParam1 — killer's group index for agent count lookup
+    vec4  domainSize;       // .xyz = domain, .w = spatial hash cell size
+    uvec4 gridSize;         // .xyz = cytokine field voxel dims, .w = 1 if a field is bound
+} pc;
+
+layout(std140, binding = 0) readonly buffer InputAgents { vec4 positions[]; } agents;
+
+struct PhenotypeData {
+    uint  lifecycleState;
+    float biomass;
+    float timer;
+    uint  cellType;
+};
+layout(std430, binding = 1) coherent buffer Phenotypes { PhenotypeData data[]; } phenotypes;
+
+struct AgentHash { uint hash; uint agentIndex; };
+layout(std430, binding = 2) readonly buffer Hashes  { AgentHash data[]; } sortedHashes;
+layout(std430, binding = 3) readonly buffer Offsets { uint startIndices[]; } cellOffsets;
+layout(std430, binding = 4) readonly buffer CounterBuffer { uint counts[]; } counters;
+
+struct ImmuneStateData {
+    uint  presentedAntigens;
+    uint  recognizedAntigens;
+    float activation;
+    float pad;
+};
+layout(std430, binding = 5) buffer ImmuneState { ImmuneStateData data[]; } immuneState;
+
+layout(std430, binding = 6) buffer CytokineDelta { int deltas[]; } cytokine;
+
+layout(set = 0, binding = 7, r32f) uniform readonly image3D u_Cytokine;
+
+uint hashPos(ivec3 cell) {
+    const uint p1 = 73856093; const uint p2 = 19349663; const uint p3 = 83492791;
+    return (uint(cell.x) * p1) ^ (uint(cell.y) * p2) ^ (uint(cell.z) * p3);
+}
+
+uint pcg_hash(uint seed) {
+    uint state = seed * 747796405u + 2891336453u;
+    uint word  = ((state >> ((state >> 28u) + 4u)) ^ state) * 277803737u;
+    return (word >> 22u) ^ word;
+}
+
+float randomFloat(inout uint seed) {
+    seed = pcg_hash(seed);
+    return float(seed) / 4294967295.0; // Divide by max uint32
+}
+
+// Fixed per-kill activation bump (degranulation / antigen engagement raising
+// the killer's own activation state). Consumed by a later feedback step; kept
+// a shader constant rather than a behaviour field until something needs to
+// tune it independently of cytokineReleasePerKill.
+const float kActivationPerKill = 0.2;
+
+void main() {
+    uint idx = gl_GlobalInvocationID.x;
+    if (idx >= pc.maxCapacity) return;
+    if (idx >= counters.counts[pc.grpNdx]) return;
+
+    uint globalIdx = pc.offset + idx;
+
+    vec4 myData = agents.positions[globalIdx];
+    if (myData.w == 0.0) return; // dead slot
+
+    // Only ImmuneCell invocations initiate a kill scan.
+    if (phenotypes.data[globalIdx].cellType != 5u) return;
+
+    // Vaccine gate — this repertoire is inert until startTime.
+    if (pc.totalTime < pc.startTime) return;
+
+    uint recognized = immuneState.data[globalIdx].recognizedAntigens;
+    if (recognized == 0u) return; // no repertoire — nothing to recognise
+
+    vec3  myPos        = myData.xyz;
+    float hashCellSize = pc.domainSize.w;
+    ivec3 myCell       = ivec3(floor(myPos / hashCellSize));
+
+    // Cytokine injection target + feedback read — the killer's own voxel.
+    // Resolved once up front since it only depends on the killer's position,
+    // not the target.
+    bool  cytokineBound   = pc.gridSize.w > 0u;
+    uint  cytokineFlatIdx = 0u;
+    float localCytokine   = 0.0;
+    if (cytokineBound) {
+        vec3 boxMin = -pc.domainSize.xyz * 0.5;
+        vec3 uvw    = (myPos - boxMin) / pc.domainSize.xyz;
+        if (any(lessThan(uvw, vec3(0.0))) || any(greaterThanEqual(uvw, vec3(1.0)))) {
+            cytokineBound = false; // killer outside domain -- skip injection + feedback
+        } else {
+            ivec3 coord     = clamp(ivec3(uvw * vec3(pc.gridSize.xyz)), ivec3(0), ivec3(pc.gridSize.xyz) - ivec3(1));
+            cytokineFlatIdx = coord.x + coord.y * pc.gridSize.x + coord.z * pc.gridSize.x * pc.gridSize.y;
+            localCytokine   = imageLoad(u_Cytokine, coord).r;
+        }
+    }
+
+    // Positive feedback: local inflammation raises this killer's effective rate.
+    float effectiveKillRate = pc.killProbPerSec * (1.0 + pc.cytokineFeedbackGain * localCytokine);
+
+    uint  seed       = pcg_hash(globalIdx ^ floatBitsToUint(pc.totalTime));
+    float activation = immuneState.data[globalIdx].activation;
+    uint  killCount   = 0u;
+
+    // Search 27-cell neighborhood in spatial hash
+    for (int z = -1; z <= 1; z++) {
+        for (int y = -1; y <= 1; y++) {
+            for (int x = -1; x <= 1; x++) {
+                uint neighborHash = hashPos(myCell + ivec3(x, y, z));
+                uint offsetIdx    = neighborHash % pc.offsetArraySize;
+
+                uint startIdx = cellOffsets.startIndices[offsetIdx];
+                if (startIdx == 0xFFFFFFFF) continue;
+
+                for (uint i = startIdx; i < pc.maxCapacity; i++) {
+                    if (sortedHashes.data[i].hash != neighborHash) break;
+
+                    uint targetIdx = sortedHashes.data[i].agentIndex;
+                    if (targetIdx == globalIdx) continue;
+
+                    vec4 targetData = agents.positions[targetIdx];
+                    if (targetData.w == 0.0) continue; // dead slot
+
+                    if (phenotypes.data[targetIdx].cellType != 4u) continue; // TumorCell only
+
+                    uint targetState = phenotypes.data[targetIdx].lifecycleState;
+                    if (targetState >= 3u) continue; // already Apoptotic/Necrotic/pending removal
+
+                    uint presented = immuneState.data[targetIdx].presentedAntigens;
+                    if ((recognized & presented) == 0u) continue; // antigen mismatch — immune escape
+
+                    float dist = length(myPos - targetData.xyz);
+                    if (dist >= pc.contactDistance) continue;
+
+                    // Poisson kill draw: continuous (feedback-scaled) rate -> per-frame probability.
+                    float killProb = 1.0 - exp(-effectiveKillRate * pc.dt);
+                    if (randomFloat(seed) >= killProb) continue;
+
+                    // Perforin/granzyme contact killing. atomicCompSwap so only one
+                    // immune cell's kill wins if several target the same cell this frame;
+                    // check the previous value so cytokine/activation credit only goes
+                    // to the invocation that actually won the race.
+                    uint prevState = atomicCompSwap(phenotypes.data[targetIdx].lifecycleState, 0u, 3u);
+                    if (prevState != 0u) continue;
+
+                    killCount++;
+                    if (cytokineBound) {
+                        int intDelta = int(pc.cytokineReleasePerKill * 100000.0);
+                        atomicAdd(cytokine.deltas[cytokineFlatIdx], intDelta);
+                    }
+                }
+            }
+        }
+    }
+
+    if (killCount > 0u) {
+        immuneState.data[globalIdx].activation = min(activation + float(killCount) * kActivationPerKill, 1.0);
+    }
+}

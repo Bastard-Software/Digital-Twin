@@ -31,6 +31,8 @@ namespace DigitalTwin
         TipCell     = 1, // Endothelial tip cell — migrates toward VEGF
         StalkCell   = 2, // Endothelial stalk cell — proliferates to extend vessel
         PhalanxCell = 3, // Quiescent endothelial cell in mature vessel
+        TumorCell   = 4, // Malignant cell — antigen-presenting target for cytotoxic killing
+        ImmuneCell  = 5, // Cytotoxic effector cell (e.g. CD8+ T cell) — antigen-specific killer
 
         Any = 0xFFFFFFFFu // No cell-type filter (shaders interpret 0xFFFFFFFF as "match all")
     };
@@ -49,6 +51,18 @@ namespace DigitalTwin
         float    biomass        = 0.5f;
         float    timer          = 0.0f;
         uint32_t cellType       = 0;
+    };
+
+    // CPU-side mirror of the std430 SSBO layout used by immuneStateBuffer.
+    // Per-agent antigen presentation / recognition state for antigen-specific
+    // cytotoxic killing (AntigenKilling behaviour). Size stays 16 bytes,
+    // matching PhenotypeData.
+    struct ImmuneStateData
+    {
+        uint32_t presentedAntigens  = 0;    // Tumour: bitmask of neoantigens displayed on MHC-I
+        uint32_t recognizedAntigens = 0;    // Immune: bitmask of antigens this cell's TCR repertoire recognizes
+        float    activation         = 0.0f; // Immune: 0-1 activation level, raised by cytokine exposure
+        float    pad                = 0.0f;
     };
 
 } // namespace DigitalTwin

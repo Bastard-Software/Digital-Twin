@@ -275,6 +275,70 @@ namespace DigitalTwin::Behaviours
         float     polarityBias      = 2.0f;                 // weight of plate polarity cue (overrides neighbour-centroid when strong)
     };
 
+    /**
+     * @brief Neoantigen / peptide-MHC-I display profile for a tumour cell.
+     *
+     * Models antigen presentation as a fixed-width bitmask — each set bit is one
+     * distinct neoantigen the cell displays on MHC class I. A tumour is rarely
+     * clonally uniform (Marusyk & Polyak 2010): different subclones can present
+     * different neoantigens, so two AgentGroups (or two AntigenExpression
+     * behaviours with different masks) model antigenic heterogeneity — the
+     * mechanism behind immune-escape variants surviving a cytotoxic response
+     * that clears the matched subclone.
+     *
+     * Consumed by AntigenKilling: a killer only fires when
+     * (recognizedAntigens & presentedAntigens) != 0.
+     */
+    struct AntigenExpression
+    {
+        uint32_t presentedAntigens = 0; // bitmask; bit i = neoantigen i is displayed
+    };
+
+    /**
+     * @brief Antigen-specific cytotoxic killing (CD8+ T cell / CTL effector function).
+     *
+     * A killer agent scans its spatial-hash neighbourhood each dispatch; for every
+     * TumorCell neighbour within contactDistance whose presentedAntigens shares a
+     * bit with this behaviour's recognizedAntigens, a per-second kill probability
+     * is rolled and, on success, the target is marked Apoptotic — perforin/granzyme
+     * contact killing (~30 min in vivo; modelled here as a stochastic per-frame
+     * draw against a continuous rate, not an explicit timer).
+     *
+     * Mismatched targets (no shared antigen bit) are never killed — this is the
+     * mechanism behind antigen-loss immune-escape variants surviving a cytotoxic
+     * response that clears the matched subclone. Works together with
+     * AntigenExpression on the target group.
+     *
+     * startTime gates the whole behaviour off until a chosen sim-time — models an
+     * antigen-specific repertoire (e.g. a therapeutic vaccine) becoming active.
+     *
+     * Each successful kill also releases cytokine (IL-6/TNF-α/IFN-γ-like) into
+     * cytokineField at the KILLER's own voxel — an activated cytotoxic cell
+     * secreting pro-inflammatory signal into its local environment — and raises
+     * the killer's activation level. cytokineField empty (default) disables this
+     * entirely (a pure kill-only behaviour, e.g. for isolated Step 1.2 testing).
+     * The cytokine field's own decayRate is the brake that keeps this from
+     * running away; Chemotaxis toward the same field (composed separately on
+     * the immune group) is what turns per-kill secretion into recruitment.
+     *
+     * cytokineFeedbackGain closes the loop: local cytokine at the killer's own
+     * voxel scales killProbPerSec by (1 + gain * cytokine) — more inflammation,
+     * more killing, more cytokine. This positive feedback is what produces an
+     * emergent cytokine storm (cf. CAR-T cytokine release syndrome) when gain
+     * is high and the field's decayRate can't keep up; 0 (default) disables the
+     * feedback and keeps 1.3's kill-rate bit-exact.
+     */
+    struct AntigenKilling
+    {
+        uint32_t    recognizedAntigens     = 0;    // bitmask; must share a bit with the target's presentedAntigens
+        float       contactDistance        = 2.0f; // max distance for a kill attempt
+        float       killProbPerSec         = 0.5f; // stochastic per-second kill probability on a matched contact
+        float       startTime              = 0.0f; // sim-time (s) before which this behaviour is inert
+        std::string cytokineField;                 // empty = no cytokine release on kill / no feedback
+        float       cytokineReleasePerKill = 0.0f;  // fixed quantity injected per kill event (not rate — see field decayRate for the brake)
+        float       cytokineFeedbackGain   = 0.0f;  // scales killProbPerSec by (1 + gain * local cytokine); 0 = no feedback
+    };
+
 } // namespace DigitalTwin::Behaviours
 
 namespace DigitalTwin
@@ -296,7 +360,9 @@ namespace DigitalTwin
         Behaviours::Drain,
         Behaviours::VesselSeed,
         Behaviours::VesselSpring,
-        Behaviours::BasementMembrane>;
+        Behaviours::BasementMembrane,
+        Behaviours::AntigenExpression,
+        Behaviours::AntigenKilling>;
 
     // Wrapper to attach execution parameters (like frequency) to a behaviour
     struct BehaviourRecord

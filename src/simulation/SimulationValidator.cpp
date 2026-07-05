@@ -14,7 +14,7 @@ namespace DigitalTwin
     // Valid filter values: LifecycleState::Any (0xFFFFFFFF = no requirement) or 0-4 (Live through Necrotic).
     // Dead_PendingRemoval (5) is a transient GPU-side state — behaviours conditioned on it never fire.
     static constexpr uint32_t k_MaxRequiredState = 4;
-    static constexpr uint32_t k_MaxCellType      = 3; // PhalanxCell
+    static constexpr uint32_t k_MaxCellType      = 5; // ImmuneCell
 
     // Format a float to 2 decimal places for error messages.
     static std::string Fmt2f( float v )
@@ -484,6 +484,29 @@ namespace DigitalTwin
                         {
                             if( behaviour.contactDistance <= 0.0f )
                                 result.AddError( "AgentGroup '" + group.GetName() + "': Anastomosis contactDistance must be > 0" );
+                        }
+
+                        if constexpr( std::is_same_v<T, Behaviours::AntigenKilling> )
+                        {
+                            if( behaviour.contactDistance <= 0.0f )
+                                result.AddError( "AgentGroup '" + group.GetName() + "': AntigenKilling contactDistance must be > 0" );
+                            if( behaviour.killProbPerSec < 0.0f )
+                                result.AddError( "AgentGroup '" + group.GetName() + "': AntigenKilling killProbPerSec must be >= 0" );
+                            if( behaviour.startTime < 0.0f )
+                                result.AddError( "AgentGroup '" + group.GetName() + "': AntigenKilling startTime must be >= 0" );
+                            if( behaviour.recognizedAntigens == 0u )
+                                result.AddWarning( "AgentGroup '" + group.GetName() +
+                                                   "': AntigenKilling recognizedAntigens == 0. The behaviour is registered but will never match a target." );
+                            if( behaviour.cytokineReleasePerKill < 0.0f )
+                                result.AddError( "AgentGroup '" + group.GetName() + "': AntigenKilling cytokineReleasePerKill must be >= 0" );
+                            if( behaviour.cytokineReleasePerKill > 0.0f && behaviour.cytokineField.empty() )
+                                result.AddWarning( "AgentGroup '" + group.GetName() +
+                                                   "': AntigenKilling cytokineReleasePerKill is set but cytokineField is empty. No cytokine will be released." );
+                            if( behaviour.cytokineFeedbackGain < 0.0f )
+                                result.AddError( "AgentGroup '" + group.GetName() + "': AntigenKilling cytokineFeedbackGain must be >= 0" );
+                            if( behaviour.cytokineFeedbackGain > 0.0f && behaviour.cytokineField.empty() )
+                                result.AddWarning( "AgentGroup '" + group.GetName() +
+                                                   "': AntigenKilling cytokineFeedbackGain is set but cytokineField is empty. No feedback will apply." );
                         }
 
                         if constexpr( std::is_same_v<T, Behaviours::VesselSpring> )

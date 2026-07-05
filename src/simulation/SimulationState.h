@@ -56,6 +56,12 @@ namespace DigitalTwin
         // Full-size when any group has CellPolarity; 16-byte dummy otherwise.
         BufferHandle polarityBuffer;
 
+        // Per-agent antigen presentation / recognition state for antigen-specific
+        // cytotoxic killing (ImmuneStateData: presentedAntigens, recognizedAntigens,
+        // activation, pad). Full-size when any group has AntigenExpression;
+        // 16-byte dummy otherwise.
+        BufferHandle immuneStateBuffer;
+
         // Basement-membrane plate parameters — single global plate per simulation.
         // Always allocated (48 bytes). Shader branches on plateFlags.x.
         //   layout: vec4 normalHeight (xyz=normal, w=height)

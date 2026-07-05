@@ -56,6 +56,8 @@ namespace DigitalTwin
             resourceManager->DestroyBuffer( cadherinAffinityBuffer );
         if( polarityBuffer.IsValid() )
             resourceManager->DestroyBuffer( polarityBuffer );
+        if( immuneStateBuffer.IsValid() )
+            resourceManager->DestroyBuffer( immuneStateBuffer );
         if( orientationBuffer.IsValid() )
             resourceManager->DestroyBuffer( orientationBuffer );
         if( contactHullBuffer.IsValid() )
@@ -102,6 +104,7 @@ namespace DigitalTwin
         cadherinProfileBuffer  = {};
         cadherinAffinityBuffer = {};
         polarityBuffer         = {};
+        immuneStateBuffer      = {};
         orientationBuffer      = {};
         contactHullBuffer      = {};
         signalingBuffer        = {};
@@ -791,6 +794,76 @@ namespace DigitalTwin
                 { sizeof( glm::mat4 ), BufferType::STORAGE, "CadherinAffinityBuffer" } );
             m_streamingManager->UploadBufferImmediate(
                 { { outState.cadherinAffinityBuffer, &affinity, sizeof( glm::mat4 ), 0 } } );
+        }
+
+        // Pre-pass: allocate immune-state buffer (presented/recognized antigen bitmasks
+        // + activation). Full-size when any group has AntigenExpression or AntigenKilling,
+        // else a 16-byte dummy — mirrors the cadherin-profile pre-pass above.
+        // presentedAntigens is broadcast per-group from AntigenExpression; recognizedAntigens
+        // is broadcast per-group from AntigenKilling — same "one behaviour value, every agent
+        // in the group" convention as the cadherin profile pre-pass.
+        {
+            bool hasAntigenExpression = false;
+            bool hasAntigenKilling    = false;
+            for( const auto& g: blueprint.GetGroups() )
+                for( const auto& record: g.GetBehaviours() )
+                {
+                    if( std::holds_alternative<Behaviours::AntigenExpression>( record.behaviour ) )
+                        hasAntigenExpression = true;
+                    if( std::holds_alternative<Behaviours::AntigenKilling>( record.behaviour ) )
+                        hasAntigenKilling = true;
+                }
+
+            if( hasAntigenExpression || hasAntigenKilling )
+            {
+                uint32_t globalCapacity = 0;
+                for( const auto& g: blueprint.GetGroups() )
+                {
+                    if( g.GetCount() == 0 ) continue;
+                    uint32_t cap = 131072;
+                    while( cap < g.GetCount() ) cap <<= 1;
+                    globalCapacity += cap;
+                }
+
+                size_t immuneStateSize        = globalCapacity * sizeof( ImmuneStateData );
+                outState.immuneStateBuffer     = m_resourceManager->CreateBuffer(
+                    { immuneStateSize, BufferType::STORAGE, "ImmuneStateBuffer" } );
+
+                std::vector<ImmuneStateData> states( globalCapacity );
+                uint32_t off = 0;
+                for( const auto& g: blueprint.GetGroups() )
+                {
+                    if( g.GetCount() == 0 ) continue;
+                    uint32_t cap = 131072;
+                    while( cap < g.GetCount() ) cap <<= 1;
+                    uint32_t presented  = 0;
+                    uint32_t recognized = 0;
+                    for( const auto& record: g.GetBehaviours() )
+                    {
+                        if( const auto* expr = std::get_if<Behaviours::AntigenExpression>( &record.behaviour ) )
+                            presented = expr->presentedAntigens;
+                        if( const auto* kill = std::get_if<Behaviours::AntigenKilling>( &record.behaviour ) )
+                            recognized = kill->recognizedAntigens;
+                    }
+                    for( uint32_t i = 0; i < cap; i++ )
+                    {
+                        states[ off + i ].presentedAntigens  = presented;
+                        states[ off + i ].recognizedAntigens = recognized;
+                    }
+                    off += cap;
+                }
+                m_streamingManager->UploadBufferImmediate(
+                    { { outState.immuneStateBuffer, states.data(), immuneStateSize, 0 } } );
+            }
+            else
+            {
+                // Dummy: one ImmuneStateData (16 bytes) — binding always valid, shader branch skips it
+                ImmuneStateData dummy{};
+                outState.immuneStateBuffer = m_resourceManager->CreateBuffer(
+                    { sizeof( ImmuneStateData ), BufferType::STORAGE, "ImmuneStateBuffer_Dummy" } );
+                m_streamingManager->UploadBufferImmediate(
+                    { { outState.immuneStateBuffer, &dummy, sizeof( ImmuneStateData ), 0 } } );
+            }
         }
 
         // Pre-pass: basement-membrane plate buffer (global, single plate per sim).
@@ -2130,6 +2203,132 @@ namespace DigitalTwin
 
                     DT_INFO( "[SimulationBuilder] Compiled Anastomosis for '{}' at {}Hz", group.GetName(), record.targetHz );
                 }
+                if( std::holds_alternative<Behaviours::AntigenKilling>( record.behaviour ) )
+                {
+                    const auto& killing = std::get<Behaviours::AntigenKilling>( record.behaviour );
+
+                    // Ensure phenotype buffer exists (stores cellType + lifecycleState)
+                    if( !outState.phenotypeBuffer.IsValid() )
+                    {
+                        uint32_t globalCapacity = 0;
+                        for( const auto& g: blueprint.GetGroups() )
+                        {
+                            if( g.GetCount() == 0 )
+                                continue;
+                            uint32_t cap = 131072;
+                            while( cap < g.GetCount() )
+                                cap <<= 1;
+                            globalCapacity += cap;
+                        }
+
+                        size_t phenotypeSize     = globalCapacity * sizeof( PhenotypeData );
+                        outState.phenotypeBuffer = m_resourceManager->CreateBuffer( { phenotypeSize, BufferType::STORAGE, "PhenotypeBuffer" } );
+
+                        std::vector<PhenotypeData> initPhenotypes( globalCapacity, { 0u, 0.5f, 0.0f, 0u } );
+                        m_streamingManager->UploadBufferImmediate( { { outState.phenotypeBuffer, initPhenotypes.data(), phenotypeSize, 0 } } );
+                    }
+
+                    // Cytokine field (optional) — release on kill. gridSize.w = 1 when bound,
+                    // matching the NotchDll4 optional-field convention; a 1-element dummy delta
+                    // buffer keeps the descriptor valid when no field is named or found.
+                    GridFieldState* cytokineGrid = nullptr;
+                    BufferHandle    dummyCytokineDelta;
+                    glm::uvec4      antigenKillGridSize{ 0u, 0u, 0u, 0u };
+
+                    if( !killing.cytokineField.empty() )
+                    {
+                        for( auto& grid: outState.gridFields )
+                            if( grid.name == killing.cytokineField ) { cytokineGrid = &grid; break; }
+
+                        if( cytokineGrid )
+                        {
+                            antigenKillGridSize = glm::uvec4( cytokineGrid->width, cytokineGrid->height, cytokineGrid->depth, 1u );
+                        }
+                        else
+                        {
+                            DT_WARN( "[SimulationBuilder] AntigenKilling: cytokine field '{}' not found — running without cytokine release",
+                                     killing.cytokineField );
+                        }
+                    }
+
+                    // Feedback read texture (binding 7) — the field's current READ slot,
+                    // ping-ponged in lockstep with the agent buffers (same convention as
+                    // NotchDll4's VEGF binding: currentReadIndex drives ALL tasks). A 1×1×1
+                    // dummy filled with 0.0 keeps the descriptor valid when no field is bound.
+                    TextureHandle dummyCytokineTex;
+                    if( !cytokineGrid )
+                    {
+                        int zero          = 0;
+                        dummyCytokineDelta = m_resourceManager->CreateBuffer(
+                            { sizeof( int ), BufferType::STORAGE, "AntigenKillCytokineDelta_Dummy" } );
+                        m_streamingManager->UploadBufferImmediate( { { dummyCytokineDelta, &zero, sizeof( int ), 0 } } );
+
+                        TextureDesc dummyTexDesc{ 1, 1, 1, TextureType::Texture3D, VK_FORMAT_R32_SFLOAT,
+                                                  TextureUsage::STORAGE | TextureUsage::TRANSFER_DST, VK_SAMPLE_COUNT_1_BIT,
+                                                  "AntigenKillCytokineRead_Dummy" };
+                        dummyCytokineTex   = m_resourceManager->CreateTexture( dummyTexDesc );
+                        float zeroF        = 0.0f;
+                        m_streamingManager->UploadTextureImmediate( dummyCytokineTex, &zeroF, sizeof( float ) );
+                    }
+
+                    BufferHandle  cytokineDeltaBuffer = cytokineGrid ? cytokineGrid->interactionDeltaBuffer : dummyCytokineDelta;
+                    TextureHandle cytokineReadTex0    = cytokineGrid ? cytokineGrid->textures[ 0 ] : dummyCytokineTex;
+                    TextureHandle cytokineReadTex1    = cytokineGrid ? cytokineGrid->textures[ 1 ] : dummyCytokineTex;
+
+                    ComputePipelineDesc   antigenKillDesc{ m_resourceManager->CreateShader( "shaders/compute/biology/antigen_kill.comp" ),
+                                                          "AntigenKillPipeline" };
+                    ComputePipelineHandle antigenKillPipeHandle = m_resourceManager->CreatePipeline( antigenKillDesc );
+                    ComputePipeline*      antigenKillPipe       = m_resourceManager->GetPipeline( antigenKillPipeHandle );
+
+                    BindingGroup* bgAntigenKill0 =
+                        m_resourceManager->GetBindingGroup( m_resourceManager->CreateBindingGroup( antigenKillPipeHandle, 0 ) );
+                    bgAntigenKill0->Bind( 0, m_resourceManager->GetBuffer( outState.agentBuffers[ 0 ] ) );
+                    bgAntigenKill0->Bind( 1, m_resourceManager->GetBuffer( outState.phenotypeBuffer ) );
+                    bgAntigenKill0->Bind( 2, m_resourceManager->GetBuffer( outState.hashBuffer ) );
+                    bgAntigenKill0->Bind( 3, m_resourceManager->GetBuffer( outState.offsetBuffer ) );
+                    bgAntigenKill0->Bind( 4, m_resourceManager->GetBuffer( outState.agentCountBuffer ) );
+                    bgAntigenKill0->Bind( 5, m_resourceManager->GetBuffer( outState.immuneStateBuffer ) );
+                    bgAntigenKill0->Bind( 6, m_resourceManager->GetBuffer( cytokineDeltaBuffer ) );
+                    bgAntigenKill0->Bind( 7, m_resourceManager->GetTexture( cytokineReadTex0 ), VK_IMAGE_LAYOUT_GENERAL );
+                    bgAntigenKill0->Build();
+
+                    BindingGroup* bgAntigenKill1 =
+                        m_resourceManager->GetBindingGroup( m_resourceManager->CreateBindingGroup( antigenKillPipeHandle, 0 ) );
+                    bgAntigenKill1->Bind( 0, m_resourceManager->GetBuffer( outState.agentBuffers[ 1 ] ) );
+                    bgAntigenKill1->Bind( 1, m_resourceManager->GetBuffer( outState.phenotypeBuffer ) );
+                    bgAntigenKill1->Bind( 2, m_resourceManager->GetBuffer( outState.hashBuffer ) );
+                    bgAntigenKill1->Bind( 3, m_resourceManager->GetBuffer( outState.offsetBuffer ) );
+                    bgAntigenKill1->Bind( 4, m_resourceManager->GetBuffer( outState.agentCountBuffer ) );
+                    bgAntigenKill1->Bind( 5, m_resourceManager->GetBuffer( outState.immuneStateBuffer ) );
+                    bgAntigenKill1->Bind( 6, m_resourceManager->GetBuffer( cytokineDeltaBuffer ) );
+                    bgAntigenKill1->Bind( 7, m_resourceManager->GetTexture( cytokineReadTex1 ), VK_IMAGE_LAYOUT_GENERAL );
+                    bgAntigenKill1->Build();
+
+                    float hashCellSize = blueprint.GetSpatialPartitioning().cellSize;
+
+                    ComputePushConstants antigenKillPC{};
+                    antigenKillPC.fParam0     = killing.contactDistance;
+                    antigenKillPC.fParam1     = killing.killProbPerSec;
+                    antigenKillPC.fParam2     = killing.startTime;
+                    antigenKillPC.fParam3     = killing.cytokineReleasePerKill;
+                    antigenKillPC.fParam4     = killing.cytokineFeedbackGain;
+                    antigenKillPC.offset      = currentOffset;
+                    antigenKillPC.maxCapacity = globalHashCapacity; // hash scan bound spans all groups
+                    antigenKillPC.uParam0     = offsetArraySize;
+                    antigenKillPC.uParam1     = groupIndex;
+                    antigenKillPC.domainSize  = glm::vec4( blueprint.GetDomainSize(), hashCellSize );
+                    antigenKillPC.gridSize    = antigenKillGridSize;
+
+                    glm::uvec3  antigenKillDispatch( ( paddedCount + 255 ) / 256, 1, 1 );
+                    ComputeTask antigenKillTask( antigenKillPipe, bgAntigenKill0, bgAntigenKill1, record.targetHz, antigenKillPC,
+                                                antigenKillDispatch );
+                    antigenKillTask.SetTag( "antigen_kill" + tagBase );
+                    antigenKillTask.SetPhaseName( groupPhase );
+                    // No ChainFlip — reads positions only, writes phenotype (target's lifecycleState)
+                    outState.computeGraph.AddTask( antigenKillTask );
+
+                    DT_INFO( "[SimulationBuilder] Compiled AntigenKilling for '{}' at {}Hz", group.GetName(), record.targetHz );
+                }
                 if( std::holds_alternative<Behaviours::VesselSeed>( record.behaviour ) )
                 {
                     const auto& vesselSeed = std::get<Behaviours::VesselSeed>( record.behaviour );
@@ -2517,6 +2716,21 @@ namespace DigitalTwin
                         ComputePushConstants pc          = task->GetPushConstants();
                         pc.fParam0                       = anastomosis.contactDistance;
                         pc.fParam1                       = anastomosis.allowTipToStalk ? 1.0f : 0.0f;
+                        task->UpdatePushConstants( pc );
+                    }
+                }
+                else if( std::holds_alternative<Behaviours::AntigenKilling>( record.behaviour ) )
+                {
+                    ComputeTask* task = state.computeGraph.FindTask( "antigen_kill" + tagBase );
+                    if( task )
+                    {
+                        const auto&          killing = std::get<Behaviours::AntigenKilling>( record.behaviour );
+                        ComputePushConstants pc      = task->GetPushConstants();
+                        pc.fParam0                   = killing.contactDistance;
+                        pc.fParam1                   = killing.killProbPerSec;
+                        pc.fParam2                   = killing.startTime;
+                        pc.fParam3                   = killing.cytokineReleasePerKill;
+                        pc.fParam4                   = killing.cytokineFeedbackGain;
                         task->UpdatePushConstants( pc );
                     }
                 }

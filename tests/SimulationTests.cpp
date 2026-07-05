@@ -5054,3 +5054,343 @@ TEST_F( SimulationBuilderTest, JKR_RigidBody_HullTranslation_Integration )
 
     state.Destroy( m_resourceManager.get() );
 }
+
+// =============================================================================
+// Immune-state buffer tests (antigen-specific killing infrastructure, Step 1.1)
+// =============================================================================
+
+// 1. immuneStateBuffer is always allocated, even when no group uses AntigenExpression.
+TEST_F( SimulationBuilderTest, Builder_ImmuneStateBuffer_DummyWhenAbsent )
+{
+    if( !m_device )
+        GTEST_SKIP();
+
+    SimulationBlueprint blueprint;
+    blueprint.SetDomainSize( glm::vec3( 10.0f ), 1.0f );
+    blueprint.AddAgentGroup( "Cells" )
+        .SetCount( 4 )
+        .SetDistribution( DigitalTwin::SpatialDistribution::UniformInBox(
+            4, glm::vec3( 0.0f ), glm::vec3( 5.0f ) ) )
+        .AddBehaviour( Behaviours::Biomechanics{ 15.0f, 2.0f, 1.5f, 0.0f } );
+
+    SimulationBuilder builder( m_resourceManager.get(), m_streamingManager.get() );
+    SimulationState   state = builder.Build( blueprint );
+
+    EXPECT_TRUE( state.immuneStateBuffer.IsValid() )
+        << "immuneStateBuffer must be allocated even when no group uses AntigenExpression";
+
+    state.Destroy( m_resourceManager.get() );
+}
+
+// 2. When a group has AntigenExpression, immuneStateBuffer is full-size and each
+//    slot's presentedAntigens is initialised from the behaviour's bitmask.
+TEST_F( SimulationBuilderTest, Builder_AntigenExpression_PopulatesPresentedAntigens )
+{
+    if( !m_device )
+        GTEST_SKIP();
+
+    SimulationBlueprint blueprint;
+    blueprint.SetDomainSize( glm::vec3( 10.0f ), 1.0f );
+    AgentGroup& g = blueprint.AddAgentGroup( "Tumor" );
+    g.SetCount( 4 );
+    g.SetDistribution( DigitalTwin::SpatialDistribution::UniformInBox(
+        4, glm::vec3( 0.0f ), glm::vec3( 5.0f ) ) );
+    g.AddBehaviour( Behaviours::Biomechanics{ 15.0f, 2.0f, 1.5f, 0.0f } );
+    g.AddBehaviour( Behaviours::AntigenExpression{ 0b101u } );
+
+    SimulationBuilder builder( m_resourceManager.get(), m_streamingManager.get() );
+    SimulationState   state = builder.Build( blueprint );
+
+    ASSERT_TRUE( state.immuneStateBuffer.IsValid() );
+
+    std::vector<ImmuneStateData> states( 4 );
+    m_streamingManager->ReadbackBufferImmediate(
+        state.immuneStateBuffer, states.data(), 4 * sizeof( ImmuneStateData ) );
+
+    for( int i = 0; i < 4; ++i )
+    {
+        EXPECT_EQ( states[ i ].presentedAntigens, 0b101u ) << "slot " << i << ": presentedAntigens mismatch";
+        EXPECT_EQ( states[ i ].recognizedAntigens, 0u ) << "slot " << i << ": recognizedAntigens should stay 0 (set by AntigenKilling)";
+        EXPECT_NEAR( states[ i ].activation, 0.0f, 1e-5f ) << "slot " << i << ": activation should start at 0";
+    }
+
+    state.Destroy( m_resourceManager.get() );
+}
+
+// =============================================================================
+// AntigenKilling integration tests (antigen-specific killing, Step 1.2)
+// =============================================================================
+//
+// Both tests use a matched/mismatched Tumor + Immune pair one contactDistance
+// apart, with killProbPerSec = 1e6 so the Poisson kill draw is effectively
+// certain whenever the antigen gate passes — isolates the antigen-match logic
+// (the behaviour under test) rather than leaving the outcome to chance.
+
+// A killer recognizing bit 0 clears a tumour cell that presents bit 0 (among others).
+TEST_F( SimulationBuilderTest, Behaviour_AntigenKilling_MatchedTumorPopulationDeclines )
+{
+    if( !m_device )
+        GTEST_SKIP();
+
+    SimulationBlueprint blueprint;
+    blueprint.SetDomainSize( glm::vec3( 30.0f ), 1.0f );
+    blueprint.ConfigureSpatialPartitioning()
+        .SetMethod( DigitalTwin::SpatialPartitioningMethod::HashGrid )
+        .SetCellSize( 30.0f )
+        .SetMaxDensity( 64 )
+        .SetComputeHz( 60.0f );
+
+    blueprint.AddAgentGroup( "Tumor" )
+        .SetCount( 1 )
+        .SetDistribution( { glm::vec4( 0.0f, 0.0f, 0.0f, 1.0f ) } )
+        .SetInitialCellType( 4 ) // TumorCell
+        .AddBehaviour( Behaviours::AntigenExpression{ 0b011u } ); // presents bits 0+1
+
+    blueprint.AddAgentGroup( "Immune" )
+        .SetCount( 1 )
+        .SetDistribution( { glm::vec4( 1.0f, 0.0f, 0.0f, 1.0f ) } )
+        .SetInitialCellType( 5 ) // ImmuneCell
+        .AddBehaviour( Behaviours::AntigenKilling{ 0b001u, 5.0f, 1.0e6f, 0.0f } ); // recognizes bit 0
+
+    SimulationBuilder builder( m_resourceManager.get(), m_streamingManager.get() );
+    SimulationState   state = builder.Build( blueprint );
+
+    auto compCtxHandle = m_device->CreateThreadContext( QueueType::COMPUTE );
+    auto compCtx       = m_device->GetThreadContext( compCtxHandle );
+    auto compCmd       = compCtx->GetCommandBuffer( compCtx->CreateCommandBuffer() );
+
+    GraphDispatcher dispatcher;
+    compCmd->Begin();
+    dispatcher.Dispatch( &state.computeGraph, compCmd, nullptr, 1.0f / 60.0f, 1.0f, 0 );
+    compCmd->End();
+
+    m_device->GetComputeQueue()->Submit( { compCmd } );
+    m_device->GetComputeQueue()->WaitIdle();
+
+    // Tumor is group 0 (offset 0); Immune is group 1 (offset 131072).
+    PhenotypeData tumorResult{};
+    m_streamingManager->ReadbackBufferImmediate( state.phenotypeBuffer, &tumorResult, sizeof( PhenotypeData ), 0 );
+
+    PhenotypeData immuneResult{};
+    m_streamingManager->ReadbackBufferImmediate(
+        state.phenotypeBuffer, &immuneResult, sizeof( PhenotypeData ), 131072 * sizeof( PhenotypeData ) );
+
+    EXPECT_EQ( tumorResult.lifecycleState, 3u ) << "Matched, in-range tumour cell must become Apoptotic (3)";
+    EXPECT_EQ( immuneResult.lifecycleState, 0u ) << "Killer cell itself must remain Live (0)";
+
+    state.Destroy( m_resourceManager.get() );
+}
+
+// A killer recognizing bit 0 cannot touch a tumour subclone presenting only bit 2 — immune escape.
+TEST_F( SimulationBuilderTest, Behaviour_AntigenKilling_MismatchedSubcloneEscapes )
+{
+    if( !m_device )
+        GTEST_SKIP();
+
+    SimulationBlueprint blueprint;
+    blueprint.SetDomainSize( glm::vec3( 30.0f ), 1.0f );
+    blueprint.ConfigureSpatialPartitioning()
+        .SetMethod( DigitalTwin::SpatialPartitioningMethod::HashGrid )
+        .SetCellSize( 30.0f )
+        .SetMaxDensity( 64 )
+        .SetComputeHz( 60.0f );
+
+    blueprint.AddAgentGroup( "Tumor" )
+        .SetCount( 1 )
+        .SetDistribution( { glm::vec4( 0.0f, 0.0f, 0.0f, 1.0f ) } )
+        .SetInitialCellType( 4 ) // TumorCell
+        .AddBehaviour( Behaviours::AntigenExpression{ 0b100u } ); // presents bit 2 only -- escape variant
+
+    blueprint.AddAgentGroup( "Immune" )
+        .SetCount( 1 )
+        .SetDistribution( { glm::vec4( 1.0f, 0.0f, 0.0f, 1.0f ) } )
+        .SetInitialCellType( 5 ) // ImmuneCell
+        .AddBehaviour( Behaviours::AntigenKilling{ 0b001u, 5.0f, 1.0e6f, 0.0f } ); // recognizes bit 0 only
+
+    SimulationBuilder builder( m_resourceManager.get(), m_streamingManager.get() );
+    SimulationState   state = builder.Build( blueprint );
+
+    auto compCtxHandle = m_device->CreateThreadContext( QueueType::COMPUTE );
+    auto compCtx       = m_device->GetThreadContext( compCtxHandle );
+    auto compCmd       = compCtx->GetCommandBuffer( compCtx->CreateCommandBuffer() );
+
+    GraphDispatcher dispatcher;
+    compCmd->Begin();
+    dispatcher.Dispatch( &state.computeGraph, compCmd, nullptr, 1.0f / 60.0f, 1.0f, 0 );
+    compCmd->End();
+
+    m_device->GetComputeQueue()->Submit( { compCmd } );
+    m_device->GetComputeQueue()->WaitIdle();
+
+    PhenotypeData tumorResult{};
+    m_streamingManager->ReadbackBufferImmediate( state.phenotypeBuffer, &tumorResult, sizeof( PhenotypeData ), 0 );
+
+    EXPECT_EQ( tumorResult.lifecycleState, 0u )
+        << "Antigen-mismatched tumour subclone must escape (stay Live) even at killProbPerSec -> certain";
+
+    state.Destroy( m_resourceManager.get() );
+}
+
+// A matched kill with cytokineField wired up must raise the Cytokine field somewhere in the
+// domain -- end-to-end through the real diffusion pipeline (Step 1.3), not just the raw shader.
+TEST_F( SimulationBuilderTest, Behaviour_Cytokine_RisesNearKillSite )
+{
+    if( !m_device )
+        GTEST_SKIP();
+
+    SimulationBlueprint blueprint;
+    blueprint.SetDomainSize( glm::vec3( 10.0f ), 1.0f );
+    blueprint.ConfigureSpatialPartitioning()
+        .SetMethod( DigitalTwin::SpatialPartitioningMethod::HashGrid )
+        .SetCellSize( 10.0f )
+        .SetMaxDensity( 64 )
+        .SetComputeHz( 60.0f );
+
+    // Cytokine starts empty -- a kill should raise it somewhere near the kill site.
+    blueprint.AddGridField( "Cytokine" )
+        .SetInitializer( DigitalTwin::GridInitializer::Constant( 0.0f ) )
+        .SetDiffusionCoefficient( 0.01f )
+        .SetDecayRate( 0.0f )
+        .SetComputeHz( 60.0f );
+
+    blueprint.AddAgentGroup( "Tumor" )
+        .SetCount( 1 )
+        .SetDistribution( { glm::vec4( 0.0f, 0.0f, 0.0f, 1.0f ) } )
+        .SetInitialCellType( 4 ) // TumorCell
+        .AddBehaviour( Behaviours::AntigenExpression{ 0b011u } );
+
+    blueprint.AddAgentGroup( "Immune" )
+        .SetCount( 1 )
+        .SetDistribution( { glm::vec4( 1.0f, 0.0f, 0.0f, 1.0f ) } )
+        .SetInitialCellType( 5 ) // ImmuneCell
+        .AddBehaviour( Behaviours::AntigenKilling{ 0b001u, 5.0f, 1.0e6f, 0.0f, "Cytokine", 5.0f } );
+
+    SimulationBuilder builder( m_resourceManager.get(), m_streamingManager.get() );
+    SimulationState   state = builder.Build( blueprint );
+
+    auto compCtxHandle = m_device->CreateThreadContext( QueueType::COMPUTE );
+    auto compCtx       = m_device->GetThreadContext( compCtxHandle );
+    auto compCmd       = compCtx->GetCommandBuffer( compCtx->CreateCommandBuffer() );
+
+    // Two dispatches — the kill/injection lands in one frame's delta buffer; the field's
+    // own diffusion task folds it into the texture (same convention as the Perfusion tests).
+    GraphDispatcher dispatcher;
+    compCmd->Begin();
+    dispatcher.Dispatch( &state.computeGraph, compCmd, nullptr, 1.0f / 60.0f, 1.0f, 0 );
+    dispatcher.Dispatch( &state.computeGraph, compCmd, nullptr, 1.0f / 60.0f, 1.0f + 1.0f / 60.0f, 1 );
+    compCmd->End();
+
+    m_device->GetComputeQueue()->Submit( { compCmd } );
+    m_device->GetComputeQueue()->WaitIdle();
+
+    std::vector<float> cytokineData = ReadbackGrid( state, 0, m_streamingManager.get() );
+
+    bool anyPositive = false;
+    for( float v: cytokineData )
+        if( v > 0.0f ) { anyPositive = true; break; }
+
+    EXPECT_TRUE( anyPositive ) << "Cytokine field must rise somewhere after a matched kill event";
+
+    state.Destroy( m_resourceManager.get() );
+}
+
+// Shared scenario for the cytokine-storm feedback tests (Step 1.4): 1 immune cell + 5
+// clustered, all-matched tumor cells. Runs `frames` dispatches and returns how many tumor
+// cells ended Apoptotic — the aggregate signal an emergent storm should move.
+static int RunCytokineStormScenario( ResourceManager* rm, StreamingManager* stream, Device* device,
+                                     float feedbackGain, float decayRate, int frames )
+{
+    SimulationBlueprint blueprint;
+    blueprint.SetDomainSize( glm::vec3( 30.0f ), 3.0f );
+    blueprint.ConfigureSpatialPartitioning()
+        .SetMethod( SpatialPartitioningMethod::HashGrid )
+        .SetCellSize( 30.0f )
+        .SetMaxDensity( 64 )
+        .SetComputeHz( 60.0f );
+
+    blueprint.AddGridField( "Cytokine" )
+        .SetInitializer( GridInitializer::Constant( 0.0f ) )
+        .SetDiffusionCoefficient( 0.0f )
+        .SetDecayRate( decayRate )
+        .SetComputeHz( 60.0f );
+
+    blueprint.AddAgentGroup( "Tumor" )
+        .SetCount( 5 )
+        .SetDistribution( { glm::vec4( 0.0f, 0.0f, 0.0f, 1.0f ), glm::vec4( 1.0f, 0.0f, 0.0f, 1.0f ),
+                            glm::vec4( 2.0f, 0.0f, 0.0f, 1.0f ), glm::vec4( 3.0f, 0.0f, 0.0f, 1.0f ),
+                            glm::vec4( 4.0f, 0.0f, 0.0f, 1.0f ) } )
+        .SetInitialCellType( 4 ) // TumorCell
+        .AddBehaviour( Behaviours::AntigenExpression{ 0b001u } );
+
+    blueprint.AddAgentGroup( "Immune" )
+        .SetCount( 1 )
+        .SetDistribution( { glm::vec4( -2.0f, 0.0f, 0.0f, 1.0f ) } )
+        .SetInitialCellType( 5 ) // ImmuneCell
+        .AddBehaviour( Behaviours::AntigenKilling{ 0b001u, 10.0f, 0.3f, 0.0f, "Cytokine", 5.0f, feedbackGain } );
+
+    SimulationBuilder builder( rm, stream );
+    SimulationState   state = builder.Build( blueprint );
+
+    auto compCtxHandle = device->CreateThreadContext( QueueType::COMPUTE );
+    auto compCtx       = device->GetThreadContext( compCtxHandle );
+    auto compCmd       = compCtx->GetCommandBuffer( compCtx->CreateCommandBuffer() );
+
+    GraphDispatcher dispatcher;
+    compCmd->Begin();
+    int activeIdx = 0;
+    for( int f = 0; f < frames; ++f )
+    {
+        dispatcher.Dispatch( &state.computeGraph, compCmd, nullptr, 1.0f / 60.0f, static_cast<float>( f ) / 60.0f, activeIdx );
+        activeIdx ^= 1;
+    }
+    compCmd->End();
+
+    device->GetComputeQueue()->Submit( { compCmd } );
+    device->GetComputeQueue()->WaitIdle();
+
+    std::vector<PhenotypeData> tumorResults( 5 );
+    stream->ReadbackBufferImmediate( state.phenotypeBuffer, tumorResults.data(), 5 * sizeof( PhenotypeData ) );
+
+    int deadCount = 0;
+    for( const auto& p: tumorResults )
+        if( p.lifecycleState == 3u )
+            deadCount++;
+
+    state.Destroy( rm );
+    return deadCount;
+}
+
+// With cytokine feedback on, released cytokine raises the local kill rate, which releases
+// more cytokine -- an emergent storm that clears more of the tumor cluster than the same
+// baseline kill rate without feedback, in the same number of frames.
+TEST_F( SimulationBuilderTest, Behaviour_CytokineStorm_FeedbackAmplifies )
+{
+    if( !m_device )
+        GTEST_SKIP();
+
+    int deadNoFeedback = RunCytokineStormScenario( m_resourceManager.get(), m_streamingManager.get(), m_device.get(),
+                                                   /*feedbackGain=*/0.0f, /*decayRate=*/0.01f, /*frames=*/60 );
+    int deadWithFeedback = RunCytokineStormScenario( m_resourceManager.get(), m_streamingManager.get(), m_device.get(),
+                                                     /*feedbackGain=*/2.0f, /*decayRate=*/0.01f, /*frames=*/60 );
+
+    EXPECT_GT( deadWithFeedback, deadNoFeedback )
+        << "Cytokine feedback must accelerate killing over the same window: noFeedback=" << deadNoFeedback
+        << " withFeedback=" << deadWithFeedback;
+}
+
+// A high field decayRate drains cytokine before it can compound -- it bounds the storm.
+// Same feedback gain in both runs; only decayRate differs.
+TEST_F( SimulationBuilderTest, Behaviour_CytokineStorm_DecayControls )
+{
+    if( !m_device )
+        GTEST_SKIP();
+
+    int deadLowDecay = RunCytokineStormScenario( m_resourceManager.get(), m_streamingManager.get(), m_device.get(),
+                                                 /*feedbackGain=*/2.0f, /*decayRate=*/0.01f, /*frames=*/60 );
+    int deadHighDecay = RunCytokineStormScenario( m_resourceManager.get(), m_streamingManager.get(), m_device.get(),
+                                                  /*feedbackGain=*/2.0f, /*decayRate=*/50.0f, /*frames=*/60 );
+
+    EXPECT_LE( deadHighDecay, deadLowDecay )
+        << "High field decay must bound the storm: lowDecay=" << deadLowDecay
+        << " highDecay=" << deadHighDecay;
+}

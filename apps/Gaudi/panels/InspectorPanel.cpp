@@ -249,6 +249,8 @@ namespace Gaudi
             if constexpr( std::is_same_v<T, DigitalTwin::Behaviours::VesselSeed> )       return "Behaviour — Vessel Seed";
             if constexpr( std::is_same_v<T, DigitalTwin::Behaviours::PhalanxActivation> ) return "Behaviour — Phalanx Activation";
             if constexpr( std::is_same_v<T, DigitalTwin::Behaviours::BasementMembrane> ) return "Behaviour — Basement Membrane";
+            if constexpr( std::is_same_v<T, DigitalTwin::Behaviours::AntigenExpression> ) return "Behaviour — Antigen Expression";
+            if constexpr( std::is_same_v<T, DigitalTwin::Behaviours::AntigenKilling> )    return "Behaviour — Antigen Killing";
             return "Behaviour";
         }, record.behaviour );
         ImGui::TextDisabled( "%s", behaviourTypeName );
@@ -421,6 +423,30 @@ namespace Gaudi
                 {
                     ImGui::LabelText( "Field", "%s", b.fieldName.c_str() );
                     changed |= ImGui::SliderFloat( "Rate", &b.rate, 0.01f, 50.0f );
+                }
+                else if constexpr( std::is_same_v<T, DigitalTwin::Behaviours::AntigenExpression> )
+                {
+                    int presented = static_cast<int>( b.presentedAntigens );
+                    if( ImGui::InputInt( "Presented Antigens (bitmask)", &presented ) )
+                    {
+                        b.presentedAntigens = static_cast<uint32_t>( std::max( 0, presented ) );
+                        changed             = true;
+                    }
+                }
+                else if constexpr( std::is_same_v<T, DigitalTwin::Behaviours::AntigenKilling> )
+                {
+                    int recognized = static_cast<int>( b.recognizedAntigens );
+                    if( ImGui::InputInt( "Recognized Antigens (bitmask)", &recognized ) )
+                    {
+                        b.recognizedAntigens = static_cast<uint32_t>( std::max( 0, recognized ) );
+                        changed              = true;
+                    }
+                    changed |= ImGui::SliderFloat( "Contact Distance", &b.contactDistance, 0.1f, 10.0f );
+                    changed |= ImGui::SliderFloat( "Kill Prob / sec", &b.killProbPerSec, 0.0f, 5.0f );
+                    changed |= ImGui::SliderFloat( "Vaccine Start Time (s)", &b.startTime, 0.0f, 120.0f );
+                    ImGui::LabelText( "Cytokine Field", "%s", b.cytokineField.empty() ? "(none)" : b.cytokineField.c_str() );
+                    changed |= ImGui::SliderFloat( "Cytokine Release / Kill", &b.cytokineReleasePerKill, 0.0f, 20.0f );
+                    changed |= ImGui::SliderFloat( "Cytokine Feedback Gain", &b.cytokineFeedbackGain, 0.0f, 10.0f );
                 }
             },
             record.behaviour );

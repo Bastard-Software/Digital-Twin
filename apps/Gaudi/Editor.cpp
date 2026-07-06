@@ -283,6 +283,26 @@ namespace Gaudi
               "Target: ~30 FPS. Use this scene for TraceCapture\n"
               "and performance profiling.",
               &Demos::SetupStressTestDemo },
+
+            { "Tumor-Immune Vaccine Response",
+              "Two tumour subclones (red=TumorMatched, blue=TumorEscaping)\n"
+              "grow side by side, sharing identical biology but presenting\n"
+              "different neoantigens. Immune cells (green) patrol nearby.\n\n"
+              "Sequence:\n"
+              "  t=0-15s  Both subclones grow O2-gated; immune cells patrol\n"
+              "           (Brownian only — no cytokine yet).\n"
+              "  t=15s    Vaccine administered — AntigenKilling activates.\n"
+              "  t=15s+   Immune cells kill TumorMatched on contact\n"
+              "           (antigen-specific, perforin/granzyme), releasing\n"
+              "           cytokine at the kill site. Chemotaxis recruits\n"
+              "           more immune cells toward the inflamed zone;\n"
+              "           local cytokine feeds back into the kill rate —\n"
+              "           an emergent cytokine storm clears the cluster.\n"
+              "  throughout TumorEscaping shares no antigen with the\n"
+              "           repertoire and keeps growing — immune escape.\n\n"
+              "Demonstrates: AntigenExpression, AntigenKilling,\n"
+              "cytokine-storm feedback, antigen-specific immune escape.",
+              &Demos::SetupTumorImmuneVaccineDemo },
         };
 
         ImGuiIO& io = ImGui::GetIO();

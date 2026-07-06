@@ -3,6 +3,7 @@
 #include "simulation/MorphologyGenerator.h"
 #include "simulation/SimulationBlueprint.h"
 #include "simulation/SimulationBuilder.h"
+#include "simulation/SimulationValidator.h"
 #include "simulation/SpatialDistribution.h"
 #include "simulation/Phenotype.h"
 #include <gtest/gtest.h>
@@ -5393,4 +5394,246 @@ TEST_F( SimulationBuilderTest, Behaviour_CytokineStorm_DecayControls )
     EXPECT_LE( deadHighDecay, deadLowDecay )
         << "High field decay must bound the storm: lowDecay=" << deadLowDecay
         << " highDecay=" << deadHighDecay;
+}
+
+// =============================================================================
+// TumorImmuneVaccineDemo end-to-end tests (Step 2)
+// =============================================================================
+//
+// Mirrors apps/Gaudi/demos/TumorImmuneVaccineDemo.cpp's structure (same field
+// names, same behaviour composition, same tumorCellCycle/tumorMechanics
+// values) at a compressed scale and timescale suitable for a fast test —
+// same pattern as ECTubeDemo_BuildsWithMultiplePlates_WithoutExplosion. All
+// three groups sit close enough together that every immune cell can reach
+// every tumor cell of BOTH subclones, so a surviving TumorEscaping cell is
+// provably due to antigen mismatch, not geometry.
+static SimulationBlueprint BuildTumorImmuneDemoBlueprint( float vaccineTime )
+{
+    SimulationBlueprint blueprint;
+    blueprint.SetName( "TumorImmuneVaccineDemo test" );
+    blueprint.SetDomainSize( glm::vec3( 20.0f ), 2.0f );
+    blueprint.ConfigureSpatialPartitioning()
+        .SetMethod( SpatialPartitioningMethod::HashGrid )
+        .SetCellSize( 10.0f )
+        .SetMaxDensity( 64 )
+        .SetComputeHz( 60.0f );
+
+    blueprint.AddGridField( "Oxygen" )
+        .SetInitializer( GridInitializer::Gaussian( glm::vec3( 0.0f ), 10.0f, 80.0f ) )
+        .SetDiffusionCoefficient( 2.0f )
+        .SetDecayRate( 0.0f )
+        .SetComputeHz( 60.0f );
+
+    blueprint.AddGridField( "Cytokine" )
+        .SetInitializer( GridInitializer::Constant( 0.0f ) )
+        .SetDiffusionCoefficient( 1.0f )
+        .SetDecayRate( 0.05f )
+        .SetComputeHz( 60.0f );
+
+    auto tumorCellCycle = BiologyGenerator::StandardCellCycle()
+                              .SetBaseDoublingTime( 10.0f / 3600.0f )
+                              .SetProliferationOxygenTarget( 60.0f )
+                              .SetArrestPressureThreshold( 20.0f )
+                              .SetHypoxiaOxygenThreshold( 20.0f )
+                              .SetNecrosisOxygenThreshold( 8.0f )
+                              .SetApoptosisRate( 0.0f )
+                              .Build();
+
+    auto tumorMechanics = BiomechanicsGenerator::JKR()
+                              .SetYoungsModulus( 20.0f )
+                              .SetPoissonRatio( 0.4f )
+                              .SetAdhesionEnergy( 1.5f )
+                              .SetMaxInteractionRadius( 1.5f )
+                              .Build();
+
+    // TumorMatched (antigen bit 0) — 4 cells, tight cluster at x=-2.
+    auto& tumorMatched = blueprint.AddAgentGroup( "TumorMatched" )
+                             .SetCount( 4 )
+                             .SetDistribution( SpatialDistribution::UniformInSphere( 4, 1.5f, glm::vec3( -2.0f, 0.0f, 0.0f ) ) )
+                             .SetInitialCellType( 4 );
+    tumorMatched.AddBehaviour( Behaviours::AntigenExpression{ 0b001u } ).SetHz( 60.0f );
+    tumorMatched.AddBehaviour( Behaviours::ConsumeField{ "Oxygen", 12.0f } ).SetHz( 60.0f );
+    tumorMatched.AddBehaviour( tumorCellCycle ).SetHz( 60.0f );
+    tumorMatched.AddBehaviour( tumorMechanics ).SetHz( 60.0f );
+
+    // TumorEscaping (antigen bit 1) — 2 cells, tight cluster at x=+2. Same range from the
+    // immune cluster as TumorMatched -- survival must come from antigen mismatch, not distance.
+    auto& tumorEscaping = blueprint.AddAgentGroup( "TumorEscaping" )
+                              .SetCount( 2 )
+                              .SetDistribution( SpatialDistribution::UniformInSphere( 2, 1.0f, glm::vec3( 2.0f, 0.0f, 0.0f ) ) )
+                              .SetInitialCellType( 4 );
+    tumorEscaping.AddBehaviour( Behaviours::AntigenExpression{ 0b010u } ).SetHz( 60.0f );
+    tumorEscaping.AddBehaviour( Behaviours::ConsumeField{ "Oxygen", 12.0f } ).SetHz( 60.0f );
+    tumorEscaping.AddBehaviour( tumorCellCycle ).SetHz( 60.0f );
+    tumorEscaping.AddBehaviour( tumorMechanics ).SetHz( 60.0f );
+
+    // ImmuneCells — 3 cells at the origin, within contactDistance of both tumor clusters.
+    auto& immune = blueprint.AddAgentGroup( "ImmuneCells" )
+                       .SetCount( 3 )
+                       .SetDistribution( SpatialDistribution::UniformInSphere( 3, 1.0f, glm::vec3( 0.0f ) ) )
+                       .SetInitialCellType( 5 );
+    immune.AddBehaviour( Behaviours::BrownianMotion{ 0.6f } ).SetHz( 60.0f );
+    immune.AddBehaviour( Behaviours::Chemotaxis{ "Cytokine", 8.0f, 0.05f, 4.0f } ).SetHz( 60.0f );
+    immune
+        .AddBehaviour( BiomechanicsGenerator::JKR()
+                           .SetYoungsModulus( 8.0f )
+                           .SetPoissonRatio( 0.4f )
+                           .SetAdhesionEnergy( 0.0f )
+                           .SetMaxInteractionRadius( 1.0f )
+                           .SetDampingCoefficient( 80.0f )
+                           .Build() )
+        .SetHz( 60.0f );
+    immune.AddBehaviour( Behaviours::AntigenKilling{
+                             0b001u,      // recognizedAntigens -- TumorMatched only
+                             4.5f,        // contactDistance -- reaches both clusters from the origin
+                             2.0f,        // killProbPerSec -- strong, for a fast/robust test
+                             vaccineTime, // startTime -- vaccine gate
+                             "Cytokine",
+                             5.0f,        // cytokineReleasePerKill
+                             2.0f } )     // cytokineFeedbackGain
+        .SetHz( 60.0f );
+
+    return blueprint;
+}
+
+// Runs `frames` dispatches on an already-built state, threading the real returned
+// active index from each call into the next (matches the engine's own ping-pong
+// bookkeeping instead of assuming every frame flips). Returns the final active
+// index, which the caller needs to read back agent positions from the correct
+// ping-pong slot (state.agentBuffers[idx]) -- phenotypeBuffer is unaffected since
+// it isn't ping-ponged.
+static uint32_t DispatchFrames( Device* device, SimulationState& state, int frames, float startTotalTime, uint32_t startActiveIdx = 0 )
+{
+    auto compCtxHandle = device->CreateThreadContext( QueueType::COMPUTE );
+    auto compCtx       = device->GetThreadContext( compCtxHandle );
+    auto compCmd       = compCtx->GetCommandBuffer( compCtx->CreateCommandBuffer() );
+
+    GraphDispatcher dispatcher;
+    compCmd->Begin();
+    uint32_t activeIdx = startActiveIdx;
+    for( int f = 0; f < frames; ++f )
+    {
+        activeIdx = dispatcher.Dispatch( &state.computeGraph, compCmd, nullptr, 1.0f / 60.0f,
+                                         startTotalTime + static_cast<float>( f ) / 60.0f, activeIdx );
+    }
+    compCmd->End();
+
+    device->GetComputeQueue()->Submit( { compCmd } );
+    device->GetComputeQueue()->WaitIdle();
+
+    return activeIdx;
+}
+
+// Validator is clean and the whole demo runs 90 frames (1.5 s) without any agent going NaN
+// or leaving the domain -- the basic build-and-run sanity check every demo needs.
+TEST_F( SimulationBuilderTest, TumorImmuneDemo_BuildsWithoutExplosion )
+{
+    if( !m_device )
+        GTEST_SKIP();
+
+    SimulationBlueprint blueprint = BuildTumorImmuneDemoBlueprint( 0.05f );
+
+    ValidationResult validation = SimulationValidator::Validate( blueprint );
+    EXPECT_TRUE( validation.IsValid() ) << "TumorImmuneVaccineDemo blueprint must validate cleanly";
+
+    SimulationBuilder builder( m_resourceManager.get(), m_streamingManager.get() );
+    SimulationState   state = builder.Build( blueprint );
+
+    uint32_t finalIdx = DispatchFrames( m_device.get(), state, 90, 0.0f );
+
+    // 4 + 2 + 3 = 9 agents total, laid out across 3 groups of paddedCount=131072 each.
+    std::vector<glm::vec4> tumorMatched( 4 ), tumorEscaping( 2 ), immuneCells( 3 );
+    m_streamingManager->ReadbackBufferImmediate( state.agentBuffers[ finalIdx ], tumorMatched.data(), 4 * sizeof( glm::vec4 ), 0 );
+    m_streamingManager->ReadbackBufferImmediate( state.agentBuffers[ finalIdx ], tumorEscaping.data(), 2 * sizeof( glm::vec4 ), 131072 * sizeof( glm::vec4 ) );
+    m_streamingManager->ReadbackBufferImmediate( state.agentBuffers[ finalIdx ], immuneCells.data(), 3 * sizeof( glm::vec4 ), 262144 * sizeof( glm::vec4 ) );
+
+    auto checkBounded = [&]( const std::vector<glm::vec4>& agents, const char* label )
+    {
+        for( size_t i = 0; i < agents.size(); ++i )
+        {
+            const glm::vec4& p = agents[ i ];
+            EXPECT_FALSE( std::isnan( p.x ) || std::isnan( p.y ) || std::isnan( p.z ) )
+                << label << " agent " << i << " position went NaN";
+            EXPECT_LT( std::abs( p.x ), 10.0f ) << label << " agent " << i << " escaped X bounds";
+            EXPECT_LT( std::abs( p.y ), 10.0f ) << label << " agent " << i << " escaped Y bounds";
+            EXPECT_LT( std::abs( p.z ), 10.0f ) << label << " agent " << i << " escaped Z bounds";
+        }
+    };
+    checkBounded( tumorMatched, "TumorMatched" );
+    checkBounded( tumorEscaping, "TumorEscaping" );
+    checkBounded( immuneCells, "ImmuneCells" );
+
+    state.Destroy( m_resourceManager.get() );
+}
+
+// The scientific claim: after the vaccine gate opens and enough frames pass, the
+// antigen-matched subclone is cleared while the antigen-mismatched subclone survives —
+// same immune cells, same reach, fate determined purely by antigen genotype.
+TEST_F( SimulationBuilderTest, TumorImmuneDemo_MatchedSubcloneCleared_MismatchedEscapes )
+{
+    if( !m_device )
+        GTEST_SKIP();
+
+    SimulationBlueprint blueprint = BuildTumorImmuneDemoBlueprint( 0.05f );
+
+    SimulationBuilder builder( m_resourceManager.get(), m_streamingManager.get() );
+    SimulationState   state = builder.Build( blueprint );
+
+    DispatchFrames( m_device.get(), state, 90, 0.0f );
+
+    std::vector<PhenotypeData> matchedResult( 4 ), escapingResult( 2 );
+    m_streamingManager->ReadbackBufferImmediate( state.phenotypeBuffer, matchedResult.data(), 4 * sizeof( PhenotypeData ), 0 );
+    m_streamingManager->ReadbackBufferImmediate( state.phenotypeBuffer, escapingResult.data(), 2 * sizeof( PhenotypeData ), 131072 * sizeof( PhenotypeData ) );
+
+    int matchedDead = 0;
+    for( const auto& p: matchedResult )
+        if( p.lifecycleState == 3u )
+            matchedDead++;
+    int escapingAlive = 0;
+    for( const auto& p: escapingResult )
+        if( p.lifecycleState != 3u )
+            escapingAlive++;
+
+    EXPECT_GT( matchedDead, 0 ) << "At least some antigen-matched tumour cells must be cleared";
+    EXPECT_EQ( escapingAlive, 2 ) << "All antigen-mismatched (escaping) tumour cells must survive -- immune escape";
+
+    state.Destroy( m_resourceManager.get() );
+}
+
+// The vaccine gate: no kill before startTime, clearance after it opens. Two checkpoints
+// on the SAME running simulation -- dispatch up to just before the gate, assert nothing
+// died yet, then dispatch past it and assert clearance has begun.
+TEST_F( SimulationBuilderTest, TumorImmuneDemo_VaccineGate_NoKillBeforeT_ClearanceAfterT )
+{
+    if( !m_device )
+        GTEST_SKIP();
+
+    constexpr float k_vaccineTime = 1.0f; // seconds
+    SimulationBlueprint blueprint = BuildTumorImmuneDemoBlueprint( k_vaccineTime );
+
+    SimulationBuilder builder( m_resourceManager.get(), m_streamingManager.get() );
+    SimulationState   state = builder.Build( blueprint );
+
+    // Checkpoint 1: dispatch up to just before the gate opens (0.9 s < 1.0 s).
+    uint32_t idx = DispatchFrames( m_device.get(), state, 54, 0.0f ); // 54 frames @ 1/60s = 0.9s
+
+    std::vector<PhenotypeData> preGate( 4 );
+    m_streamingManager->ReadbackBufferImmediate( state.phenotypeBuffer, preGate.data(), 4 * sizeof( PhenotypeData ), 0 );
+    for( const auto& p: preGate )
+        EXPECT_EQ( p.lifecycleState, 0u ) << "No kill must occur before the vaccine startTime gate opens";
+
+    // Checkpoint 2: dispatch well past the gate (continues from t=0.9s to t=2.9s).
+    // Threads `idx` through so the ping-pong slot picks up exactly where checkpoint 1 left off.
+    DispatchFrames( m_device.get(), state, 120, 0.9f, idx );
+
+    std::vector<PhenotypeData> postGate( 4 );
+    m_streamingManager->ReadbackBufferImmediate( state.phenotypeBuffer, postGate.data(), 4 * sizeof( PhenotypeData ), 0 );
+    int deadAfterGate = 0;
+    for( const auto& p: postGate )
+        if( p.lifecycleState == 3u )
+            deadAfterGate++;
+
+    EXPECT_GT( deadAfterGate, 0 ) << "Clearance must begin once the vaccine gate has opened";
+
+    state.Destroy( m_resourceManager.get() );
 }

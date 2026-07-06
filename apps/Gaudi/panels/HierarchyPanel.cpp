@@ -73,6 +73,10 @@ namespace Gaudi
                     return "Cell Polarity";
                 else if constexpr( std::is_same_v<T, DigitalTwin::Behaviours::BasementMembrane> )
                     return "Basement Membrane";
+                else if constexpr( std::is_same_v<T, DigitalTwin::Behaviours::AntigenExpression> )
+                    return "Antigen Expression";
+                else if constexpr( std::is_same_v<T, DigitalTwin::Behaviours::AntigenKilling> )
+                    return b.cytokineField.empty() ? "Antigen Killing" : "Antigen Killing: " + b.cytokineField;
                 else
                     return "Unknown";
             },

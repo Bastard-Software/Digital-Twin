@@ -116,10 +116,15 @@ void main()
         outColor = mix(baseColor, vec4(0.3, 0.0, 0.8, 1.0), 0.7);
     }
     else if (state == 3u) {
-        outColor = mix(baseColor, vec4(1.0, 0.6, 0.0, 1.0), 0.8);
+        // Apoptotic — programmed death (CTL granzyme/perforin kill in the tumour-immune
+        // demo). The cell blebs and is cleared: fade to a pale, desaturated husk so an
+        // immune kill reads clearly differently from a hypoxic/starvation death (which
+        // blackens into a necrotic core, below).
+        outColor = mix(baseColor, vec4(0.90, 0.93, 0.96, 1.0), 0.85);
     }
     else if (state == 4u) {
-        outColor = vec4(0.15, 0.12, 0.12, 1.0);
+        // Necrotic — starvation/hypoxia rupture. Blackened dead tissue.
+        outColor = vec4(0.12, 0.10, 0.10, 1.0);
     }
     else {
         outColor = baseColor;

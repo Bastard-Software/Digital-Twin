@@ -35,9 +35,11 @@ std::vector<float> ReadbackGrid( DigitalTwin::SimulationState& state, uint32_t f
     // Pre-allocate CPU memory for the incoming GPU data
     std::vector<float> resultData( voxelCount, 0.0f );
 
-    // 2. Identify which texture is currently holding the readable data (Ping-Pong state logic)
-    // This ensures we always read the most up-to-date integrated values after compute dispatches
-    uint32_t      currentReadIndex = field.currentReadIndex;
+    // 2. Identify which texture is currently holding the readable data. The field ping-pong now
+    // lives on the ComputeGraph (advanced once per frame, independent of the agent buffer index),
+    // so read the slot it points at rather than the per-field currentReadIndex (which is only
+    // synced by the engine's Play loop, not by raw GraphDispatcher::Dispatch in tests).
+    uint32_t      currentReadIndex = state.computeGraph.GetFieldActive();
     TextureHandle texToRead        = field.textures[ currentReadIndex ];
 
     // 3. Perform immediate synchronous readback using our StreamingManager pipeline
@@ -5232,6 +5234,72 @@ TEST_F( SimulationBuilderTest, Behaviour_AntigenKilling_MismatchedSubcloneEscape
     state.Destroy( m_resourceManager.get() );
 }
 
+// Graded recognition wired through the Builder: two subclones present the SAME antigen bit, but
+// AntigenExpression.presentationLevel differs. The Builder must broadcast each group's level into
+// immuneStateBuffer.antigenPresentation so the kill shader scales the rate — full presentation is
+// cleared, fully-downregulated (level 0) presentation escapes despite the identical bit match.
+TEST_F( SimulationBuilderTest, Behaviour_AntigenExpression_PresentationLevelGatesKilling )
+{
+    if( !m_device )
+        GTEST_SKIP();
+
+    SimulationBlueprint blueprint;
+    blueprint.SetDomainSize( glm::vec3( 30.0f ), 1.0f );
+    blueprint.ConfigureSpatialPartitioning()
+        .SetMethod( DigitalTwin::SpatialPartitioningMethod::HashGrid )
+        .SetCellSize( 30.0f )
+        .SetMaxDensity( 64 )
+        .SetComputeHz( 60.0f );
+
+    // Group 0: immunogenic — presents bit 0 at full MHC-I density.
+    blueprint.AddAgentGroup( "TumorImmunogenic" )
+        .SetCount( 1 )
+        .SetDistribution( { glm::vec4( 0.0f, 0.0f, 0.0f, 1.0f ) } )
+        .SetInitialCellType( 4 )
+        .AddBehaviour( Behaviours::AntigenExpression{ 0b001u, 1.0f } );
+
+    // Group 1: escape variant — presents the SAME bit 0 but fully downregulated (level 0).
+    blueprint.AddAgentGroup( "TumorMHCLow" )
+        .SetCount( 1 )
+        .SetDistribution( { glm::vec4( 2.0f, 0.0f, 0.0f, 1.0f ) } )
+        .SetInitialCellType( 4 )
+        .AddBehaviour( Behaviours::AntigenExpression{ 0b001u, 0.0f } );
+
+    // Group 2: killer between them, both within contactDistance.
+    blueprint.AddAgentGroup( "Immune" )
+        .SetCount( 1 )
+        .SetDistribution( { glm::vec4( 1.0f, 0.0f, 0.0f, 1.0f ) } )
+        .SetInitialCellType( 5 )
+        .AddBehaviour( Behaviours::AntigenKilling{ 0b001u, 5.0f, 1.0e6f, 0.0f } );
+
+    SimulationBuilder builder( m_resourceManager.get(), m_streamingManager.get() );
+    SimulationState   state = builder.Build( blueprint );
+
+    auto compCtxHandle = m_device->CreateThreadContext( QueueType::COMPUTE );
+    auto compCtx       = m_device->GetThreadContext( compCtxHandle );
+    auto compCmd       = compCtx->GetCommandBuffer( compCtx->CreateCommandBuffer() );
+
+    GraphDispatcher dispatcher;
+    compCmd->Begin();
+    dispatcher.Dispatch( &state.computeGraph, compCmd, nullptr, 1.0f / 60.0f, 1.0f, 0 );
+    compCmd->End();
+
+    m_device->GetComputeQueue()->Submit( { compCmd } );
+    m_device->GetComputeQueue()->WaitIdle();
+
+    PhenotypeData immunogenic{}, mhcLow{};
+    m_streamingManager->ReadbackBufferImmediate( state.phenotypeBuffer, &immunogenic, sizeof( PhenotypeData ), 0 );
+    m_streamingManager->ReadbackBufferImmediate(
+        state.phenotypeBuffer, &mhcLow, sizeof( PhenotypeData ), 131072 * sizeof( PhenotypeData ) );
+
+    EXPECT_EQ( immunogenic.lifecycleState, 3u )
+        << "Full-presentation subclone must be killed (Apoptotic)";
+    EXPECT_EQ( mhcLow.lifecycleState, 0u )
+        << "Zero-presentation subclone must escape (stay Live) despite the identical antigen bit";
+
+    state.Destroy( m_resourceManager.get() );
+}
+
 // A matched kill with cytokineField wired up must raise the Cytokine field somewhere in the
 // domain -- end-to-end through the real diffusion pipeline (Step 1.3), not just the raw shader.
 TEST_F( SimulationBuilderTest, Behaviour_Cytokine_RisesNearKillSite )
@@ -5634,6 +5702,210 @@ TEST_F( SimulationBuilderTest, TumorImmuneDemo_VaccineGate_NoKillBeforeT_Clearan
             deadAfterGate++;
 
     EXPECT_GT( deadAfterGate, 0 ) << "Clearance must begin once the vaccine gate has opened";
+
+    state.Destroy( m_resourceManager.get() );
+}
+
+// =============================================================================
+// TumorMicroenvironmentDemo end-to-end test (Step 2)
+// =============================================================================
+//
+// Compressed mirror of apps/Gaudi/demos/TumorMicroenvironmentDemo.cpp. Exercises the whole
+// heterogeneous-tumour composition through the Builder in one build: graded MHC-I presentation,
+// NormalCell sparing, antigen-loss escape, SecreteField (decoy chemokine), and a cytotoxic-
+// cytokine killer group. All groups sit close enough that every CTL can reach every tumour cell,
+// so a surviving cell is provably due to antigen genotype / presentation, not geometry.
+TEST_F( SimulationBuilderTest, TumorMicroenvDemo_GradedClearance_NormalSpared_AntigenLossEscapes )
+{
+    if( !m_device )
+        GTEST_SKIP();
+
+    SimulationBlueprint blueprint;
+    blueprint.SetName( "TumorMicroenv test" );
+    blueprint.SetDomainSize( glm::vec3( 30.0f ), 2.0f );
+    blueprint.ConfigureSpatialPartitioning()
+        .SetMethod( SpatialPartitioningMethod::HashGrid )
+        .SetCellSize( 30.0f )
+        .SetMaxDensity( 64 )
+        .SetComputeHz( 60.0f );
+
+    blueprint.AddGridField( "Oxygen" )
+        .SetInitializer( GridInitializer::Gaussian( glm::vec3( 0.0f ), 15.0f, 300.0f ) )
+        .SetDiffusionCoefficient( 4.0f ).SetDecayRate( 0.0f ).SetComputeHz( 60.0f );
+    blueprint.AddGridField( "CytotoxicCytokine" )
+        .SetInitializer( GridInitializer::Constant( 0.0f ) )
+        .SetDiffusionCoefficient( 0.2f ).SetDecayRate( 0.005f ).SetComputeHz( 60.0f );
+    blueprint.AddGridField( "DecoyChemokine" )
+        .SetInitializer( GridInitializer::Constant( 0.0f ) )
+        .SetDiffusionCoefficient( 0.4f ).SetDecayRate( 0.01f ).SetComputeHz( 60.0f );
+
+    auto cellCycle = BiologyGenerator::StandardCellCycle().SetBaseDoublingTime( 160.0f / 3600.0f )
+                         .SetProliferationOxygenTarget( 60.0f ).SetArrestPressureThreshold( 20.0f )
+                         .SetHypoxiaOxygenThreshold( 15.0f ).SetNecrosisOxygenThreshold( 6.0f )
+                         .SetApoptosisRate( 0.0f ).Build();
+    auto mechanics = BiomechanicsGenerator::JKR().SetYoungsModulus( 20.0f ).SetPoissonRatio( 0.4f )
+                         .SetAdhesionEnergy( 1.5f ).SetMaxInteractionRadius( 1.5f ).Build();
+    auto immuneMechanics = BiomechanicsGenerator::JKR().SetYoungsModulus( 8.0f ).SetPoissonRatio( 0.4f )
+                               .SetAdhesionEnergy( 0.0f ).SetMaxInteractionRadius( 1.0f ).SetDampingCoefficient( 80.0f ).Build();
+
+    const glm::vec3 centre( 0.0f );
+
+    // One interspersed tumour sphere (all fates share centre + radius), mirroring
+    // SetupTumorMicroenvironmentDemo: graded presentation, NormalCell sparing, antigen-loss escape,
+    // SecreteField decoy, and a two-Chemotaxis follower (the composition the ping-pong fix unblocked).
+
+    // Group 0: immunogenic (bit 0, full presentation).
+    auto& immunogenic = blueprint.AddAgentGroup( "Immunogenic" ).SetCount( 8 )
+                            .SetDistribution( SpatialDistribution::UniformInSphere( 8, 2.5f, centre ) ).SetInitialCellType( 4 );
+    immunogenic.AddBehaviour( Behaviours::AntigenExpression{ 0b001u, 1.0f } ).SetHz( 60.0f );
+    immunogenic.AddBehaviour( Behaviours::ConsumeField{ "Oxygen", 2.0f } ).SetHz( 60.0f );
+    immunogenic.AddBehaviour( cellCycle ).SetHz( 60.0f );
+    immunogenic.AddBehaviour( mechanics ).SetHz( 60.0f );
+
+    // Group 1: MHC-low escape (bit 0, presentation 0.2 -> cleared slower than the immunogenic clone).
+    auto& mhcLow = blueprint.AddAgentGroup( "MHClow" ).SetCount( 8 )
+                       .SetDistribution( SpatialDistribution::UniformInSphere( 8, 2.5f, centre ) ).SetInitialCellType( 4 );
+    mhcLow.AddBehaviour( Behaviours::AntigenExpression{ 0b001u, 0.2f } ).SetHz( 60.0f );
+    mhcLow.AddBehaviour( Behaviours::ConsumeField{ "Oxygen", 2.0f } ).SetHz( 60.0f );
+    mhcLow.AddBehaviour( cellCycle ).SetHz( 60.0f );
+    mhcLow.AddBehaviour( mechanics ).SetHz( 60.0f );
+
+    // Group 2: normal tissue (NormalCell type, no antigen) -> never a target.
+    auto& normal = blueprint.AddAgentGroup( "Normal" ).SetCount( 6 )
+                       .SetDistribution( SpatialDistribution::UniformInSphere( 6, 2.5f, centre ) ).SetInitialCellType( 6 );
+    normal.AddBehaviour( Behaviours::ConsumeField{ "Oxygen", 1.0f } ).SetHz( 60.0f );
+    normal.AddBehaviour( mechanics ).SetHz( 60.0f );
+
+    // Group 3: antigen-loss (bit 1 -> no overlap) + decoy secretion. Interspersed in the same sphere.
+    auto& antigenLoss = blueprint.AddAgentGroup( "AntigenLoss" ).SetCount( 8 )
+                            .SetDistribution( SpatialDistribution::UniformInSphere( 8, 2.5f, centre ) ).SetInitialCellType( 4 );
+    antigenLoss.AddBehaviour( Behaviours::AntigenExpression{ 0b010u, 1.0f } ).SetHz( 60.0f );
+    antigenLoss.AddBehaviour( Behaviours::ConsumeField{ "Oxygen", 2.0f } ).SetHz( 60.0f );
+    antigenLoss.AddBehaviour( Behaviours::SecreteField{ "DecoyChemokine", 50.0f } ).SetHz( 60.0f );
+    antigenLoss.AddBehaviour( cellCycle ).SetHz( 60.0f );
+    antigenLoss.AddBehaviour( mechanics ).SetHz( 60.0f );
+
+    // Group 4: cytotoxic T cells — recognise bit 0, reach every cell (contactDistance 12), high rate for a fast test.
+    auto& ctl = blueprint.AddAgentGroup( "CTL" ).SetCount( 10 )
+                    .SetDistribution( SpatialDistribution::UniformInSphere( 10, 2.5f, centre ) ).SetInitialCellType( 5 );
+    ctl.AddBehaviour( Behaviours::BrownianMotion{ 0.6f } ).SetHz( 60.0f );
+    ctl.AddBehaviour( Behaviours::Chemotaxis{ "CytotoxicCytokine", 8.0f, 0.05f, 4.0f } ).SetHz( 60.0f );
+    ctl.AddBehaviour( immuneMechanics ).SetHz( 60.0f );
+    ctl.AddBehaviour( Behaviours::AntigenKilling{ 0b001u, 12.0f, 2.0f, 0.05f, "CytotoxicCytokine", 40.0f, 0.03f } ).SetHz( 60.0f );
+
+    // Group 5: innate follower — TWO Chemotaxis behaviours (cytotoxic storm + decoy), the composition
+    // the field/agent ping-pong split unblocked. Must not corrupt killing or the cytokine field.
+    auto& follower = blueprint.AddAgentGroup( "Follower" ).SetCount( 6 )
+                         .SetDistribution( SpatialDistribution::UniformInSphere( 6, 4.0f, centre ) ).SetInitialCellType( 5 );
+    follower.AddBehaviour( Behaviours::BrownianMotion{ 0.6f } ).SetHz( 60.0f );
+    follower.AddBehaviour( Behaviours::Chemotaxis{ "CytotoxicCytokine", 8.0f, 0.05f, 4.0f } ).SetHz( 60.0f );
+    follower.AddBehaviour( Behaviours::Chemotaxis{ "DecoyChemokine", 8.0f, 0.05f, 4.0f } ).SetHz( 60.0f );
+    follower.AddBehaviour( immuneMechanics ).SetHz( 60.0f );
+
+    ValidationResult validation = SimulationValidator::Validate( blueprint );
+    EXPECT_TRUE( validation.IsValid() ) << "Microenvironment blueprint (NormalCell + graded presentation + SecreteField) must validate";
+
+    SimulationBuilder builder( m_resourceManager.get(), m_streamingManager.get() );
+    SimulationState   state = builder.Build( blueprint );
+
+    DispatchFrames( m_device.get(), state, 150, 0.0f ); // 2.5 s
+
+    auto countState = [&]( uint32_t groupIdx, uint32_t n, uint32_t lifecycleState )
+    {
+        std::vector<PhenotypeData> p( n );
+        m_streamingManager->ReadbackBufferImmediate( state.phenotypeBuffer, p.data(), n * sizeof( PhenotypeData ),
+                                                     static_cast<uint64_t>( groupIdx ) * 131072ull * sizeof( PhenotypeData ) );
+        int c = 0;
+        for( const auto& d: p ) if( d.lifecycleState == lifecycleState ) c++;
+        return c;
+    };
+
+    int immunoKilled = countState( 0, 8, 3u );
+    int mhcKilled    = countState( 1, 8, 3u );
+    int normalKilled = countState( 2, 6, 3u ) + countState( 2, 6, 4u ); // apoptotic OR necrotic
+    int agLossKilled = countState( 3, 8, 3u );
+
+    EXPECT_GT( immunoKilled, 0 ) << "Immunogenic (full presentation) cells must be killed";
+    EXPECT_EQ( normalKilled, 0 ) << "Normal tissue (no neoantigen) must never be killed -- CTL specificity";
+    EXPECT_EQ( agLossKilled, 0 ) << "Antigen-loss variant (bit 1) shares no antigen -- must be invisible to the repertoire";
+    EXPECT_GE( immunoKilled, mhcKilled )
+        << "Graded recognition: the full-presentation clone must be cleared at least as much as the MHC-low clone "
+        << "(immuno=" << immunoKilled << " mhcLow=" << mhcKilled << ")";
+
+    // SecreteField wired through: the decoy chemokine must rise somewhere.
+    std::vector<float> decoy = ReadbackGrid( state, 2, m_streamingManager.get() );
+    bool decoyRose = false;
+    for( float v: decoy ) if( v > 0.0f ) { decoyRose = true; break; }
+    EXPECT_TRUE( decoyRose ) << "Antigen-loss deposit must secrete DecoyChemokine into the field";
+
+    state.Destroy( m_resourceManager.get() );
+}
+
+// Regression for the field/agent ping-pong split: TWO Chemotaxis behaviours on ONE group must not
+// corrupt the simulation. Before the fix, the second ChainFlip position task desynced the single
+// shared ping-pong index, which (a) froze the cytokine field so kill-release stopped landing and
+// (b) stalled killing / forced false quiescence. Here a bystander group carries two Chemotaxis
+// behaviours (toward two different fields) while a killer clears a tumour and releases cytokine.
+TEST_F( SimulationBuilderTest, TwoChemotaxisOnOneGroup_DoesNotCorruptCytokineOrKilling )
+{
+    if( !m_device )
+        GTEST_SKIP();
+
+    SimulationBlueprint blueprint;
+    blueprint.SetDomainSize( glm::vec3( 30.0f ), 2.0f );
+    blueprint.ConfigureSpatialPartitioning()
+        .SetMethod( SpatialPartitioningMethod::HashGrid )
+        .SetCellSize( 30.0f ).SetMaxDensity( 64 ).SetComputeHz( 60.0f );
+
+    // Cytokine: released on kill (its rise is the "field not frozen" probe).
+    blueprint.AddGridField( "Cytokine" ).SetInitializer( GridInitializer::Constant( 0.0f ) )
+        .SetDiffusionCoefficient( 0.2f ).SetDecayRate( 0.005f ).SetComputeHz( 60.0f );
+    // Guide: a static gradient peaked at +X, so the bystanders have a clear direction to migrate.
+    blueprint.AddGridField( "Guide" ).SetInitializer( GridInitializer::Gaussian( glm::vec3( 12.0f, 0.0f, 0.0f ), 8.0f, 100.0f ) )
+        .SetDiffusionCoefficient( 0.0f ).SetDecayRate( 0.0f ).SetComputeHz( 60.0f );
+
+    // Group 0: tumour (presents bit 0).
+    blueprint.AddAgentGroup( "Tumor" ).SetCount( 6 )
+        .SetDistribution( SpatialDistribution::UniformInSphere( 6, 2.0f, glm::vec3( 0.0f ) ) ).SetInitialCellType( 4 )
+        .AddBehaviour( Behaviours::AntigenExpression{ 0b001u, 1.0f } );
+
+    // Group 1: killer (recognises bit 0, releases into Cytokine).
+    blueprint.AddAgentGroup( "Killer" ).SetCount( 6 )
+        .SetDistribution( SpatialDistribution::UniformInSphere( 6, 2.0f, glm::vec3( 0.0f ) ) ).SetInitialCellType( 5 )
+        .AddBehaviour( Behaviours::AntigenKilling{ 0b001u, 8.0f, 2.0f, 0.05f, "Cytokine", 40.0f, 0.0f } );
+
+    // Group 2: bystander with TWO Chemotaxis behaviours — the previously-corrupting composition.
+    auto& bystander = blueprint.AddAgentGroup( "Bystander" ).SetCount( 6 )
+                          .SetDistribution( SpatialDistribution::UniformInSphere( 6, 1.0f, glm::vec3( 0.0f ) ) ).SetInitialCellType( 5 );
+    bystander.AddBehaviour( Behaviours::Chemotaxis{ "Cytokine", 8.0f, 0.05f, 4.0f } ).SetHz( 60.0f );
+    bystander.AddBehaviour( Behaviours::Chemotaxis{ "Guide", 8.0f, 0.05f, 4.0f } ).SetHz( 60.0f );
+
+    SimulationBuilder builder( m_resourceManager.get(), m_streamingManager.get() );
+    SimulationState   state = builder.Build( blueprint );
+
+    uint32_t idx = DispatchFrames( m_device.get(), state, 120, 0.0f );
+
+    // (a) Killing still works — agents/phenotype buffers not corrupted by the extra flip.
+    std::vector<PhenotypeData> tumor( 6 );
+    m_streamingManager->ReadbackBufferImmediate( state.phenotypeBuffer, tumor.data(), 6 * sizeof( PhenotypeData ), 0 );
+    int killed = 0;
+    for( const auto& d: tumor ) if( d.lifecycleState == 3u ) killed++;
+    EXPECT_GT( killed, 0 ) << "Killing must still work with a two-Chemotaxis group present";
+
+    // (b) Cytokine release lands — the field is not frozen by the desync.
+    std::vector<float> cyto = ReadbackGrid( state, 0, m_streamingManager.get() );
+    float cytoPeak = 0.0f;
+    for( float v: cyto ) if( v > cytoPeak ) cytoPeak = v;
+    EXPECT_GT( cytoPeak, 0.0f ) << "Cytokine field must rise -- kill-release must not be frozen by the 2nd chemotaxis";
+
+    // (c) Bystanders actually migrated up the summed gradient toward the +X Guide peak.
+    std::vector<glm::vec4> bpos( 6 );
+    m_streamingManager->ReadbackBufferImmediate( state.agentBuffers[ idx ], bpos.data(), 6 * sizeof( glm::vec4 ),
+                                                 2ull * 131072ull * sizeof( glm::vec4 ) );
+    float meanX = 0.0f;
+    for( const auto& p: bpos ) meanX += p.x;
+    meanX /= 6.0f;
+    EXPECT_GT( meanX, 0.5f ) << "Bystanders must migrate up the summed chemokine gradient (toward the +X Guide peak)";
 
     state.Destroy( m_resourceManager.get() );
 }

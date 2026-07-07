@@ -9,8 +9,18 @@ namespace DigitalTwin
     uint32_t ComputeGraph::Execute( CommandBuffer* cmd, float dt, float totalTime, uint32_t activeIndex,
                                     GPUProfiler* profiler, uint32_t flightIndex )
     {
-        uint32_t    localActive  = activeIndex;
+        // Two independent ping-pong domains, one index each:
+        //   agentActive  — threaded in via activeIndex, flipped by every ChainFlip position task,
+        //                  returned to the caller (agent buffer continuity).
+        //   m_fieldActive — persists on the graph, advanced ONCE per frame, used only by field
+        //                  (diffusion PDE) tasks. Decoupling these means the field solver evolves
+        //                  correctly no matter how many position tasks flip the agent index — the
+        //                  fix for "a group with two Chemotaxis behaviours corrupts the sim".
+        // Field READERS (chemotaxis / antigen_kill sampling a field texture) bind via agentActive
+        // and so may sample the field one frame stale; harmless for a slowly-diffusing field.
+        uint32_t    agentActive  = activeIndex;
         std::string currentPhase;
+        bool        anyFieldTask = false;
 
         for( auto& task: m_tasks )
         {
@@ -30,7 +40,7 @@ namespace DigitalTwin
                     }
                 }
 
-                task.Record( cmd, totalTime, localActive );
+                task.Record( cmd, totalTime, task.IsFieldTask() ? m_fieldActive : agentActive );
 
                 VkMemoryBarrier2 barrier = { VK_STRUCTURE_TYPE_MEMORY_BARRIER_2 };
                 barrier.srcStageMask     = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT;
@@ -44,8 +54,10 @@ namespace DigitalTwin
 
                 cmd->PipelineBarrier( &depInfo );
 
-                if( task.GetChainFlip() )
-                    localActive = 1u - localActive;
+                if( task.IsFieldTask() )
+                    anyFieldTask = true;
+                else if( task.GetChainFlip() )
+                    agentActive = 1u - agentActive;
             }
         }
 
@@ -53,7 +65,12 @@ namespace DigitalTwin
         if( profiler && !currentPhase.empty() )
             profiler->EndZone( cmd, flightIndex, currentPhase, false );
 
-        return localActive;
+        // Advance the field ping-pong once per frame (all field PDEs this frame shared m_fieldActive;
+        // afterwards it points at the just-written textures). Only when a field task actually ran.
+        if( anyFieldTask )
+            m_fieldActive = 1u - m_fieldActive;
+
+        return agentActive;
     }
     ComputeTask* ComputeGraph::FindTask( const std::string& tag )
     {

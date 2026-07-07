@@ -2692,7 +2692,7 @@ TEST_F( ComputeTest, Shader_AntigenKill_MatchedAntigen_KillsTumor )
     size_t                     phenotypesSize = 2 * sizeof( PhenotypeData );
 
     std::vector<ImmuneStateData> immune = { { 0u, 0b001u, 0.0f, 0.0f },   // killer: recognizes bit 0
-                                            { 0b011u, 0u, 0.0f, 0.0f } }; // target: presents bits 0+1 -> shares bit 0
+                                            { 0b011u, 0u, 0.0f, 1.0f } }; // target: presents bits 0+1 -> shares bit 0
     size_t                        immuneSize = 2 * sizeof( ImmuneStateData );
 
     struct AgentHash { uint32_t hash; uint32_t agentIndex; };
@@ -2801,7 +2801,7 @@ TEST_F( ComputeTest, Shader_AntigenKill_MismatchedAntigen_TumorSurvives )
     size_t                     phenotypesSize = 2 * sizeof( PhenotypeData );
 
     std::vector<ImmuneStateData> immune = { { 0u, 0b001u, 0.0f, 0.0f },   // killer: recognizes bit 0
-                                            { 0b100u, 0u, 0.0f, 0.0f } }; // target: presents bit 2 only -- no overlap
+                                            { 0b100u, 0u, 0.0f, 1.0f } }; // target: presents bit 2 only -- no overlap
     size_t                        immuneSize = 2 * sizeof( ImmuneStateData );
 
     struct AgentHash { uint32_t hash; uint32_t agentIndex; };
@@ -2908,7 +2908,7 @@ TEST_F( ComputeTest, Shader_AntigenKill_OutOfRange_NoKill )
     std::vector<PhenotypeData> phenotypes     = { { 0u, 0.5f, 0.0f, 5u }, { 0u, 0.5f, 0.0f, 4u } };
     size_t                     phenotypesSize = 2 * sizeof( PhenotypeData );
 
-    std::vector<ImmuneStateData> immune = { { 0u, 0b001u, 0.0f, 0.0f }, { 0b001u, 0u, 0.0f, 0.0f } }; // matched
+    std::vector<ImmuneStateData> immune = { { 0u, 0b001u, 0.0f, 0.0f }, { 0b001u, 0u, 0.0f, 1.0f } }; // matched
     size_t                        immuneSize = 2 * sizeof( ImmuneStateData );
 
     struct AgentHash { uint32_t hash; uint32_t agentIndex; };
@@ -3014,7 +3014,7 @@ TEST_F( ComputeTest, Shader_AntigenKill_DeadSlot_Skipped )
     std::vector<PhenotypeData> phenotypes     = { { 0u, 0.5f, 0.0f, 5u }, { 0u, 0.5f, 0.0f, 4u } };
     size_t                     phenotypesSize = 2 * sizeof( PhenotypeData );
 
-    std::vector<ImmuneStateData> immune = { { 0u, 0b001u, 0.0f, 0.0f }, { 0b001u, 0u, 0.0f, 0.0f } }; // matched
+    std::vector<ImmuneStateData> immune = { { 0u, 0b001u, 0.0f, 0.0f }, { 0b001u, 0u, 0.0f, 1.0f } }; // matched
     size_t                        immuneSize = 2 * sizeof( ImmuneStateData );
 
     struct AgentHash { uint32_t hash; uint32_t agentIndex; };
@@ -3120,7 +3120,7 @@ TEST_F( ComputeTest, Shader_AntigenKill_BeforeStartTime_NoKill )
     std::vector<PhenotypeData> phenotypes     = { { 0u, 0.5f, 0.0f, 5u }, { 0u, 0.5f, 0.0f, 4u } };
     size_t                     phenotypesSize = 2 * sizeof( PhenotypeData );
 
-    std::vector<ImmuneStateData> immune = { { 0u, 0b001u, 0.0f, 0.0f }, { 0b001u, 0u, 0.0f, 0.0f } }; // matched
+    std::vector<ImmuneStateData> immune = { { 0u, 0b001u, 0.0f, 0.0f }, { 0b001u, 0u, 0.0f, 1.0f } }; // matched
     size_t                        immuneSize = 2 * sizeof( ImmuneStateData );
 
     struct AgentHash { uint32_t hash; uint32_t agentIndex; };
@@ -3228,7 +3228,7 @@ TEST_F( ComputeTest, Shader_AntigenKill_ReleasesCytokineOnKill )
     std::vector<PhenotypeData> phenotypes     = { { 0u, 0.5f, 0.0f, 5u }, { 0u, 0.5f, 0.0f, 4u } }; // ImmuneCell, TumorCell
     size_t                     phenotypesSize = 2 * sizeof( PhenotypeData );
 
-    std::vector<ImmuneStateData> immune = { { 0u, 0b001u, 0.0f, 0.0f }, { 0b011u, 0u, 0.0f, 0.0f } }; // matched
+    std::vector<ImmuneStateData> immune = { { 0u, 0b001u, 0.0f, 0.0f }, { 0b011u, 0u, 0.0f, 1.0f } }; // matched
     size_t                        immuneSize = 2 * sizeof( ImmuneStateData );
 
     struct AgentHash { uint32_t hash; uint32_t agentIndex; };
@@ -3345,7 +3345,7 @@ TEST_F( ComputeTest, Shader_AntigenKill_NoCytokineFieldBound_NoDelta )
     std::vector<PhenotypeData> phenotypes     = { { 0u, 0.5f, 0.0f, 5u }, { 0u, 0.5f, 0.0f, 4u } };
     size_t                     phenotypesSize = 2 * sizeof( PhenotypeData );
 
-    std::vector<ImmuneStateData> immune = { { 0u, 0b001u, 0.0f, 0.0f }, { 0b011u, 0u, 0.0f, 0.0f } }; // matched
+    std::vector<ImmuneStateData> immune = { { 0u, 0b001u, 0.0f, 0.0f }, { 0b011u, 0u, 0.0f, 1.0f } }; // matched
     size_t                        immuneSize = 2 * sizeof( ImmuneStateData );
 
     struct AgentHash { uint32_t hash; uint32_t agentIndex; };
@@ -3473,8 +3473,8 @@ TEST_F( ComputeTest, Shader_AntigenKill_HighCytokine_RaisesKillProb )
     size_t phenotypesSize = 4 * sizeof( PhenotypeData );
 
     std::vector<ImmuneStateData> immune = {
-        { 0u,     0b001u, 0.0f, 0.0f }, { 0b001u, 0u, 0.0f, 0.0f },
-        { 0u,     0b001u, 0.0f, 0.0f }, { 0b001u, 0u, 0.0f, 0.0f },
+        { 0u,     0b001u, 0.0f, 0.0f }, { 0b001u, 0u, 0.0f, 1.0f },
+        { 0u,     0b001u, 0.0f, 0.0f }, { 0b001u, 0u, 0.0f, 1.0f },
     };
     size_t immuneSize = 4 * sizeof( ImmuneStateData );
 
@@ -3571,6 +3571,237 @@ TEST_F( ComputeTest, Shader_AntigenKill_HighCytokine_RaisesKillProb )
     m_rm->DestroyBuffer( immuneBuf   );
     m_rm->DestroyBuffer( hashBuf     );
     m_rm->DestroyBuffer( offsetBuf   );
+    m_rm->DestroyBuffer( countBuf    );
+    m_rm->DestroyBuffer( cytokineBuf );
+    m_rm->DestroyTexture( cytokineTex );
+}
+
+// Graded recognition: MHC-I presentation density (ImmuneStateData.antigenPresentation) scales the
+// kill rate. Two matched, in-range targets share one killer; presentation 1.0 is cleared while
+// presentation 0.0 survives despite an identical antigen-bit match and a certain base rate --
+// the mechanism behind MHC-I-downregulated / partial-antigen-loss immune-escape variants.
+TEST_F( ComputeTest, Shader_AntigenKill_PresentationScalesKill )
+{
+    if( !m_device )
+        GTEST_SKIP();
+
+    std::vector<glm::vec4> agents = {
+        glm::vec4(  0.0f, 0.0f, 0.0f, 1.0f ), // 0: killer
+        glm::vec4(  1.0f, 0.0f, 0.0f, 1.0f ), // 1: target A -- full presentation
+        glm::vec4( -1.0f, 0.0f, 0.0f, 1.0f ), // 2: target B -- zero presentation
+    };
+    size_t agentsSize = 3 * sizeof( glm::vec4 );
+
+    std::vector<PhenotypeData> phenotypes = {
+        { 0u, 0.5f, 0.0f, 5u }, { 0u, 0.5f, 0.0f, 4u }, { 0u, 0.5f, 0.0f, 4u }, // Immune, Tumor, Tumor
+    };
+    size_t phenotypesSize = 3 * sizeof( PhenotypeData );
+
+    std::vector<ImmuneStateData> immune = {
+        { 0u,     0b001u, 0.0f, 0.0f }, // killer: recognizes bit 0
+        { 0b001u, 0u,     0.0f, 1.0f }, // target A: presents bit 0 at full MHC-I density
+        { 0b001u, 0u,     0.0f, 0.0f }, // target B: presents bit 0 but zero density (fully downregulated)
+    };
+    size_t immuneSize = 3 * sizeof( ImmuneStateData );
+
+    struct AgentHash { uint32_t hash; uint32_t agentIndex; };
+    std::vector<AgentHash> sortedHashes = { { 0u, 0u }, { 0u, 1u }, { 0u, 2u } };
+    size_t                 hashesSize   = 3 * sizeof( AgentHash );
+
+    uint32_t              offsetArraySize = 256;
+    std::vector<uint32_t> cellOffsets( offsetArraySize, 0xFFFFFFFF );
+    cellOffsets[ 0 ] = 0;
+    size_t offsetsSize = offsetArraySize * sizeof( uint32_t );
+
+    uint32_t agentCount = 3;
+
+    BufferHandle agentBuf  = m_rm->CreateBuffer( { agentsSize,         BufferType::STORAGE,  "AKP_Agents"  } );
+    BufferHandle phenoBuf  = m_rm->CreateBuffer( { phenotypesSize,     BufferType::STORAGE,  "AKP_Pheno"   } );
+    BufferHandle immuneBuf = m_rm->CreateBuffer( { immuneSize,         BufferType::STORAGE,  "AKP_Immune"  } );
+    BufferHandle hashBuf   = m_rm->CreateBuffer( { hashesSize,         BufferType::STORAGE,  "AKP_Hash"    } );
+    BufferHandle offsetBuf = m_rm->CreateBuffer( { offsetsSize,        BufferType::STORAGE,  "AKP_Offsets" } );
+    BufferHandle countBuf    = m_rm->CreateBuffer( { sizeof( uint32_t ), BufferType::INDIRECT, "AKP_Count"   } );
+    BufferHandle  cytokineBuf = m_rm->CreateBuffer( { sizeof( int32_t ),  BufferType::STORAGE,  "AKP_Cytokine" } ); // unused (gridSize.w=0)
+    TextureHandle cytokineTex = m_rm->CreateTexture( { 1, 1, 1, TextureType::Texture3D, VK_FORMAT_R32_SFLOAT,
+                                                       TextureUsage::STORAGE | TextureUsage::TRANSFER_DST, VK_SAMPLE_COUNT_1_BIT, "AKP_CytokineTex" } );
+    float zeroTex = 0.0f;
+    m_stream->UploadTextureImmediate( cytokineTex, &zeroTex, sizeof( float ) );
+
+    int32_t zeroDelta = 0;
+    m_stream->UploadBufferImmediate( {
+        { agentBuf,    agents.data(),      agentsSize,         0 },
+        { phenoBuf,    phenotypes.data(),  phenotypesSize,     0 },
+        { immuneBuf,   immune.data(),      immuneSize,         0 },
+        { hashBuf,     sortedHashes.data(), hashesSize,        0 },
+        { offsetBuf,   cellOffsets.data(), offsetsSize,        0 },
+        { countBuf,    &agentCount,        sizeof( uint32_t ), 0 },
+        { cytokineBuf, &zeroDelta,         sizeof( int32_t ),  0 },
+    } );
+
+    ComputePipelineDesc   pipeDesc{ m_rm->CreateShader( "shaders/compute/biology/antigen_kill.comp" ), "TestAntigenKillPresentation" };
+    ComputePipelineHandle pipeHandle = m_rm->CreatePipeline( pipeDesc );
+    ComputePipeline*      pipeline   = m_rm->GetPipeline( pipeHandle );
+
+    BindingGroup* bg = m_rm->GetBindingGroup( m_rm->CreateBindingGroup( pipeHandle, 0 ) );
+    bg->Bind( 0, m_rm->GetBuffer( agentBuf  ) );
+    bg->Bind( 1, m_rm->GetBuffer( phenoBuf  ) );
+    bg->Bind( 2, m_rm->GetBuffer( hashBuf   ) );
+    bg->Bind( 3, m_rm->GetBuffer( offsetBuf ) );
+    bg->Bind( 4, m_rm->GetBuffer( countBuf  ) );
+    bg->Bind( 5, m_rm->GetBuffer( immuneBuf ) );
+    bg->Bind( 6, m_rm->GetBuffer( cytokineBuf ) );
+    bg->Bind( 7, m_rm->GetTexture( cytokineTex ), VK_IMAGE_LAYOUT_GENERAL );
+    bg->Build();
+
+    ComputePushConstants pc{};
+    pc.dt          = 1.0f / 60.0f;
+    pc.totalTime   = 10.0f;
+    pc.fParam0     = 5.0f;   // contactDistance -- both targets in range
+    pc.fParam1     = 1.0e6f; // killProbPerSec -- certain at full presentation
+    pc.fParam2     = 0.0f;   // startTime -- already active
+    pc.offset      = 0;
+    pc.maxCapacity = 3;
+    pc.uParam0     = offsetArraySize;
+    pc.uParam1     = 0;
+    pc.domainSize  = glm::vec4( 100.0f, 100.0f, 100.0f, 30.0f ); // .w = hashCellSize (one bucket)
+    // gridSize defaults to (0,0,0,0) -- no cytokine field bound
+
+    auto compCtxHandle = m_device->CreateThreadContext( QueueType::COMPUTE );
+    auto compCtx       = m_device->GetThreadContext( compCtxHandle );
+    auto compCmd       = compCtx->GetCommandBuffer( compCtx->CreateCommandBuffer() );
+
+    compCmd->Begin();
+    compCmd->SetPipeline( pipeline );
+    compCmd->SetBindingGroup( bg, pipeline->GetLayout(), VK_PIPELINE_BIND_POINT_COMPUTE );
+    compCmd->PushConstants( pipeline->GetLayout(), VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof( pc ), &pc );
+    compCmd->Dispatch( 1, 1, 1 );
+    compCmd->End();
+
+    m_device->GetComputeQueue()->Submit( { compCmd } );
+    m_device->GetComputeQueue()->WaitIdle();
+
+    std::vector<PhenotypeData> resultPheno( 3 );
+    m_stream->ReadbackBufferImmediate( phenoBuf, resultPheno.data(), phenotypesSize );
+
+    EXPECT_EQ( resultPheno[ 1 ].lifecycleState, 3u )
+        << "Full-presentation (1.0) matched target must be killed (Apoptotic)";
+    EXPECT_EQ( resultPheno[ 2 ].lifecycleState, 0u )
+        << "Zero-presentation (0.0) matched target must survive despite the identical antigen-bit match";
+
+    m_rm->DestroyBuffer( agentBuf  );
+    m_rm->DestroyBuffer( phenoBuf  );
+    m_rm->DestroyBuffer( immuneBuf );
+    m_rm->DestroyBuffer( hashBuf   );
+    m_rm->DestroyBuffer( offsetBuf );
+    m_rm->DestroyBuffer( countBuf    );
+    m_rm->DestroyBuffer( cytokineBuf );
+    m_rm->DestroyTexture( cytokineTex );
+}
+
+// A Quiescent (contact-inhibited) tumour cell must still be killable — CTL granzyme killing does
+// not require a cycling target. The kill CAS reads the target's observed non-dead state, so a
+// state-1 (Quiescent) cell in a dense core is cleared just like a Live one.
+TEST_F( ComputeTest, Shader_AntigenKill_QuiescentTarget_IsKilled )
+{
+    if( !m_device )
+        GTEST_SKIP();
+
+    std::vector<glm::vec4> agents     = { glm::vec4( 0.0f, 0.0f, 0.0f, 1.0f ), glm::vec4( 1.0f, 0.0f, 0.0f, 1.0f ) };
+    size_t                 agentsSize = 2 * sizeof( glm::vec4 );
+
+    // Target (index 1) is QUIESCENT (lifecycleState = 1), not Live.
+    std::vector<PhenotypeData> phenotypes     = { { 0u, 0.5f, 0.0f, 5u }, { 1u, 0.5f, 0.0f, 4u } };
+    size_t                     phenotypesSize = 2 * sizeof( PhenotypeData );
+
+    std::vector<ImmuneStateData> immune = { { 0u, 0b001u, 0.0f, 0.0f },   // killer: recognizes bit 0
+                                            { 0b001u, 0u, 0.0f, 1.0f } };  // target: presents bit 0, full presentation
+    size_t                        immuneSize = 2 * sizeof( ImmuneStateData );
+
+    struct AgentHash { uint32_t hash; uint32_t agentIndex; };
+    std::vector<AgentHash> sortedHashes = { { 0u, 0u }, { 0u, 1u } };
+    size_t                 hashesSize   = 2 * sizeof( AgentHash );
+
+    uint32_t              offsetArraySize = 256;
+    std::vector<uint32_t> cellOffsets( offsetArraySize, 0xFFFFFFFF );
+    cellOffsets[ 0 ] = 0;
+    size_t offsetsSize = offsetArraySize * sizeof( uint32_t );
+
+    uint32_t agentCount = 2;
+
+    BufferHandle agentBuf  = m_rm->CreateBuffer( { agentsSize,         BufferType::STORAGE,  "AKQ_Agents"  } );
+    BufferHandle phenoBuf  = m_rm->CreateBuffer( { phenotypesSize,     BufferType::STORAGE,  "AKQ_Pheno"   } );
+    BufferHandle immuneBuf = m_rm->CreateBuffer( { immuneSize,         BufferType::STORAGE,  "AKQ_Immune"  } );
+    BufferHandle hashBuf   = m_rm->CreateBuffer( { hashesSize,         BufferType::STORAGE,  "AKQ_Hash"    } );
+    BufferHandle offsetBuf = m_rm->CreateBuffer( { offsetsSize,        BufferType::STORAGE,  "AKQ_Offsets" } );
+    BufferHandle countBuf    = m_rm->CreateBuffer( { sizeof( uint32_t ), BufferType::INDIRECT, "AKQ_Count"   } );
+    BufferHandle  cytokineBuf = m_rm->CreateBuffer( { sizeof( int32_t ),  BufferType::STORAGE,  "AKQ_Cytokine" } );
+    TextureHandle cytokineTex = m_rm->CreateTexture( { 1, 1, 1, TextureType::Texture3D, VK_FORMAT_R32_SFLOAT,
+                                                       TextureUsage::STORAGE | TextureUsage::TRANSFER_DST, VK_SAMPLE_COUNT_1_BIT, "AKQ_CytokineTex" } );
+    float zeroTex = 0.0f;
+    m_stream->UploadTextureImmediate( cytokineTex, &zeroTex, sizeof( float ) );
+
+    int32_t zeroDelta = 0;
+    m_stream->UploadBufferImmediate( {
+        { agentBuf,    agents.data(),      agentsSize,         0 },
+        { phenoBuf,    phenotypes.data(),  phenotypesSize,     0 },
+        { immuneBuf,   immune.data(),      immuneSize,         0 },
+        { hashBuf,     sortedHashes.data(), hashesSize,        0 },
+        { offsetBuf,   cellOffsets.data(), offsetsSize,        0 },
+        { countBuf,    &agentCount,        sizeof( uint32_t ), 0 },
+        { cytokineBuf, &zeroDelta,         sizeof( int32_t ),  0 },
+    } );
+
+    ComputePipelineDesc   pipeDesc{ m_rm->CreateShader( "shaders/compute/biology/antigen_kill.comp" ), "TestAntigenKillQuiescent" };
+    ComputePipelineHandle pipeHandle = m_rm->CreatePipeline( pipeDesc );
+    ComputePipeline*      pipeline   = m_rm->GetPipeline( pipeHandle );
+
+    BindingGroup* bg = m_rm->GetBindingGroup( m_rm->CreateBindingGroup( pipeHandle, 0 ) );
+    bg->Bind( 0, m_rm->GetBuffer( agentBuf  ) );
+    bg->Bind( 1, m_rm->GetBuffer( phenoBuf  ) );
+    bg->Bind( 2, m_rm->GetBuffer( hashBuf   ) );
+    bg->Bind( 3, m_rm->GetBuffer( offsetBuf ) );
+    bg->Bind( 4, m_rm->GetBuffer( countBuf  ) );
+    bg->Bind( 5, m_rm->GetBuffer( immuneBuf ) );
+    bg->Bind( 6, m_rm->GetBuffer( cytokineBuf ) );
+    bg->Bind( 7, m_rm->GetTexture( cytokineTex ), VK_IMAGE_LAYOUT_GENERAL );
+    bg->Build();
+
+    ComputePushConstants pc{};
+    pc.dt          = 1.0f / 60.0f;
+    pc.totalTime   = 10.0f;
+    pc.fParam0     = 5.0f;   // contactDistance
+    pc.fParam1     = 1.0e6f; // killProbPerSec -- certain
+    pc.fParam2     = 0.0f;   // startTime
+    pc.offset      = 0;
+    pc.maxCapacity = 2;
+    pc.uParam0     = offsetArraySize;
+    pc.uParam1     = 0;
+    pc.domainSize  = glm::vec4( 100.0f, 100.0f, 100.0f, 30.0f );
+
+    auto compCtxHandle = m_device->CreateThreadContext( QueueType::COMPUTE );
+    auto compCtx       = m_device->GetThreadContext( compCtxHandle );
+    auto compCmd       = compCtx->GetCommandBuffer( compCtx->CreateCommandBuffer() );
+
+    compCmd->Begin();
+    compCmd->SetPipeline( pipeline );
+    compCmd->SetBindingGroup( bg, pipeline->GetLayout(), VK_PIPELINE_BIND_POINT_COMPUTE );
+    compCmd->PushConstants( pipeline->GetLayout(), VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof( pc ), &pc );
+    compCmd->Dispatch( 1, 1, 1 );
+    compCmd->End();
+
+    m_device->GetComputeQueue()->Submit( { compCmd } );
+    m_device->GetComputeQueue()->WaitIdle();
+
+    std::vector<PhenotypeData> resultPheno( 2 );
+    m_stream->ReadbackBufferImmediate( phenoBuf, resultPheno.data(), phenotypesSize );
+
+    EXPECT_EQ( resultPheno[ 1 ].lifecycleState, 3u ) << "Quiescent (state 1) matched target must still be killed (Apoptotic 3)";
+
+    m_rm->DestroyBuffer( agentBuf  );
+    m_rm->DestroyBuffer( phenoBuf  );
+    m_rm->DestroyBuffer( immuneBuf );
+    m_rm->DestroyBuffer( hashBuf   );
+    m_rm->DestroyBuffer( offsetBuf );
     m_rm->DestroyBuffer( countBuf    );
     m_rm->DestroyBuffer( cytokineBuf );
     m_rm->DestroyTexture( cytokineTex );

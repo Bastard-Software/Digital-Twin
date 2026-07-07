@@ -25,6 +25,7 @@ namespace Gaudi::Demos
     void SetupCellMechanicsZooDemo ( DigitalTwin::SimulationBlueprint& blueprint );
     void SetupStressTestDemo       ( DigitalTwin::SimulationBlueprint& blueprint );
     void SetupTumorImmuneVaccineDemo( DigitalTwin::SimulationBlueprint& blueprint );
+    void SetupTumorMicroenvironmentDemo( DigitalTwin::SimulationBlueprint& blueprint );
 
     // Shared helper — defined in ECBlobDemo.cpp, reused by EC2DMatrigelDemo.cpp.
     // Populates the given AgentGroup with an elongated random cloud of ~100

@@ -679,10 +679,14 @@ namespace DigitalTwin
                 // reads the most recent agent positions without blinking on pause.
                 m_simulationState.latestAgentBuffer = finalActive;
 
-                // currentReadIndex drives the active-index for ALL tasks (field textures + agents)
-                // next frame. It must alternate every frame so the field ping-pong evolves correctly
-                // (diffusion always needs to read from the side it previously wrote to).
-                m_simulationState.currentReadIndex = ( m_simulationState.currentReadIndex + 1 ) % 2;
+                // Agent continuity: next frame starts reading from where the agents actually ended
+                // (finalActive), so ANY number of ChainFlip position tasks composes correctly. The
+                // field ping-pong is now a separate index inside the ComputeGraph, advanced once per
+                // frame — sync each field's read slot to it for the renderer / readbacks.
+                m_simulationState.currentReadIndex = finalActive;
+                uint32_t fieldActive               = m_simulationState.computeGraph.GetFieldActive();
+                for( auto& field: m_simulationState.gridFields )
+                    field.currentReadIndex = fieldActive;
 
                 // 1B. Submit to GRAPHICS queue (Simulation workload only)
                 {

@@ -303,6 +303,23 @@ namespace Gaudi
               "Demonstrates: AntigenExpression, AntigenKilling,\n"
               "cytokine-storm feedback, antigen-specific immune escape.",
               &Demos::SetupTumorImmuneVaccineDemo },
+
+            { "Tumour Microenvironment",
+              "A heterogeneous ~2k-cell tumour spheroid — cancer\n"
+              "immunoediting in one lesion. Four fates interspersed:\n"
+              "  red   = immunogenic (full MHC-I) — cleared fast\n"
+              "  orange= MHC-I-low escape (same antigen, downregulated)\n"
+              "          — cleared slowly (graded recognition)\n"
+              "  blue  = antigen-loss variant — invisible; survives and\n"
+              "          secretes a decoy chemokine\n"
+              "  grey  = normal tissue — never targeted, spared\n\n"
+              "Immune (both infiltrate the same sphere):\n"
+              "  green = cytotoxic T cells — antigen-specific killers\n"
+              "  yellow= innate followers — chase both chemokines, no\n"
+              "          killing; converge on the tumour with the CTLs.\n\n"
+              "Demonstrates: graded MHC-I presentation, NormalCell sparing,\n"
+              "quiescent-cell killing, SecreteField, dual chemotaxis.",
+              &Demos::SetupTumorMicroenvironmentDemo },
         };
 
         ImGuiIO& io = ImGui::GetIO();

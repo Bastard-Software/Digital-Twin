@@ -291,7 +291,14 @@ namespace DigitalTwin::Behaviours
      */
     struct AntigenExpression
     {
-        uint32_t presentedAntigens = 0; // bitmask; bit i = neoantigen i is displayed
+        uint32_t presentedAntigens = 0;    // bitmask; bit i = neoantigen i is displayed
+        // MHC-I surface presentation density (0-1). A matched killer's kill rate against this
+        // cell is scaled by this value, so the same antigen bit can be cleared fast (1.0,
+        // immunogenic clone) or slowly (e.g. 0.2, an MHC-I-downregulated escape variant that
+        // is "differentiated enough" to be poorly recognised). 0.0 = effectively unkillable
+        // even with a matching bit; use antigen-loss (a non-shared bitmask) for a fully
+        // invisible variant. Models MHC-I downregulation — the commonest real immune-escape route.
+        float    presentationLevel = 1.0f;
     };
 
     /**

@@ -14,7 +14,7 @@ namespace DigitalTwin
     // Valid filter values: LifecycleState::Any (0xFFFFFFFF = no requirement) or 0-4 (Live through Necrotic).
     // Dead_PendingRemoval (5) is a transient GPU-side state — behaviours conditioned on it never fire.
     static constexpr uint32_t k_MaxRequiredState = 4;
-    static constexpr uint32_t k_MaxCellType      = 5; // ImmuneCell
+    static constexpr uint32_t k_MaxCellType      = 6; // NormalCell
 
     // Format a float to 2 decimal places for error messages.
     static std::string Fmt2f( float v )
@@ -484,6 +484,17 @@ namespace DigitalTwin
                         {
                             if( behaviour.contactDistance <= 0.0f )
                                 result.AddError( "AgentGroup '" + group.GetName() + "': Anastomosis contactDistance must be > 0" );
+                        }
+
+                        if constexpr( std::is_same_v<T, Behaviours::AntigenExpression> )
+                        {
+                            if( behaviour.presentationLevel < 0.0f || behaviour.presentationLevel > 1.0f )
+                                result.AddError( "AgentGroup '" + group.GetName() +
+                                                 "': AntigenExpression presentationLevel must be in [0, 1]" );
+                            if( behaviour.presentationLevel == 0.0f && behaviour.presentedAntigens != 0u )
+                                result.AddWarning( "AgentGroup '" + group.GetName() +
+                                                   "': AntigenExpression presents antigens but presentationLevel is 0 -- the cell is effectively "
+                                                   "invisible to killers. Use antigen-loss (a non-shared bitmask) for a fully invisible variant." );
                         }
 
                         if constexpr( std::is_same_v<T, Behaviours::AntigenKilling> )

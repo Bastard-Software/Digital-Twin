@@ -57,10 +57,17 @@ namespace DigitalTwin
         void               SetPhaseName( const std::string& phase ) { m_phaseName = phase; }
         const std::string& GetPhaseName() const { return m_phaseName; }
 
-        // When true, this task writes agent positions. ComputeGraph flips the active
+        // When true, this task writes agent positions. ComputeGraph flips the AGENT active
         // buffer index after it runs so the next task in the chain reads the updated positions.
         void SetChainFlip( bool v ) { m_chainFlip = v; }
         bool GetChainFlip() const { return m_chainFlip; }
+
+        // When true, this task ping-pongs the FIELD textures (the diffusion PDE), not the agent
+        // buffers. ComputeGraph binds it via a separate field index that advances once per frame,
+        // so the field solver evolves correctly regardless of how many agent-position (ChainFlip)
+        // tasks exist — decoupling the two independent ping-pong domains.
+        void SetFieldTask( bool v ) { m_isFieldTask = v; }
+        bool IsFieldTask() const { return m_isFieldTask; }
 
         void SetDtScale( float scale ) { m_dtScale = scale; }
 
@@ -81,8 +88,9 @@ namespace DigitalTwin
         std::string          m_phaseName;
         ComputePushConstants m_pc;
         glm::uvec3           m_dispatchSize;
-        bool                 m_chainFlip = false;
-        float                m_dtScale   = 1.0f;
+        bool                 m_chainFlip   = false;
+        bool                 m_isFieldTask = false;
+        float                m_dtScale     = 1.0f;
     };
 
 } // namespace DigitalTwin

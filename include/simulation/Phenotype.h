@@ -33,6 +33,7 @@ namespace DigitalTwin
         PhalanxCell = 3, // Quiescent endothelial cell in mature vessel
         TumorCell   = 4, // Malignant cell — antigen-presenting target for cytotoxic killing
         ImmuneCell  = 5, // Cytotoxic effector cell (e.g. CD8+ T cell) — antigen-specific killer
+        NormalCell  = 6, // Healthy stromal/tissue cell — never an antigen-kill target (no neoantigen)
 
         Any = 0xFFFFFFFFu // No cell-type filter (shaders interpret 0xFFFFFFFF as "match all")
     };
@@ -62,7 +63,11 @@ namespace DigitalTwin
         uint32_t presentedAntigens  = 0;    // Tumour: bitmask of neoantigens displayed on MHC-I
         uint32_t recognizedAntigens = 0;    // Immune: bitmask of antigens this cell's TCR repertoire recognizes
         float    activation         = 0.0f; // Immune: 0-1 activation level, raised by cytokine exposure
-        float    pad                = 0.0f;
+        // Tumour: MHC-I surface presentation density (0-1). Scales the rate at which a matched
+        // killer clears this cell: 1.0 = full display, <1 = MHC-I downregulation / partial
+        // antigen loss (killed proportionally slower — the classic immune-escape mechanism).
+        // Default 1.0 so a bit-matched cell without explicit down-regulation is fully killable.
+        float    antigenPresentation = 1.0f;
     };
 
 } // namespace DigitalTwin

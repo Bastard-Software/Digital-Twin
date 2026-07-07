@@ -432,6 +432,7 @@ namespace Gaudi
                         b.presentedAntigens = static_cast<uint32_t>( std::max( 0, presented ) );
                         changed             = true;
                     }
+                    changed |= ImGui::SliderFloat( "MHC-I Presentation Level", &b.presentationLevel, 0.0f, 1.0f );
                 }
                 else if constexpr( std::is_same_v<T, DigitalTwin::Behaviours::AntigenKilling> )
                 {

@@ -67,7 +67,7 @@ struct ImmuneStateData {
     uint  presentedAntigens;
     uint  recognizedAntigens;
     float activation;
-    float pad;
+    float antigenPresentation; // tumour: MHC-I display density 0-1, scales this cell's kill rate
 };
 layout(std430, binding = 5) buffer ImmuneState { ImmuneStateData data[]; } immuneState;
 
@@ -175,16 +175,23 @@ void main() {
                     float dist = length(myPos - targetData.xyz);
                     if (dist >= pc.contactDistance) continue;
 
-                    // Poisson kill draw: continuous (feedback-scaled) rate -> per-frame probability.
-                    float killProb = 1.0 - exp(-effectiveKillRate * pc.dt);
+                    // MHC-I presentation density scales the effective rate: a downregulated /
+                    // partial-antigen-loss target (presentation < 1) is cleared proportionally
+                    // slower, and presentation 0 makes it effectively invisible despite the bit
+                    // match. This is the graded-recognition counterpart to the binary bitmask.
+                    float targetPresentation = clamp(immuneState.data[targetIdx].antigenPresentation, 0.0, 1.0);
+
+                    // Poisson kill draw: continuous (feedback- and presentation-scaled) rate -> per-frame probability.
+                    float killProb = 1.0 - exp(-effectiveKillRate * targetPresentation * pc.dt);
                     if (randomFloat(seed) >= killProb) continue;
 
-                    // Perforin/granzyme contact killing. atomicCompSwap so only one
-                    // immune cell's kill wins if several target the same cell this frame;
-                    // check the previous value so cytokine/activation credit only goes
-                    // to the invocation that actually won the race.
-                    uint prevState = atomicCompSwap(phenotypes.data[targetIdx].lifecycleState, 0u, 3u);
-                    if (prevState != 0u) continue;
+                    // Perforin/granzyme contact killing. CAS from the target's OBSERVED non-dead
+                    // state (Live/Quiescent/Hypoxic = 0/1/2) to Apoptotic (3): a CTL kills a target
+                    // regardless of its cell-cycle arrest state (a contact-inhibited quiescent tumour
+                    // cell in a dense core is still granzyme-killed). The CAS keeps it race-safe — if
+                    // another invocation changed the state first, only that one gets the kill credit.
+                    uint prevState = atomicCompSwap(phenotypes.data[targetIdx].lifecycleState, targetState, 3u);
+                    if (prevState != targetState) continue;
 
                     killCount++;
                     if (cytokineBound) {

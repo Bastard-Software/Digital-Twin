@@ -655,6 +655,7 @@ namespace DigitalTwin
             ComputeTask diffTask( pipe, bg0, bg1, fieldDef.GetComputeHz(), pc, dispatchSize );
             diffTask.SetTag( "diffusion_" + std::to_string( fieldIndex ) );
             diffTask.SetPhaseName( "Diffusion" );
+            diffTask.SetFieldTask( true ); // ping-pong the field textures on the graph's field index, not the agent index
             outState.computeGraph.AddTask( diffTask );
             DT_INFO( "SimulationBuilder: Compiled PDE task for '{}' at {}Hz", fieldDef.GetName(), fieldDef.GetComputeHz() );
             fieldIndex++;
@@ -836,19 +837,24 @@ namespace DigitalTwin
                     if( g.GetCount() == 0 ) continue;
                     uint32_t cap = 131072;
                     while( cap < g.GetCount() ) cap <<= 1;
-                    uint32_t presented  = 0;
-                    uint32_t recognized = 0;
+                    uint32_t presented    = 0;
+                    uint32_t recognized   = 0;
+                    float    presentation = 1.0f;
                     for( const auto& record: g.GetBehaviours() )
                     {
                         if( const auto* expr = std::get_if<Behaviours::AntigenExpression>( &record.behaviour ) )
-                            presented = expr->presentedAntigens;
+                        {
+                            presented    = expr->presentedAntigens;
+                            presentation = expr->presentationLevel;
+                        }
                         if( const auto* kill = std::get_if<Behaviours::AntigenKilling>( &record.behaviour ) )
                             recognized = kill->recognizedAntigens;
                     }
                     for( uint32_t i = 0; i < cap; i++ )
                     {
-                        states[ off + i ].presentedAntigens  = presented;
-                        states[ off + i ].recognizedAntigens = recognized;
+                        states[ off + i ].presentedAntigens   = presented;
+                        states[ off + i ].recognizedAntigens  = recognized;
+                        states[ off + i ].antigenPresentation = presentation;
                     }
                     off += cap;
                 }
